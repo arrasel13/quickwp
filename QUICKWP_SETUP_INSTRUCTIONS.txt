@@ -1,0 +1,199 @@
+===============================================================================
+                          QUICKWP MANAGER - SETUP INSTRUCTIONS
+===============================================================================
+
+🚀 QUICKWP MANAGER - WordPress Development Environment Desktop Application
+
+This document provides complete instructions for running the project in
+development mode (preview) and building it for production deployment.
+
+===============================================================================
+📋 PREREQUISITES
+===============================================================================
+
+Before running QuickWP Manager, ensure you have the following installed:
+
+1. Node.js (version 16.x or higher)
+   - Download from: https://nodejs.org/
+   - Verify installation: node --version
+
+2. Rust and Cargo
+   - Install from: https://rustup.rs/
+   - Verify installation: cargo --version
+
+3. Laravel Herd (for WordPress development)
+   - Download from: https://herd.laravel.com/
+   - Required for WordPress site management features
+
+4. WP-CLI (WordPress Command Line Interface)
+   - Install from: https://wp-cli.org/
+   - Required for WordPress operations
+
+===============================================================================
+🔧 DEVELOPMENT MODE (PREVIEW WITHOUT BUILD)
+===============================================================================
+
+To run the project in development mode for preview and testing:
+
+1. Navigate to the project directory:
+   cd quickwp-manager
+
+2. Install dependencies (first time only):
+   npm install
+
+3. Start the development server:
+   npm run tauri dev
+
+   Alternative commands:
+   - npm run tauri:dev
+   - tauri dev
+
+4. The application will:
+   - Start the Vite development server (usually on http://localhost:1420)
+   - Compile the Rust backend
+   - Launch the desktop application window
+   - Enable hot-reload for instant updates when you modify code
+
+5. Development Features:
+   - Hot Module Replacement (HMR) - changes appear instantly
+   - Debug console available
+   - Source maps for debugging
+   - Fast compilation and reload
+
+===============================================================================
+🏗️ PRODUCTION BUILD (FOR DEPLOYMENT)
+===============================================================================
+
+To build the application for production deployment:
+
+1. Navigate to the project directory:
+   cd quickwp-manager
+
+2. Build for your current platform:
+   npm run tauri build
+
+   Alternative command:
+   npm run tauri:build
+
+3. Platform-specific builds:
+
+   For macOS (Universal - Intel & Apple Silicon):
+   npm run build:macos
+
+   For Windows:
+   npm run build:windows
+
+   For Linux:
+   npm run build:linux
+
+   For all platforms (using custom script):
+   npm run build:all
+   or
+   ./build.sh
+
+===============================================================================
+📦 BUILD OUTPUT LOCATIONS
+===============================================================================
+
+After building, you'll find the installation files in:
+
+📁 Main build directory:
+   src-tauri/target/release/bundle/
+
+📁 Platform-specific locations:
+
+🍎 macOS:
+   - App Bundle: src-tauri/target/release/bundle/macos/QuickWP Manager.app
+   - DMG Installer: src-tauri/target/release/bundle/dmg/QuickWP Manager_0.1.0_aarch64.dmg
+
+🪟 Windows:
+   - Executable: src-tauri/target/release/bundle/msi/QuickWP Manager_0.1.0_x64_en-US.msi
+   - Setup File: src-tauri/target/release/bundle/nsis/QuickWP Manager_0.1.0_x64-setup.exe
+
+🐧 Linux:
+   - AppImage: src-tauri/target/release/bundle/appimage/quickwp-manager_0.1.0_amd64.AppImage
+   - DEB Package: src-tauri/target/release/bundle/deb/quickwp-manager_0.1.0_amd64.deb
+
+===============================================================================
+📱 INSTALLATION INSTRUCTIONS
+===============================================================================
+
+🍎 macOS Installation:
+1. Locate the .dmg file in the build output
+2. Double-click the .dmg file to mount it
+3. Drag "QuickWP Manager" to the Applications folder
+4. Launch from Applications or Spotlight
+
+🪟 Windows Installation:
+1. Locate the .msi or .exe file in the build output
+2. Right-click and select "Run as administrator"
+3. Follow the installation wizard
+4. Launch from Start Menu or Desktop shortcut
+
+🐧 Linux Installation:
+1. For AppImage:
+   - Make executable: chmod +x quickwp-manager_0.1.0_amd64.AppImage
+   - Run directly: ./quickwp-manager_0.1.0_amd64.AppImage
+
+2. For DEB package:
+   - Install: sudo dpkg -i quickwp-manager_0.1.0_amd64.deb
+   - Launch from applications menu
+
+===============================================================================
+🛠️ TROUBLESHOOTING
+===============================================================================
+
+Common Issues and Solutions:
+
+1. "Command not found: tauri"
+   Solution: Install Tauri CLI globally
+   npm install -g @tauri-apps/cli
+
+2. "Rust not found" error
+   Solution: Install Rust from https://rustup.rs/
+
+3. Build fails on macOS
+   Solution: Install Xcode Command Line Tools
+   xcode-select --install
+
+4. Windows build issues
+   Solution: Install Microsoft C++ Build Tools
+   https://visualstudio.microsoft.com/visual-cpp-build-tools/
+
+5. Application doesn't start
+   Solution: Check if Laravel Herd and WP-CLI are installed
+
+===============================================================================
+🔄 DEVELOPMENT WORKFLOW
+===============================================================================
+
+Recommended development workflow:
+
+1. Start development server: npm run tauri dev
+2. Make changes to React components in src/
+3. Changes auto-reload in the desktop app
+4. Test Rust backend changes in src-tauri/src/
+5. Build for testing: npm run tauri build --debug
+6. Final production build: npm run tauri build
+
+===============================================================================
+📞 SUPPORT
+===============================================================================
+
+For issues and questions:
+- Check the README.md file for detailed documentation
+- Review the troubleshooting section above
+- Ensure all prerequisites are properly installed
+- Verify that Laravel Herd and WP-CLI are working correctly
+
+===============================================================================
+🎉 SUCCESS!
+===============================================================================
+
+You should now be able to:
+✅ Run QuickWP Manager in development mode
+✅ Build the application for production
+✅ Install and distribute the application
+✅ Manage WordPress development environments
+
+Happy WordPress development! 🚀
