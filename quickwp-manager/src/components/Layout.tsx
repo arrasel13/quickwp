@@ -19,6 +19,7 @@ import GeneralTab from "./tabs/GeneralTab";
 import SitesTab from "./tabs/SitesTab";
 import PHPTab from "./tabs/PHPTab";
 import NodeTab from "./tabs/NodeTab";
+import AboutTab from "./tabs/AboutTab";
 
 const tabs = [
   { name: "General", icon: HomeIcon, component: GeneralTab },
@@ -43,47 +44,52 @@ const tabs = [
   { name: "Herd Pro", icon: StarIcon, component: GeneralTab },
   { name: "Shortcuts", icon: CommandLineIcon, component: GeneralTab },
   { name: "Integrations", icon: Square3Stack3DIcon, component: GeneralTab },
-  { name: "About", icon: HomeIcon, component: GeneralTab },
+  { name: "About", icon: HomeIcon, component: AboutTab },
 ];
 
 export default function Layout() {
   return (
-    <div className="min-h-screen bg-gray-100 flex">
-      {/* Sidebar */}
+    <div className="h-screen bg-gray-50 flex overflow-hidden">
+      {/* Fixed Sidebar */}
       <Tab.Group>
-        <div className="flex">
-          <Tab.List className="flex flex-col w-48 bg-gray-200 min-h-screen p-2 space-y-1">
-            {tabs.map((tab) => (
-              <Tab
-                key={tab.name}
-                className={({ selected }) =>
-                  clsx(
-                    "flex items-center justify-between w-full rounded-lg py-2 px-3 text-sm font-medium leading-5 text-left",
-                    "focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50",
-                    selected
-                      ? "bg-blue-500 text-white shadow"
-                      : "text-gray-700 hover:bg-gray-300"
-                  )
-                }
-              >
-                <div className="flex items-center space-x-2">
-                  <tab.icon className="h-4 w-4" />
-                  <span>{tab.name}</span>
-                </div>
-                {tab.badge && (
-                  <span className="bg-red-500 text-white text-xs px-1.5 py-0.5 rounded">
-                    {tab.badge}
-                  </span>
-                )}
-              </Tab>
-            ))}
-          </Tab.List>
+        <div className="flex h-full">
+          <div className="w-48 bg-white border-r border-gray-200 shadow-sm">
+            <Tab.List className="flex flex-col h-full p-4 space-y-1 overflow-y-auto">
+              {tabs.map((tab) => (
+                <Tab
+                  key={tab.name}
+                  className={({ selected }) =>
+                    clsx(
+                      "flex items-center justify-between w-full rounded-lg p-2 text-xs font-medium leading-5 text-left transition-all duration-200",
+                      "focus:outline-none focus-visible:outline-none focus:ring-0 focus:ring-offset-0 focus:shadow-none active:outline-none",
+                      "[&:focus]:outline-none [&:focus-visible]:outline-none [&:focus]:ring-0 [&:active]:outline-none",
+                      selected
+                        ? "bg-gradient-to-r from-blue-100 to-indigo-100 text-black shadow-md"
+                        : "text-gray-700 hover:bg-gray-100 hover:text-gray-900"
+                    )
+                  }
+                >
+                  <div className="flex items-center space-x-2">
+                    <tab.icon className="h-4 w-4 flex-shrink-0" />
+                    <span className="truncate">{tab.name}</span>
+                  </div>
+                  {tab.badge && (
+                    <span className="bg-red-500 text-white text-[8px] px-1.5 py-0.25 font-medium flex-shrink-0 rounded-lg">
+                      {tab.badge}
+                    </span>
+                  )}
+                </Tab>
+              ))}
+            </Tab.List>
+          </div>
 
-          {/* Main Content */}
-          <Tab.Panels className="flex-1">
+          {/* Scrollable Main Content */}
+          <Tab.Panels className="flex-1 overflow-hidden">
             {tabs.map((tab, idx) => (
-              <Tab.Panel key={idx} className="h-full">
-                <tab.component />
+              <Tab.Panel key={idx} className="h-full overflow-y-auto">
+                <div className="">
+                  <tab.component />
+                </div>
               </Tab.Panel>
             ))}
           </Tab.Panels>

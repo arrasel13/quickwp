@@ -6,43 +6,109 @@
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: #f8fafc;
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
   background: #cbd5e1;
-  border-radius: 3px;
+  border-radius: 4px;
+  border: 2px solid #f8fafc;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
 
+/* Ensure proper scrolling */
+.scroll-container {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 #f8fafc;
+}
+
 /* Custom components */
 .progress-bar {
-  @apply w-full bg-gray-200 rounded-full h-2 overflow-hidden;
+  @apply w-full bg-gray-200 rounded-full h-3 overflow-hidden shadow-inner;
 }
 
 .progress-bar-fill {
-  @apply h-full bg-primary-500 transition-all duration-300 ease-out;
+  @apply h-full bg-gradient-to-r from-primary-500 to-primary-600 transition-all duration-500 ease-out;
 }
 
 .terminal-output {
-  @apply bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-sm overflow-auto max-h-64;
+  @apply bg-gray-900 text-green-400 p-6 rounded-xl font-mono text-sm overflow-auto max-h-80 shadow-inner border border-gray-700;
 }
 
 .form-input {
-  @apply block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm;
+  @apply block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 focus:ring-2 focus:ring-opacity-50 transition-all duration-200 px-4 py-3;
 }
 
 .btn-primary {
-  @apply inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-colors duration-200;
+  @apply inline-flex items-center px-6 py-3 border border-transparent text-sm font-semibold rounded-lg shadow-sm text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-all duration-200 hover:shadow-md;
 }
 
 .btn-secondary {
-  @apply inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-colors duration-200;
+  @apply inline-flex items-center px-6 py-3 border border-gray-300 text-sm font-semibold rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-all duration-200 hover:shadow-md;
+}
+
+/* Card and Section Spacing */
+.card {
+  @apply bg-white rounded-xl border border-gray-200 shadow-sm p-8;
+}
+
+.card-header {
+  @apply flex items-center mb-6;
+}
+
+.card-icon {
+  @apply w-10 h-10 rounded-lg flex items-center justify-center mr-4;
+}
+
+.card-title {
+  @apply text-xl font-semibold text-gray-900;
+}
+
+.card-description {
+  @apply text-gray-600 text-sm mt-1;
+}
+
+.section-spacing {
+  @apply space-y-8;
+}
+
+.content-container {
+  @apply max-w-6xl mx-auto;
+}
+
+.page-header {
+  @apply mb-8;
+}
+
+.page-title {
+  @apply text-3xl font-bold text-gray-900 mb-2;
+}
+
+.page-description {
+  @apply text-gray-600;
+}
+
+/* Remove all focus styles from Tab components */
+button[role="tab"]:focus,
+button[role="tab"]:focus-visible,
+button[role="tab"]:active {
+  outline: none !important;
+  box-shadow: none !important;
+  ring: none !important;
+  border: none !important;
+}
+
+/* Additional focus removal for Headless UI Tab components */
+[data-headlessui-state*="selected"]:focus,
+[data-headlessui-state*="selected"]:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }
