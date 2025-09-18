@@ -184,7 +184,6 @@ export default function SitesTab() {
     { id: "terminal", name: "Terminal", icon: CommandLineIcon },
     { id: "ide", name: "IDE", icon: CodeBracketIcon },
     { id: "logs", name: "Logs", icon: DocumentTextIcon },
-    { id: "profiler", name: "Profiler", icon: ChartBarIcon },
   ];
 
   const siteDetailTabs = [
@@ -330,9 +329,6 @@ export default function SitesTab() {
         break;
       case "logs":
         alert("Opening Logs for " + selectedSite.name);
-        break;
-      case "profiler":
-        alert("Opening Profiler for " + selectedSite.name);
         break;
       default:
         break;
@@ -553,36 +549,53 @@ export default function SitesTab() {
                     </div>
 
                     {/* Site details */}
-                    <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between py-2 border-b border-gray-100">
+                    <div className="bg-gray-100 border border-gray-300 rounded-xl p-4 shadow-sm">
+                      <div className="">
+                        <div className="flex items-center justify-between py-2 border-b border-gray-200">
                           <span className="text-sm font-medium text-gray-600">
-                            PHP Version
+                            PHP Version:
                           </span>
-                          <div className="flex items-center space-x-2 relative version-dropdown">
-                            <span className="text-sm font-semibold text-gray-900 bg-green-100 px-3 py-1 rounded-md">
-                              {selectedSite.phpVersion}
-                            </span>
-                            <button
-                              onClick={() => {
-                                setShowPhpDropdown(!showPhpDropdown);
-                                setShowNodeDropdown(false);
-                              }}
-                              className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded focus:outline-none focus-visible:outline-none"
-                            >
-                              <CogIcon className="h-5 w-5" />
-                            </button>
+                          <div className="relative version-dropdown">
+                            <div className="flex items-center">
+                              <input
+                                type="text"
+                                value={selectedSite.phpVersion}
+                                readOnly
+                                className="w-16 px-2 py-1 text-xs text-center border border-gray-300 rounded-l-md bg-white focus:outline-none focus:ring-0 focus:ring-gray-300"
+                              />
+                              <button
+                                onClick={() => {
+                                  setShowPhpDropdown(!showPhpDropdown);
+                                  setShowNodeDropdown(false);
+                                }}
+                                className="px-2 py-1 bg-blue-500 border border-blue-500 hover:border hover:border-blue-500 text-white rounded-r-md hover:bg-blue-600 transition-colors focus:outline-none focus:ring-0 focus:ring-blue-500"
+                              >
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M19 9l-7 7-7-7"
+                                  />
+                                </svg>
+                              </button>
+                            </div>
                             {showPhpDropdown && (
-                              <div className="absolute right-0 top-8 mt-1 w-24 bg-white border border-gray-200 rounded-md shadow-lg z-10">
+                              <div className="absolute right-0 top-6 mt-1 w-20 bg-white border border-gray-200 rounded-md shadow-lg z-10">
                                 {phpVersions.map((version) => (
                                   <button
                                     key={version}
                                     onClick={() =>
                                       handlePhpVersionChange(version)
                                     }
-                                    className="block w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:outline-none"
+                                    className="block w-full text-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:outline-none first:rounded-t-md last:rounded-b-md"
                                   >
-                                    PHP {version}
+                                    {version}
                                   </button>
                                 ))}
                               </div>
@@ -590,34 +603,51 @@ export default function SitesTab() {
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between py-2 border-b border-gray-100">
+                        <div className="flex items-center justify-between py-2 border-b border-gray-200">
                           <span className="text-sm font-medium text-gray-600">
-                            Node Version
+                            Node Version:
                           </span>
-                          <div className="flex items-center space-x-2 relative version-dropdown">
-                            <span className="text-sm font-semibold text-gray-900 bg-blue-100 px-3 py-1 rounded-md">
-                              {selectedSite.nodeVersion}
-                            </span>
-                            <button
-                              onClick={() => {
-                                setShowNodeDropdown(!showNodeDropdown);
-                                setShowPhpDropdown(false);
-                              }}
-                              className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded focus:outline-none focus-visible:outline-none"
-                            >
-                              <CogIcon className="h-5 w-5" />
-                            </button>
+                          <div className="relative version-dropdown">
+                            <div className="flex items-center">
+                              <input
+                                type="text"
+                                value={selectedSite.nodeVersion}
+                                readOnly
+                                className="w-16 px-2 py-1 text-xs text-center border border-gray-300 rounded-l-md bg-white focus:outline-none focus:ring-0 focus:ring-gray-300"
+                              />
+                              <button
+                                onClick={() => {
+                                  setShowNodeDropdown(!showNodeDropdown);
+                                  setShowPhpDropdown(false);
+                                }}
+                                className="px-2 py-1 bg-blue-500 border border-blue-500 text-white rounded-r-md hover:bg-blue-600 transition-colors focus:outline-none focus:ring-0 focus:ring-blue-500"
+                              >
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M19 9l-7 7-7-7"
+                                  />
+                                </svg>
+                              </button>
+                            </div>
                             {showNodeDropdown && (
-                              <div className="absolute right-0 top-8 mt-1 w-24 bg-white border border-gray-200 rounded-md shadow-lg z-10">
+                              <div className="absolute right-0 top-6 mt-1 w-20 bg-white border border-gray-200 rounded-md shadow-lg z-10">
                                 {nodeVersions.map((version) => (
                                   <button
                                     key={version}
                                     onClick={() =>
                                       handleNodeVersionChange(version)
                                     }
-                                    className="block w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:outline-none"
+                                    className="block w-full text-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:outline-none first:rounded-t-md last:rounded-b-md"
                                   >
-                                    Node {version}
+                                    {version}
                                   </button>
                                 ))}
                               </div>
@@ -625,33 +655,33 @@ export default function SitesTab() {
                           </div>
                         </div>
 
-                        <div className="py-2 border-b border-gray-100">
-                          <span className="text-sm font-medium text-gray-600 block mb-2">
+                        <div className="flex items-center justify-start gap-3 py-2 border-b border-gray-200">
+                          <span className="text-sm font-medium text-gray-600 block">
                             Path
                           </span>
                           <div className="break-all">
-                            <span className="text-sm text-blue-600 hover:text-blue-800 cursor-pointer bg-blue-50 px-3 py-2 rounded-md font-mono">
+                            <span className="text-xs text-blue-600 hover:text-blue-800 cursor-pointer bg-blue-50 px-2 py-1 rounded-md font-mono">
                               {selectedSite.path}
                             </span>
                           </div>
                         </div>
 
-                        <div className="py-2 border-b border-gray-100">
-                          <div className="flex items-center space-x-2 mb-2">
+                        <div className="flex items-center justify-start gap-3 py-2 border-b border-gray-200">
+                          <div className="flex items-center space-x-2">
                             <span className="text-sm font-medium text-gray-600">
                               Linked Path
                             </span>
                             <LinkIcon className="h-4 w-4 text-gray-400" />
                           </div>
                           <div className="break-all">
-                            <span className="text-sm text-blue-600 hover:text-blue-800 cursor-pointer bg-blue-50 px-3 py-2 rounded-md font-mono">
+                            <span className="text-xs text-blue-600 hover:text-blue-800 cursor-pointer bg-blue-50 px-2 py-1 rounded-md font-mono">
                               {selectedSite.linkedPath}
                             </span>
                           </div>
                         </div>
 
-                        <div className="py-2">
-                          <span className="text-sm font-medium text-gray-600 block mb-2">
+                        <div className="flex items-center justify-start gap-3 py-2">
+                          <span className="text-sm font-medium text-gray-600 block">
                             URL
                           </span>
                           <div>
@@ -659,7 +689,7 @@ export default function SitesTab() {
                               href={selectedSite.url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-sm text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-2 rounded-md font-mono inline-block"
+                              className="text-xs text-blue-600 hover:text-blue-800 bg-blue-50 px-2 py-1 rounded-md font-mono inline-block"
                             >
                               {selectedSite.url}
                             </a>
@@ -883,13 +913,13 @@ export default function SitesTab() {
 
                       {/* Modal Content */}
                       <div className="flex-1 overflow-y-auto">
-                        <div className="p-6 space-y-8">
+                        <div className="p-6 space-y-4">
                           {/* Smart Auto-Generation Section */}
-                          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 shadow-sm">
-                            <div className="flex items-center mb-4">
-                              <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center mr-4">
+                          <fieldset className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-4 shadow-sm">
+                            <legend className="flex items-center text-md text-blue-900 bg-blue-200 px-2 py-1 rounded-md">
+                              <div className="w-6 h-6 bg-blue-500 rounded-lg flex items-center justify-center mr-2">
                                 <svg
-                                  className="w-6 h-6 text-white"
+                                  className="w-4 h-4 text-white"
                                   fill="none"
                                   stroke="currentColor"
                                   viewBox="0 0 24 24"
@@ -902,20 +932,15 @@ export default function SitesTab() {
                                   />
                                 </svg>
                               </div>
-                              <div>
-                                <h2 className="text-lg font-semibold text-blue-900">
-                                  Smart Auto-Generation
-                                </h2>
-                                <p className="text-blue-700 text-sm">
-                                  Enter your site title and we'll automatically
-                                  generate the folder name, URL, and database
-                                  name
-                                </p>
-                              </div>
-                            </div>
+                              Smart Auto-Generation
+                            </legend>
+                            <p className="text-blue-700 text-sm mb-4 border-b border-blue-200 pb-4">
+                              Enter your site title and we'll automatically
+                              generate the folder name, URL, and database name
+                            </p>
 
-                            <div className="space-y-4">
-                              <div>
+                            <div className="flex items-center justify-between gap-4">
+                              <div className="flex-1">
                                 <label className="block text-sm font-medium text-blue-900 mb-2">
                                   Site Title *
                                 </label>
@@ -928,48 +953,74 @@ export default function SitesTab() {
                                       e.target.value
                                     )
                                   }
-                                  placeholder="My Awesome WordPress Site"
-                                  className="w-full px-4 py-3 border border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 placeholder-gray-500"
+                                  placeholder="WordPress Site Title"
+                                  className="w-full px-3 py-2 text-sm border border-blue-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300 text-gray-900 placeholder-gray-500"
                                 />
                               </div>
 
-                              {config.siteTitle && (
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-blue-200">
-                                  <div>
-                                    <label className="block text-sm font-medium text-blue-700 mb-1">
-                                      Generated Folder Name
-                                    </label>
-                                    <div className="px-3 py-2 bg-blue-100 border border-blue-200 rounded-md text-sm text-blue-900 font-mono">
-                                      {config.folderName}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <label className="block text-sm font-medium text-blue-700 mb-1">
-                                      Generated Site URL
-                                    </label>
-                                    <div className="px-3 py-2 bg-blue-100 border border-blue-200 rounded-md text-sm text-blue-900 font-mono">
-                                      {config.siteUrl}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <label className="block text-sm font-medium text-blue-700 mb-1">
-                                      Generated Database Name
-                                    </label>
-                                    <div className="px-3 py-2 bg-blue-100 border border-blue-200 rounded-md text-sm text-blue-900 font-mono">
-                                      {config.databaseName}
-                                    </div>
-                                  </div>
+                              {/* {config.siteTitle && ( */}
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                  <label className="block text-sm font-medium text-blue-900 mb-2">
+                                    Generated Folder Name
+                                  </label>
+                                  <input
+                                    type="text"
+                                    className="px-3 py-2 bg-blue-100 border border-blue-200 rounded-md text-sm text-blue-900 font-mono focus:outline-none focus:ring-0 focus:ring-blue-300"
+                                    value={config.folderName ?? ""}
+                                    onChange={(e) =>
+                                      setConfig({
+                                        ...config,
+                                        folderName: e.target.value,
+                                      })
+                                    }
+                                  />
                                 </div>
-                              )}
+                                <div>
+                                  <label className="block text-sm font-medium text-blue-900 mb-2">
+                                    Generated Site URL
+                                  </label>
+                                  <input
+                                    type="text"
+                                    className="px-3 py-2 bg-blue-100 border border-blue-200 rounded-md text-sm text-blue-900 font-mono focus:outline-none focus:ring-0 focus:ring-blue-300"
+                                    value={config.siteUrl ?? ""}
+                                    onChange={(e) =>
+                                      setConfig({
+                                        ...config,
+                                        siteUrl: e.target.value,
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-sm font-medium text-blue-900 mb-2">
+                                    Generated Database Name
+                                  </label>
+                                  <input
+                                    type="text"
+                                    className="px-3 py-2 bg-blue-100 border border-blue-200 rounded-md text-sm text-blue-900 font-mono focus:outline-none focus:ring-0 focus:ring-blue-300"
+                                    value={config.databaseName ?? ""}
+                                    onChange={(e) =>
+                                      setConfig({
+                                        ...config,
+                                        databaseName: e.target.value,
+                                      })
+                                    }
+                                  />
+                                </div>
+                              </div>
+
+                              {/* )} */}
                             </div>
-                          </div>
+                          </fieldset>
 
                           {/* WordPress Configuration */}
-                          <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
-                            <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                          <fieldset className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                            <legend className="flex items-center text-md text-black bg-gray-200 px-2 py-1 rounded-md">
                               WordPress Configuration
-                            </h2>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            </legend>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                               <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-2">
                                   WordPress Version
@@ -982,7 +1033,7 @@ export default function SitesTab() {
                                       e.target.value
                                     )
                                   }
-                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
                                 >
                                   <option value="latest">Latest Version</option>
                                   <option value="6.4">WordPress 6.4</option>
@@ -1002,7 +1053,7 @@ export default function SitesTab() {
                                       e.target.value
                                     )
                                   }
-                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
                                 >
                                   <option value="8.3">PHP 8.3</option>
                                   <option value="8.2">PHP 8.2</option>
@@ -1022,7 +1073,7 @@ export default function SitesTab() {
                                       e.target.checked
                                     )
                                   }
-                                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                                  className="h-4 w-4 text-blue-600 focus:outline-none focus:ring-0 focus:ring-blue-300 border-gray-300 rounded"
                                 />
                                 <label
                                   htmlFor="enableDebug"
@@ -1032,13 +1083,14 @@ export default function SitesTab() {
                                 </label>
                               </div>
                             </div>
-                          </div>
+                          </fieldset>
 
                           {/* Admin User Configuration */}
-                          <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
-                            <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                          <fieldset className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                            <legend className="flex items-center text-md text-black bg-gray-200 px-2 py-1 rounded-md">
                               Admin User Configuration
-                            </h2>
+                            </legend>
+
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                               <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1054,9 +1106,10 @@ export default function SitesTab() {
                                     )
                                   }
                                   placeholder="admin"
-                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
                                 />
                               </div>
+
                               <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-2">
                                   Admin Password
@@ -1071,9 +1124,10 @@ export default function SitesTab() {
                                     )
                                   }
                                   placeholder="Enter admin password"
-                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
                                 />
                               </div>
+
                               <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-2">
                                   Admin Email
@@ -1088,11 +1142,11 @@ export default function SitesTab() {
                                     )
                                   }
                                   placeholder="admin@example.com"
-                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
                                 />
                               </div>
                             </div>
-                          </div>
+                          </fieldset>
 
                           {/* Progress and Terminal Output */}
                           {isInstalling && (
