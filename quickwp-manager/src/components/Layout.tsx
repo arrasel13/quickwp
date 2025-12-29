@@ -11,6 +11,7 @@ import {
   StarIcon,
   CommandLineIcon,
   Square3Stack3DIcon,
+  KeyIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 
@@ -20,6 +21,7 @@ import SitesTab from "./tabs/SitesTab";
 import PHPTab from "./tabs/PHPTab";
 import NodeTab from "./tabs/NodeTab";
 import AboutTab from "./tabs/AboutTab";
+import PasswordGeneratorTab from "./tabs/PasswordGeneratorTab";
 
 const tabs = [
   { name: "General", icon: HomeIcon, component: GeneralTab },
@@ -44,16 +46,23 @@ const tabs = [
   { name: "Herd Pro", icon: StarIcon, component: GeneralTab },
   { name: "Shortcuts", icon: CommandLineIcon, component: GeneralTab },
   { name: "Integrations", icon: Square3Stack3DIcon, component: GeneralTab },
+  {
+    name: "Password Generator",
+    icon: KeyIcon,
+    component: PasswordGeneratorTab,
+  },
   { name: "About", icon: HomeIcon, component: AboutTab },
 ];
 
 export default function Layout() {
   return (
-    <div className="h-screen bg-gray-50 flex overflow-hidden">
+    // <div className="h-screen bg-gray-50 flex overflow-hidden">
+    <div className="h-screen bg-gray-50 flex-1 overflow-hidden">
       {/* Fixed Sidebar */}
-      <Tab.Group>
+      <Tab.Group className="h-full w-full">
         <div className="flex h-full">
-          <div className="w-48 bg-white border-r border-gray-200 shadow-sm">
+          {/* <div className="w-48 bg-white border-r border-gray-200 shadow-sm"> */}
+          <div className="w-60 bg-white border-r border-gray-200 shadow-sm">
             <Tab.List className="flex flex-col h-full p-4 space-y-1 overflow-y-auto">
               {tabs.map((tab) => (
                 <Tab
