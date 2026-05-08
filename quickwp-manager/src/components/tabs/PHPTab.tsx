@@ -1,63 +1,93 @@
-import { useState } from "react";
-import { CheckIcon } from "@heroicons/react/24/outline";
+import { useState, useEffect } from "react";
+import { CheckIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import clsx from "clsx";
+import { invoke } from "@tauri-apps/api/core";
 
 interface PHPVersion {
   version: string;
-  fullVersion?: string;
+  full_version?: string;
   status: "installed" | "available";
 }
 
 export default function PHPTab() {
-  const [phpVersions] = useState<PHPVersion[]>([
-    {
-      version: "8.5",
-      status: "available",
-    },
-    {
-      version: "8.4",
-      fullVersion: "8.4.12",
-      status: "installed",
-    },
-    {
-      version: "8.3",
-      fullVersion: "8.3.25",
-      status: "installed",
-    },
-    {
-      version: "8.2",
-      fullVersion: "8.2.29",
-      status: "installed",
-    },
-    {
-      version: "8.1",
-      status: "available",
-    },
-    {
-      version: "8.0",
-      status: "available",
-    },
-    {
-      version: "7.4",
-      status: "available",
-    },
-  ]);
-
+  const [phpVersions, setPhpVersions] = useState<PHPVersion[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [installing, setInstalling] = useState<string | null>(null);
   const [notifyUpdates, setNotifyUpdates] = useState(true);
   const [maxFileUploadSize, setMaxFileUploadSize] = useState("1024");
   const [memoryLimit, setMemoryLimit] = useState("2048");
 
-  const handleInstall = (version: string) => {
-    console.log(`Installing PHP ${version}`);
-    // Here you would implement the actual PHP installation logic
+  // Fetch PHP versions on component mount
+  useEffect(() => {
+    fetchPhpVersions();
+  }, []);
+
+  const fetchPhpVersions = async () => {
+    try {
+      setLoading(true);
+      const versions = await invoke<PHPVersion[]>("get_php_versions");
+      setPhpVersions(versions);
+    } catch (error) {
+      console.error("Failed to fetch PHP versions:", error);
+      // Fallback to static data if backend fails
+      setPhpVersions([
+        { version: "8.5", status: "available" },
+        { version: "8.4", status: "available" },
+        { version: "8.3", status: "available" },
+        { version: "8.2", status: "available" },
+        { version: "8.1", status: "available" },
+        { version: "8.0", status: "available" },
+        { version: "7.4", status: "available" },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleInstall = async (version: string) => {
+    try {
+      setInstalling(version);
+      const result = await invoke<{
+        success: boolean;
+        stdout: string;
+        stderr: string;
+      }>("install_php_version", { version });
+
+      if (result.success) {
+        // Refresh the PHP versions list after successful installation
+        await fetchPhpVersions();
+        alert(`PHP ${version} installed successfully!`);
+      } else {
+        alert(
+          `Failed to install PHP ${version}: ${result.stderr || result.stdout}`
+        );
+      }
+    } catch (error) {
+      console.error(`Failed to install PHP ${version}:`, error);
+      alert(
+        `Failed to install PHP ${version}. Make sure Laravel Herd is installed.`
+      );
+    } finally {
+      setInstalling(null);
+    }
   };
 
   return (
     <div className="max-w-6xl mx-auto p-4">
       <div className="space-y-4">
         {/* Header */}
-        <div className="">
+        <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-gray-900">PHP</h1>
+          <button
+            onClick={fetchPhpVersions}
+            disabled={loading}
+            className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ArrowPathIcon
+              className={clsx("h-4 w-4 mr-2", loading && "animate-spin")}
+            />
+            Refresh
+          </button>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -75,56 +105,73 @@ export default function PHPTab() {
 
               {/* Versions Table */}
               <div className="border border-gray-200 rounded-lg overflow-hidden">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                        Version
-                      </th>
-                      <th className="px-4 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                        Status
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-100">
-                    {phpVersions.map((php) => (
-                      <tr
-                        key={php.version}
-                        className="hover:bg-gray-50 transition-colors"
-                      >
-                        <td className="px-4 py-1 whitespace-nowrap">
-                          <div className="flex items-center">
-                            <span className="text-sm font-semibold text-gray-900">
-                              PHP {php.version}
-                            </span>
-                            {php.fullVersion && (
-                              <span className="ml-2 text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                                {php.fullVersion}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-right">
-                          {php.status === "installed" ? (
-                            <div className="flex items-center justify-end">
-                              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                <CheckIcon className="h-3 w-3 mr-1" />
-                                Installed
-                              </span>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => handleInstall(php.version)}
-                              className="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
-                            >
-                              Install
-                            </button>
-                          )}
-                        </td>
+                {loading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <ArrowPathIcon className="h-8 w-8 text-blue-500 animate-spin" />
+                    <span className="ml-2 text-gray-600">
+                      Loading PHP versions...
+                    </span>
+                  </div>
+                ) : (
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                          Version
+                        </th>
+                        <th className="px-4 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                          Status
+                        </th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-100">
+                      {phpVersions.map((php) => (
+                        <tr
+                          key={php.version}
+                          className="hover:bg-gray-50 transition-colors"
+                        >
+                          <td className="px-4 py-1 whitespace-nowrap">
+                            <div className="flex items-center">
+                              <span className="text-sm font-semibold text-gray-900">
+                                PHP {php.version}
+                              </span>
+                              {php.full_version && (
+                                <span className="ml-2 text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                                  {php.full_version}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-right">
+                            {php.status === "installed" ? (
+                              <div className="flex items-center justify-end">
+                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                  <CheckIcon className="h-3 w-3 mr-1" />
+                                  Installed
+                                </span>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => handleInstall(php.version)}
+                                disabled={installing === php.version}
+                                className="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {installing === php.version ? (
+                                  <>
+                                    <ArrowPathIcon className="h-3 w-3 mr-1 animate-spin" />
+                                    Installing...
+                                  </>
+                                ) : (
+                                  "Install"
+                                )}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
           </div>
