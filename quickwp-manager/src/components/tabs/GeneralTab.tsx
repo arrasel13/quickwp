@@ -7,6 +7,8 @@ import {
   InformationCircleIcon,
   ExclamationTriangleIcon,
   FolderOpenIcon,
+  LockClosedIcon,
+  LockOpenIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend, Finding } from "../../lib/api";
@@ -153,6 +155,151 @@ export default function GeneralTab() {
         )}
       </div>
 
+
+      {/* https --------------------------------------------------------- */}
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex items-start gap-3">
+            {status?.https_ready ? (
+              <LockClosedIcon className="h-5 w-5 text-green-600 mt-0.5" />
+            ) : (
+              <LockOpenIcon className="h-5 w-5 text-gray-400 mt-0.5" />
+            )}
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">
+                {status?.https_ready ? "HTTPS is on" : "HTTPS is off"}
+              </h2>
+              <p className="text-xs text-gray-600">
+                {status?.https_ready ? (
+                  <>
+                    Sites open at{" "}
+                    <code className="bg-gray-100 px-1 rounded">
+                      https://name.{status?.tld}
+                    </code>{" "}
+                    with a real green lock.
+                  </>
+                ) : (
+                  <>Turn this on and QuickWP asks for your password once.</>
+                )}
+              </p>
+            </div>
+          </div>
+          {!status?.https_ready ? (
+            <button
+              onClick={() => void act(api.httpsEnable)}
+              disabled={busy}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-green-700 hover:bg-green-800 disabled:opacity-50"
+            >
+              <LockClosedIcon className="h-4 w-4" />
+              Turn on HTTPS
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                if (
+                  !confirm(
+                    "Remove the DNS resolver, the edge service and the certificate trust?\n\n" +
+                      "Your sites, their files and their databases are untouched.",
+                  )
+                )
+                  return;
+                void act(api.removeSystemChanges);
+              }}
+              disabled={busy}
+              className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+            >
+              Remove system changes
+            </button>
+          )}
+        </div>
+
+        {/* Four legs, each named. "Mostly on" is not a green lock, so the
+            panel shows which one is missing rather than one vague state. */}
+        <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {[
+            {
+              label: `DNS for .${status?.tld ?? "test"}`,
+              ok: status?.system?.resolver_installed ?? false,
+              detail: status?.system?.resolver_path ?? "",
+            },
+            {
+              label: "DNS server",
+              ok: status?.dns_running ?? false,
+              detail: "answers *.{tld} with 127.0.0.1",
+            },
+            {
+              label: "Edge on 443",
+              ok: status?.system?.daemon_running ?? false,
+              detail: "root LaunchDaemon",
+            },
+            {
+              label: "CA trusted",
+              ok: status?.system?.ca_trusted ?? false,
+              detail: "login keychain",
+            },
+          ].map((leg) => (
+            <div
+              key={leg.label}
+              className={clsx(
+                "rounded-lg border px-3 py-2",
+                leg.ok ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50",
+              )}
+            >
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={clsx(
+                    "h-1.5 w-1.5 rounded-full flex-shrink-0",
+                    leg.ok ? "bg-green-500" : "bg-gray-300",
+                  )}
+                />
+                <span
+                  className={clsx(
+                    "text-[11px] font-medium truncate",
+                    leg.ok ? "text-green-900" : "text-gray-600",
+                  )}
+                >
+                  {leg.label}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {status?.system?.ca_exists && !status?.system?.ca_trusted && (
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              onClick={() => void act(api.httpsTrustCa)}
+              disabled={busy}
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+            >
+              Trust the certificate authority
+            </button>
+            <span className="text-[11px] text-gray-500">
+              macOS asks for your login password, not an admin one.
+            </span>
+          </div>
+        )}
+
+        {status?.https_ready && (
+          <div className="mt-3">
+            <button
+              onClick={() => void act(api.httpsRegenerateCerts)}
+              disabled={busy}
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+            >
+              Regenerate certificates
+            </button>
+          </div>
+        )}
+
+        <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
+          The certificate authority signs only your local sites, its private key never leaves
+          this Mac, and trust lives in your <strong>login</strong> keychain rather than the
+          System one — so removing it needs no admin rights. Leaves are issued for under 398
+          days, because Safari rejects anything longer outright.
+        </p>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* doctor */}
         <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
@@ -217,10 +364,9 @@ export default function GeneralTab() {
       </div>
 
       <p className="text-[11px] text-gray-500 leading-relaxed max-w-3xl">
-        Sites are reachable through the edge on port {status?.edge_port ?? 18089}. A trusted{" "}
-        <code className="bg-gray-100 px-1 rounded">https://name.{settings?.tld ?? "test"}</code> with
-        no port number needs the DNS resolver, the local certificate authority and the privileged
-        edge — those are the next things to build, and each asks for permission once.
+        {status?.https_ready
+          ? `Requests arrive on 443, TLS terminates in the root edge, and the plaintext is forwarded to QuickWP's router on ${status?.edge_port}. The root process does nothing else.`
+          : `Sites are reachable through the edge on port ${status?.edge_port ?? 18089} until HTTPS is on.`}
       </p>
     </div>
   );

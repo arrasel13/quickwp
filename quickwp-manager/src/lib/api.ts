@@ -47,12 +47,26 @@ export interface ServiceState {
   port: number | null;
 }
 
+export interface SystemState {
+  resolver_installed: boolean;
+  resolver_path: string;
+  daemon_installed: boolean;
+  daemon_running: boolean;
+  ca_exists: boolean;
+  ca_trusted: boolean;
+  tld: string;
+}
+
 export interface StackStatus {
   edge_running: boolean;
   edge_port: number;
   pools: ServiceState[];
   site_count: number;
   tld: string;
+  dns_running: boolean;
+  /** All four legs up. Anything less is not a green lock. */
+  https_ready: boolean;
+  system: SystemState;
 }
 
 export interface Finding {
@@ -96,6 +110,14 @@ export const api = {
   stackStart: () => call<string>("stack_start"),
   stackStop: () => call<void>("stack_stop"),
   doctor: () => call<Finding[]>("doctor"),
+
+  // https
+  httpsEnable: () => call<string>("https_enable"),
+  httpsTrustCa: () => call<string>("https_trust_ca"),
+  httpsRegenerateCerts: () => call<string>("https_regenerate_certs"),
+  removeSystemChanges: () => call<string>("remove_system_changes"),
+  dnsStart: () => call<number>("dns_start"),
+  dnsStop: () => call<void>("dns_stop"),
 
   // php
   phpList: () => call<PhpVersion[]>("php_list"),

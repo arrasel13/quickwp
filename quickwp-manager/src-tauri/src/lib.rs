@@ -5,7 +5,7 @@
 //! and `quickwp site create` cannot drift apart -- they are the same code.
 
 use quickwp_core as core;
-use quickwp_core::{php, ports, runtime, server, site, Finding, Quickwp};
+use quickwp_core::{ca, php, ports, privileged, runtime, server, site, Finding, Quickwp};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
@@ -25,6 +25,9 @@ struct StackStatus {
     pools: Vec<core::supervisor::ServiceState>,
     site_count: usize,
     tld: String,
+    dns_running: bool,
+    https_ready: bool,
+    system: privileged::SystemState,
 }
 
 #[tauri::command]
@@ -34,12 +37,22 @@ fn stack_status(state: State<'_, AppState>) -> Res<StackStatus> {
         .filter(|m| runtime::is_installed(m, "fpm"))
         .map(|m| state.app.sup.state(&php::pool_name(m)))
         .collect();
+    let tld = state.app.db.tld()?;
+    let system = privileged::state(&tld);
     Ok(StackStatus {
         edge_running: state.edge.lock().unwrap().is_some(),
         edge_port: ports::NGINX,
         pools,
         site_count: site::list(&state.app.db)?.len(),
-        tld: state.app.db.tld()?,
+        dns_running: state.app.dns_running(),
+        // The green lock needs all four legs. Reporting fewer as "ready" is the
+        // lie this field exists to avoid.
+        https_ready: system.resolver_installed
+            && system.daemon_running
+            && system.ca_trusted
+            && state.app.dns_running(),
+        system,
+        tld,
     })
 }
 
@@ -55,6 +68,13 @@ fn stack_start(state: State<'_, AppState>) -> Res<String> {
     if edge.is_none() {
         *edge = Some(server::start(state.app.db.clone(), ports::NGINX)?);
     }
+    drop(edge);
+
+    // DNS is ours and unprivileged, so it starts with the stack rather than
+    // waiting on an admin prompt.
+    let _ = state.app.start_dns();
+    let _ = state.app.ensure_all_certs();
+
     Ok(format!("Serving on port {}", ports::NGINX))
 }
 
@@ -63,6 +83,7 @@ fn stack_stop(state: State<'_, AppState>) -> Res<()> {
     if let Some(e) = state.edge.lock().unwrap().take() {
         e.stop();
     }
+    state.app.stop_dns();
     state.app.sup.stop_all();
     Ok(())
 }
@@ -161,6 +182,109 @@ fn php_ini_set(state: State<'_, AppState>, minor: String, key: String, value: St
     }
 }
 
+
+// ---------------------------------------------------------------- https
+
+/// Where the edge binary sits, in a dev checkout or a bundled app.
+///
+/// Resolution is explicit rather than a single guess, because the failure mode
+/// otherwise is an admin prompt followed by "file not found" -- a password
+/// asked for nothing.
+fn edge_binary() -> std::path::PathBuf {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    for candidate in [
+        dir.join("quickwp-edge"),                    // dev: target/debug beside the app
+        dir.join("../Resources/quickwp-edge"),       // bundled: Contents/Resources
+        dir.join(format!("quickwp-edge-{}", std::env::consts::ARCH)),
+    ] {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join("quickwp-edge")
+}
+
+/// Turn on real HTTPS.
+///
+/// Three things happen, in the order that makes each safe to abandon:
+/// generate the CA (no privilege), trust it (login password), then write the
+/// resolver and load the edge daemon (admin password). Cancelling any step
+/// leaves the ones before it intact and nothing half-applied.
+#[tauri::command]
+fn https_enable(state: State<'_, AppState>) -> Res<String> {
+    let tld = state.app.db.tld()?;
+
+    if let Some(conflict) = privileged::resolver_conflict(&tld) {
+        return Err(format!(
+            "{conflict}\n\nQuit that tool, or choose a different TLD in Settings, \
+             then try again. QuickWP will not overwrite it without you deciding."
+        ));
+    }
+
+    ca::ensure_ca()?;
+    let issued = state.app.ensure_all_certs()?;
+
+    if !ca::is_trusted() {
+        ca::trust()?;
+    }
+
+    privileged::install_system(&tld, &edge_binary())?;
+
+    state.app.start_dns()?;
+
+    let mut edge = state.edge.lock().unwrap();
+    if edge.is_none() {
+        *edge = Some(server::start(state.app.db.clone(), ports::NGINX)?);
+    }
+
+    Ok(format!(
+        "HTTPS is on. {issued} certificate(s) issued.\nYour sites are now at https://<name>.{tld}"
+    ))
+}
+
+/// Trust (or re-trust) the CA. Login password, no admin.
+#[tauri::command]
+fn https_trust_ca() -> Res<String> {
+    ca::ensure_ca()?;
+    ca::trust()?;
+    Ok("The certificate authority is trusted. Reload any open tab.".into())
+}
+
+/// Re-issue every site certificate, whatever the cache thinks.
+#[tauri::command]
+fn https_regenerate_certs(state: State<'_, AppState>) -> Res<String> {
+    let sites = site::list(&state.app.db)?;
+    for s in &sites {
+        let mut names = vec![s.domain.clone()];
+        names.extend(s.aliases.iter().cloned());
+        ca::issue_for(&s.domain, &names)?;
+    }
+    Ok(format!("Re-issued {} certificate(s).", sites.len()))
+}
+
+/// Undo every system-level change. Sites and databases are untouched.
+#[tauri::command]
+fn remove_system_changes(state: State<'_, AppState>) -> Res<String> {
+    let tlds = state.app.tlds()?;
+    privileged::remove_system_changes(&tlds)?;
+    state.app.stop_dns();
+    Ok("Removed the DNS resolver, the edge service and the certificate trust. \
+        Your sites and their files are untouched."
+        .into())
+}
+
+#[tauri::command]
+fn dns_start(state: State<'_, AppState>) -> Res<u16> {
+    Ok(state.app.start_dns()?)
+}
+
+#[tauri::command]
+fn dns_stop(state: State<'_, AppState>) -> Res<()> {
+    state.app.stop_dns();
+    Ok(())
+}
+
 // ---------------------------------------------------------------- sites
 
 #[tauri::command]
@@ -182,6 +306,12 @@ fn site_create(state: State<'_, AppState>, new: site::NewSite) -> Res<site::Site
     if runtime::is_installed(&s.php_minor, "fpm") {
         let _ = php::start_pool(&state.app.sup, &s.php_minor);
     }
+    // Issue before the first request rather than on demand: a site whose
+    // certificate appears late shows an interstitial exactly once, which is
+    // the one time a person decides whether to trust the tool.
+    let _ = state.app.ensure_cert(&s);
+    // A site on a TLD we were not answering for needs DNS to learn it.
+    let _ = state.app.reload_dns();
     Ok(s)
 }
 
@@ -206,7 +336,14 @@ fn site_set_php(state: State<'_, AppState>, domain: String, minor: String) -> Re
 
 #[tauri::command]
 fn site_add_domain(state: State<'_, AppState>, domain: String, alias: String) -> Res<()> {
-    Ok(site::add_domain(&state.app.db, &domain, &alias)?)
+    site::add_domain(&state.app.db, &domain, &alias)?;
+    // Every path that changes the name set re-issues. Forgetting one leaves a
+    // valid certificate for yesterday's names and a warning on the new one.
+    if let Some(s) = site::find(&state.app.db, &domain)? {
+        state.app.ensure_cert(&s)?;
+    }
+    state.app.reload_dns()?;
+    Ok(())
 }
 
 /// The URL that actually reaches a site today.
@@ -216,17 +353,22 @@ fn site_add_domain(state: State<'_, AppState>, domain: String, alias: String) ->
 /// link that goes nowhere.
 #[tauri::command]
 fn site_url(state: State<'_, AppState>, _domain: String) -> Res<String> {
-    let _ = state;
-    Ok(format!("http://127.0.0.1:{}/", ports::NGINX))
+    let tld = state.app.db.tld()?;
+    let sys = privileged::state(&tld);
+    if sys.resolver_installed && sys.daemon_running {
+        Ok(format!("https://{_domain}/"))
+    } else {
+        // Reporting https://<domain> before that resolves would be a link that
+        // goes nowhere.
+        Ok(format!("http://127.0.0.1:{}/", ports::NGINX))
+    }
 }
 
 #[tauri::command]
 fn site_open(state: State<'_, AppState>, domain: String) -> Res<()> {
-    // Host-based routing needs the Host header, which a browser derives from
-    // the URL, so this needs DNS. Until then, open the edge and say so.
-    let _ = (&state, &domain);
+    let url = site_url(state, domain)?;
     std::process::Command::new("/usr/bin/open")
-        .arg(format!("http://127.0.0.1:{}/", ports::NGINX))
+        .arg(url)
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -269,6 +411,12 @@ pub fn run() {
             stack_start,
             stack_stop,
             doctor,
+            https_enable,
+            https_trust_ca,
+            https_regenerate_certs,
+            remove_system_changes,
+            dns_start,
+            dns_stop,
             php_list,
             php_install,
             php_uninstall,
@@ -298,6 +446,7 @@ pub fn run() {
                     if let Some(e) = state.edge.lock().unwrap().take() {
                         e.stop();
                     }
+                    state.app.stop_dns();
                     state.app.sup.stop_all();
                 }
             }

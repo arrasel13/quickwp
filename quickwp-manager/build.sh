@@ -5,6 +5,10 @@
 
 set -e
 
+# The privileged edge must be built before the app bundle
+# so `tauri build` can copy it into the .app.
+cargo build --release -p quickwp-edge --manifest-path src-tauri/Cargo.toml
+
 echo "🚀 QuickWP Manager Build Script"
 echo "================================"
 

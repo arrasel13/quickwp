@@ -6,7 +6,7 @@ authors = ["QuickWP"]
 edition = "2021"
 
 [workspace]
-members = ["core"]
+members = ["core", "edge"]
 
 [lib]
 name = "quickwp_manager_lib"

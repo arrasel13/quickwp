@@ -42,7 +42,7 @@
     "category": "DeveloperTool",
     "shortDescription": "WordPress development environment manager",
     "longDescription": "A desktop application for managing WordPress sites with Laravel Herd and WP-CLI integration",
-    "copyright": "Copyright © 2024 QuickWP. All rights reserved.",
+    "copyright": "Copyright \u00a9 2024 QuickWP. All rights reserved.",
     "license": "MIT",
     "macOS": {
       "frameworks": [],
