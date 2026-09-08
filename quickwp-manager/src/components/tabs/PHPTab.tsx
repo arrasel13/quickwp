@@ -1,116 +1,157 @@
-import { useState, useEffect } from "react";
-import { CheckIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
+import { useEffect, useState } from "react";
+import {
+  CheckIcon,
+  ArrowPathIcon,
+  PlayIcon,
+  StopIcon,
+  ExclamationTriangleIcon,
+  TrashIcon,
+} from "@heroicons/react/24/outline";
 import clsx from "clsx";
-import { invoke } from "@tauri-apps/api/core";
+import { api, errorText, hasBackend, InstallProgress, PhpVersion } from "../../lib/api";
+import { useAsync } from "../../lib/useAsync";
 
-interface PHPVersion {
-  version: string;
-  full_version?: string;
-  status: "installed" | "available";
-}
+const INI_LABELS: Record<string, { title: string; hint: string }> = {
+  memory_limit: { title: "Memory limit", hint: "Large imports, page builders, WooCommerce" },
+  upload_max_filesize: { title: "Max upload size", hint: "Media uploads failing in WordPress" },
+  post_max_size: { title: "Max post size", hint: "Must be at least the upload size" },
+  max_execution_time: { title: "Max execution time", hint: "Long imports and migrations, in seconds" },
+  display_errors: { title: "Display errors", hint: "See the error instead of a white page" },
+  error_reporting: { title: "Error reporting", hint: "Which levels PHP reports" },
+};
 
 export default function PHPTab() {
-  const [phpVersions, setPhpVersions] = useState<PHPVersion[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [installing, setInstalling] = useState<string | null>(null);
-  const [notifyUpdates, setNotifyUpdates] = useState(true);
-  const [maxFileUploadSize, setMaxFileUploadSize] = useState("1024");
-  const [memoryLimit, setMemoryLimit] = useState("2048");
+  const { data: versions, error, loading, reload } = useAsync(() => api.phpList(), []);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [progress, setProgress] = useState<InstallProgress | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [ini, setIni] = useState<[string, string][]>([]);
 
-  // Fetch PHP versions on component mount
   useEffect(() => {
-    fetchPhpVersions();
+    let un: (() => void) | undefined;
+    void api.onInstallProgress(setProgress).then((f) => {
+      un = f as () => void;
+    });
+    return () => un?.();
   }, []);
 
-  const fetchPhpVersions = async () => {
+  // Default the ini editor to whichever version is installed and current.
+  useEffect(() => {
+    if (!selected && versions?.length) {
+      const first = versions.find((v) => v.installed && v.is_default) ?? versions.find((v) => v.installed);
+      if (first) setSelected(first.minor);
+    }
+  }, [versions, selected]);
+
+  useEffect(() => {
+    if (!selected) return;
+    api.phpIniGet(selected).then(setIni).catch(() => setIni([]));
+  }, [selected]);
+
+  const act = async (label: string, fn: () => Promise<unknown>) => {
+    setBusy(label);
+    setNotice(null);
     try {
-      setLoading(true);
-      const versions = await invoke<PHPVersion[]>("get_php_versions");
-      setPhpVersions(versions);
-    } catch (error) {
-      console.error("Failed to fetch PHP versions:", error);
-      // Fallback to static data if backend fails
-      setPhpVersions([
-        { version: "8.5", status: "available" },
-        { version: "8.4", status: "available" },
-        { version: "8.3", status: "available" },
-        { version: "8.2", status: "available" },
-        { version: "8.1", status: "available" },
-        { version: "8.0", status: "available" },
-        { version: "7.4", status: "available" },
-      ]);
+      const r = await fn();
+      if (typeof r === "string") setNotice(r);
+      await reload();
+    } catch (e) {
+      setNotice(errorText(e));
     } finally {
-      setLoading(false);
+      setBusy(null);
+      setProgress(null);
     }
   };
 
-  const handleInstall = async (version: string) => {
-    try {
-      setInstalling(version);
-      const result = await invoke<{
-        success: boolean;
-        stdout: string;
-        stderr: string;
-      }>("install_php_version", { version });
-
-      if (result.success) {
-        // Refresh the PHP versions list after successful installation
-        await fetchPhpVersions();
-        alert(`PHP ${version} installed successfully!`);
-      } else {
-        alert(
-          `Failed to install PHP ${version}: ${result.stderr || result.stdout}`
-        );
-      }
-    } catch (error) {
-      console.error(`Failed to install PHP ${version}:`, error);
-      alert(
-        `Failed to install PHP ${version}. Make sure Laravel Herd is installed.`
-      );
-    } finally {
-      setInstalling(null);
-    }
-  };
+  if (!hasBackend) {
+    return (
+      <div className="max-w-6xl mx-auto p-6">
+        <div className="border border-amber-200 bg-amber-50 rounded-lg p-5 max-w-xl">
+          <h2 className="text-sm font-semibold text-amber-900 mb-1">No backend behind this window</h2>
+          <p className="text-xs text-amber-800 leading-relaxed">
+            You are viewing QuickWP in a browser. PHP versions, pools and sites all live in the
+            Rust backend, so run <code className="bg-amber-100 px-1 rounded">npm run tauri dev</code>{" "}
+            to see real data.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-6xl mx-auto p-4">
       <div className="space-y-4">
-        {/* Header */}
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-gray-900">PHP</h1>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">PHP</h1>
+            <p className="text-xs text-gray-600">
+              One pool per version, shared by every site on it.
+            </p>
+          </div>
           <button
-            onClick={fetchPhpVersions}
+            onClick={() => void reload()}
             disabled={loading}
-            className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-50"
           >
-            <ArrowPathIcon
-              className={clsx("h-4 w-4 mr-2", loading && "animate-spin")}
-            />
+            <ArrowPathIcon className={clsx("h-4 w-4 mr-2", loading && "animate-spin")} />
             Refresh
           </button>
         </div>
 
+        {notice && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900 whitespace-pre-wrap">
+            {notice}
+          </div>
+        )}
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-900">
+            {error}
+          </div>
+        )}
+        {progress && (
+          <div className="rounded-lg border border-gray-200 bg-white px-4 py-3">
+            <div className="flex items-center justify-between text-xs text-gray-700 mb-2">
+              <span>{progress.component}</span>
+              <span className="tabular-nums">
+                {(progress.received / 1048576).toFixed(1)} MB
+                {progress.total ? ` / ${(progress.total / 1048576).toFixed(1)} MB` : ""}
+              </span>
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-gray-200 overflow-hidden">
+              {/* No content-length means no honest percentage, so the bar stays
+                  indeterminate rather than showing a plausible false number. */}
+              <div
+                className={clsx(
+                  "h-full bg-blue-600",
+                  !progress.total && "w-1/3 animate-pulse",
+                )}
+                style={
+                  progress.total
+                    ? { width: `${Math.min(100, (progress.received / progress.total) * 100)}%` }
+                    : undefined
+                }
+              />
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Available Versions */}
+          {/* ---------------------------------------------- versions */}
           <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
             <div className="p-4">
               <div className="mb-3">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  Available Versions
-                </h2>
+                <h2 className="text-lg font-semibold text-gray-900">Versions</h2>
                 <p className="text-gray-600 text-xs">
-                  Install, update and manage PHP versions for your projects
+                  Each is downloaded on demand and verified against a pinned checksum.
                 </p>
               </div>
 
-              {/* Versions Table */}
               <div className="border border-gray-200 rounded-lg overflow-hidden">
                 {loading ? (
                   <div className="flex items-center justify-center py-8">
-                    <ArrowPathIcon className="h-8 w-8 text-blue-500 animate-spin" />
-                    <span className="ml-2 text-gray-600">
-                      Loading PHP versions...
-                    </span>
+                    <ArrowPathIcon className="h-6 w-6 text-blue-500 animate-spin" />
+                    <span className="ml-2 text-sm text-gray-600">Loading…</span>
                   </div>
                 ) : (
                   <table className="min-w-full divide-y divide-gray-200">
@@ -119,53 +160,143 @@ export default function PHPTab() {
                         <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
                           Version
                         </th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                          Pool
+                        </th>
                         <th className="px-4 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                          Status
+                          Actions
                         </th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-100">
-                      {phpVersions.map((php) => (
+                      {(versions ?? []).map((php: PhpVersion) => (
                         <tr
-                          key={php.version}
-                          className="hover:bg-gray-50 transition-colors"
+                          key={php.minor}
+                          onClick={() => php.installed && setSelected(php.minor)}
+                          className={clsx(
+                            "transition-colors",
+                            php.installed && "cursor-pointer hover:bg-gray-50",
+                            selected === php.minor && "bg-blue-50/60",
+                          )}
                         >
-                          <td className="px-4 py-1 whitespace-nowrap">
-                            <div className="flex items-center">
+                          <td className="px-4 py-2 whitespace-nowrap">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-sm font-semibold text-gray-900">
-                                PHP {php.version}
+                                PHP {php.minor}
                               </span>
-                              {php.full_version && (
-                                <span className="ml-2 text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                                  {php.full_version}
+                              <span className="text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded tabular-nums">
+                                {php.patch}
+                              </span>
+                              {php.is_default && (
+                                <span className="text-[10px] font-medium bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded">
+                                  DEFAULT
+                                </span>
+                              )}
+                              {/* Badged, never hidden: plenty of real client work
+                                  runs on a legacy codebase. */}
+                              {php.eol && (
+                                <span
+                                  title="Past its php.net security-end date"
+                                  className="inline-flex items-center gap-1 text-[10px] font-medium bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded"
+                                >
+                                  <ExclamationTriangleIcon className="h-3 w-3" />
+                                  EOL
                                 </span>
                               )}
                             </div>
                           </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-right">
-                            {php.status === "installed" ? (
-                              <div className="flex items-center justify-end">
-                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                  <CheckIcon className="h-3 w-3 mr-1" />
-                                  Installed
-                                </span>
-                              </div>
-                            ) : (
-                              <button
-                                onClick={() => handleInstall(php.version)}
-                                disabled={installing === php.version}
-                                className="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                {installing === php.version ? (
-                                  <>
-                                    <ArrowPathIcon className="h-3 w-3 mr-1 animate-spin" />
-                                    Installing...
-                                  </>
-                                ) : (
-                                  "Install"
+                          <td className="px-4 py-2 whitespace-nowrap">
+                            {php.installed ? (
+                              <span
+                                className={clsx(
+                                  "inline-flex items-center gap-1.5 text-xs",
+                                  php.running ? "text-green-800" : "text-gray-500",
                                 )}
-                              </button>
+                              >
+                                <span
+                                  className={clsx(
+                                    "h-1.5 w-1.5 rounded-full",
+                                    php.running ? "bg-green-500" : "bg-gray-300",
+                                  )}
+                                />
+                                <span className="tabular-nums">
+                                  {php.running ? php.port : "stopped"}
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-400">—</span>
                             )}
+                          </td>
+                          <td className="px-4 py-2 whitespace-nowrap text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              {!php.installed ? (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void act(php.minor, () => api.phpInstall(php.minor));
+                                  }}
+                                  disabled={busy !== null}
+                                  className="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                                >
+                                  {busy === php.minor ? (
+                                    <>
+                                      <ArrowPathIcon className="h-3 w-3 mr-1 animate-spin" />
+                                      Installing
+                                    </>
+                                  ) : (
+                                    "Install"
+                                  )}
+                                </button>
+                              ) : (
+                                <>
+                                  <button
+                                    title={php.running ? "Stop pool" : "Start pool"}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void act(php.minor, () =>
+                                        php.running
+                                          ? api.phpStop(php.minor)
+                                          : api.phpStart(php.minor),
+                                      );
+                                    }}
+                                    disabled={busy !== null}
+                                    className="p-1.5 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                                  >
+                                    {php.running ? (
+                                      <StopIcon className="h-3.5 w-3.5" />
+                                    ) : (
+                                      <PlayIcon className="h-3.5 w-3.5" />
+                                    )}
+                                  </button>
+                                  {!php.is_default && (
+                                    <button
+                                      title="Use for new sites"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void act(php.minor, () => api.phpSetDefault(php.minor));
+                                      }}
+                                      disabled={busy !== null}
+                                      className="p-1.5 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                                    >
+                                      <CheckIcon className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                  <button
+                                    title="Uninstall"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (!confirm(`Remove PHP ${php.minor}? Sites on it will stop serving.`))
+                                        return;
+                                      void act(php.minor, () => api.phpUninstall(php.minor));
+                                    }}
+                                    disabled={busy !== null}
+                                    className="p-1.5 rounded-md border border-gray-300 text-gray-500 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                                  >
+                                    <TrashIcon className="h-3.5 w-3.5" />
+                                  </button>
+                                </>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -173,144 +304,73 @@ export default function PHPTab() {
                   </table>
                 )}
               </div>
+
+              <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
+                Xdebug needs Zend symbols the static 8.0 build does not export, so the toggle is
+                offered on 8.1 and above only. PHP 7.4 has no portable build published upstream.
+              </p>
             </div>
           </div>
 
+          {/* ---------------------------------------------- php.ini */}
           <div className="space-y-4">
-            {/* PHP Update Notifications and Laravel Installer */}
-            <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
-              <div className="space-y-2">
-                {/* PHP Update Notifications */}
-
-                <div className="flex items-center justify-between mb-4 pb-4 border-b border-gray-200">
-                  <h3 className="text-sm font-semibold text-gray-900">
-                    PHP Update Notifications
-                  </h3>
-                  <button
-                    type="button"
-                    className={clsx(
-                      "relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2",
-                      notifyUpdates ? "bg-blue-600" : "bg-gray-200"
-                    )}
-                    role="switch"
-                    aria-checked={notifyUpdates}
-                    onClick={() => setNotifyUpdates(!notifyUpdates)}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className={clsx(
-                        "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
-                        notifyUpdates ? "translate-x-4" : "translate-x-0"
-                      )}
-                    />
-                  </button>
-                </div>
-
-                {/* Laravel Installer */}
-                <div className="">
-                  <h3 className="text-sm font-semibold text-gray-900">
-                    Laravel Installer
-                  </h3>
-                  <p className="text-xs text-gray-600">
-                    Latest version (5.17.0) installed
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* PHP Configuration Settings */}
             <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
               <div className="px-4 py-4">
-                <h3 className="text-lg font-semibold text-gray-900 mb-3">
-                  PHP Configuration
-                </h3>
-                <div className="grid grid-cols-1 gap-4">
-                  {/* Max File Upload Size */}
-                  <div className="border border-gray-200 rounded-lg p-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center">
-                        <div className="w-6 h-6 bg-blue-500 rounded flex items-center justify-center mr-2">
-                          <svg
-                            className="w-3 h-3 text-white"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-                            />
-                          </svg>
-                        </div>
-                        <div>
-                          <h4 className="text-sm font-semibold text-gray-900">
-                            Max File Upload Size
-                          </h4>
-                          <p className="text-xs text-gray-600">
-                            Configure max file upload size (MB)
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-2">
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Upload Size (MB)
-                      </label>
-                      <input
-                        type="text"
-                        value={maxFileUploadSize}
-                        onChange={(e) => setMaxFileUploadSize(e.target.value)}
-                        className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm"
-                        placeholder="1024"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Memory Limit */}
-                  <div className="border border-gray-200 rounded-lg p-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center">
-                        <div className="w-6 h-6 bg-green-500 rounded flex items-center justify-center mr-2">
-                          <svg
-                            className="w-3 h-3 text-white"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"
-                            />
-                          </svg>
-                        </div>
-                        <div>
-                          <h4 className="text-sm font-semibold text-gray-900">
-                            Memory Limit
-                          </h4>
-                          <p className="text-xs text-gray-600">
-                            Configure max memory usage (MB, -1 for unlimited)
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-2">
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Memory Limit (MB)
-                      </label>
-                      <input
-                        type="text"
-                        value={memoryLimit}
-                        onChange={(e) => setMemoryLimit(e.target.value)}
-                        className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm"
-                        placeholder="2048"
-                      />
-                    </div>
-                  </div>
+                <div className="flex items-baseline justify-between mb-1">
+                  <h3 className="text-lg font-semibold text-gray-900">Configuration</h3>
+                  {selected && (
+                    <span className="text-xs text-gray-500">PHP {selected}</span>
+                  )}
                 </div>
+                <p className="text-xs text-gray-600 mb-3">
+                  Edited per version, because one pool serves every site on it. Saving restarts
+                  that pool.
+                </p>
+
+                {!selected ? (
+                  <p className="text-xs text-gray-500">
+                    Install a version and select it to edit its settings.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3">
+                    {ini.map(([key, value]) => (
+                      <div key={key} className="border border-gray-200 rounded-lg p-3">
+                        <label className="block">
+                          <span className="text-sm font-semibold text-gray-900">
+                            {INI_LABELS[key]?.title ?? key}
+                          </span>
+                          <span className="block text-xs text-gray-600 mb-2">
+                            {INI_LABELS[key]?.hint ?? key}
+                          </span>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={value}
+                              onChange={(e) =>
+                                setIni((prev) =>
+                                  prev.map(([k, v]) => (k === key ? [k, e.target.value] : [k, v])),
+                                )
+                              }
+                              className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm font-mono"
+                            />
+                            <button
+                              onClick={() =>
+                                void act(`ini:${key}`, () =>
+                                  api.phpIniSet(selected, key, value),
+                                )
+                              }
+                              disabled={busy !== null}
+                              className="px-3 py-2 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </label>
+                        <p className="mt-1 text-[10px] text-gray-400 font-mono">{key}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

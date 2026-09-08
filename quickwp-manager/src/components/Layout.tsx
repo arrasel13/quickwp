@@ -8,7 +8,6 @@ import {
   EnvelopeIcon,
   CircleStackIcon,
   BugAntIcon,
-  StarIcon,
   CommandLineIcon,
   Square3Stack3DIcon,
   KeyIcon,
@@ -32,18 +31,17 @@ const tabs = [
     name: "Expose",
     icon: RocketLaunchIcon,
     component: GeneralTab,
-    badge: "Pro",
+    badge: "Soon",
   },
   {
     name: "Services",
     icon: CircleStackIcon,
     component: GeneralTab,
-    badge: "Pro",
+    badge: "Soon",
   },
-  { name: "Mail", icon: EnvelopeIcon, component: GeneralTab, badge: "Pro" },
-  { name: "Dumps", icon: CircleStackIcon, component: GeneralTab, badge: "Pro" },
-  { name: "Debugger", icon: BugAntIcon, component: GeneralTab, badge: "Pro" },
-  { name: "Herd Pro", icon: StarIcon, component: GeneralTab },
+  { name: "Mail", icon: EnvelopeIcon, component: GeneralTab, badge: "Soon" },
+  { name: "Dumps", icon: CircleStackIcon, component: GeneralTab, badge: "Soon" },
+  { name: "Debugger", icon: BugAntIcon, component: GeneralTab, badge: "Soon" },
   { name: "Shortcuts", icon: CommandLineIcon, component: GeneralTab },
   { name: "Integrations", icon: Square3Stack3DIcon, component: GeneralTab },
   {
@@ -83,7 +81,7 @@ export default function Layout() {
                     <span className="truncate">{tab.name}</span>
                   </div>
                   {tab.badge && (
-                    <span className="bg-red-500 text-white text-[8px] px-1.5 py-0.25 font-medium flex-shrink-0 rounded-lg">
+                    <span className="bg-gray-200 text-gray-600 text-[8px] px-1.5 py-0.5 font-medium flex-shrink-0 rounded">
                       {tab.badge}
                     </span>
                   )}

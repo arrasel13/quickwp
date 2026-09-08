@@ -4,13 +4,20 @@ A modern desktop application for managing WordPress development environments, bu
 
 ## Features
 
-- **Site Management**: Create, manage, and monitor WordPress sites
-- **PHP Version Management**: Install and switch between different PHP versions
-- **Node.js Management**: Install and manage Node.js versions
-- **Laravel Herd Integration**: Seamless integration with Laravel Herd
-- **WP-CLI Integration**: Built-in WordPress CLI functionality
-- **Real-time Updates**: Live monitoring without manual refresh
-- **Cross-platform**: Works on macOS, Windows, and Linux
+- **Owns its stack**: PHP and friends are downloaded on demand and pinned by
+  SHA-256. No Herd, no Docker, no VM.
+- **Site management**: create sites, or link a folder you already have --
+  a linked folder is never copied, moved or deleted, not even when you delete
+  the site.
+- **Per-site PHP**: one php-fpm pool per version, switchable per site without
+  regenerating any config.
+- **Per-site stop/start**: a stopped site answers its own 503 rather than
+  falling through to a neighbour.
+- **php.ini editor**: a whitelist of the directives local development actually
+  needs, edited per version, validated before it can break a pool.
+
+macOS on Apple Silicon today. The platform-specific parts are isolated;
+Windows and Linux are not built.
 
 ## Tech Stack
 
@@ -26,8 +33,14 @@ Before running this project, make sure you have:
 
 - [Node.js](https://nodejs.org/) (version 18 or higher)
 - [Rust](https://rustup.rs/) (latest stable version)
-- [Laravel Herd](https://herd.laravel.com/) (for WordPress site management)
-- [WP-CLI](https://wp-cli.org/) (for WordPress command-line operations)
+
+That is the whole list. **QuickWP owns its own stack** -- it downloads PHP and
+the rest on demand, verifies each against a checksum compiled into the app, and
+supervises them itself. There is no Laravel Herd, no Docker, no VM, and nothing
+to install through Homebrew.
+
+An internet connection is needed the first time you use a component. A PHP
+version is about 30MB and is fetched once.
 
 ## Installation
 
@@ -51,9 +64,25 @@ Before running this project, make sure you have:
    ```
 
 4. Start the development server:
+
    ```bash
    npm run tauri dev
    ```
+
+### Verifying the stack yourself
+
+Two runnable proofs live in the core crate:
+
+```bash
+cd quickwp-manager/src-tauri/core
+cargo test                       # 14 tests, including a refused checksum
+cargo run --example spike        # download -> verify -> pool -> execute PHP
+cargo run --example serve        # create sites -> serve them over HTTP
+```
+
+`scripts/pin-runtimes.sh` regenerates the checksums in
+`core/src/runtime/pins.rs`. Hashes are always taken from the published asset,
+never from a local build.
 
 ## Building for Production
 

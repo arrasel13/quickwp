@@ -1,4 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { api, errorText } from "../../lib/api";
+import { useAsync } from "../../lib/useAsync";
 import { Tab, Dialog, Transition } from "@headlessui/react";
 import {
   GlobeAltIcon,
@@ -15,7 +17,6 @@ import {
   FolderIcon,
   CommandLineIcon,
   DocumentTextIcon,
-  ChartBarIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { Fragment } from "react";
@@ -57,70 +58,35 @@ interface ProjectOption {
 }
 
 export default function SitesTab() {
-  const [sites] = useState<WordPressSite[]>([
-    {
-      id: "1",
-      name: "devplugin.test",
-      url: "https://devplugin.test",
-      path: "~/Library/Application Support/Herd/config/valet/Sites/devp...",
-      linkedPath: "~/Mine/wordpress_sites/devplugin",
-      phpVersion: "8.3",
-      nodeVersion: "22",
-      status: "running",
-    },
-    {
-      id: "2",
-      name: "gitdev.test",
-      url: "https://gitdev.test",
-      path: "~/Library/Application Support/Herd/config/valet/Sites/gitdev",
-      linkedPath: "~/Mine/wordpress_sites/gitdev",
-      phpVersion: "8.3",
-      nodeVersion: "22",
-      status: "running",
-    },
-    {
-      id: "3",
-      name: "newtest.test",
-      url: "https://newtest.test",
-      path: "~/Library/Application Support/Herd/config/valet/Sites/newtest",
-      linkedPath: "~/Mine/wordpress_sites/newtest",
-      phpVersion: "8.3",
-      nodeVersion: "22",
-      status: "running",
-    },
-    {
-      id: "4",
-      name: "templatelytest.test",
-      url: "https://templatelytest.test",
-      path: "~/Library/Application Support/Herd/config/valet/Sites/templatelytest",
-      linkedPath: "~/Mine/wordpress_sites/templatelytest",
-      phpVersion: "8.3",
-      nodeVersion: "22",
-      status: "running",
-    },
-    {
-      id: "5",
-      name: "wordpress_test.test",
-      url: "https://wordpress_test.test",
-      path: "~/Library/Application Support/Herd/config/valet/Sites/wordpress_test",
-      linkedPath: "~/Mine/wordpress_sites/wordpress_test",
-      phpVersion: "8.3",
-      nodeVersion: "22",
-      status: "running",
-    },
-    {
-      id: "6",
-      name: "wpdev.test",
-      url: "https://wpdev.test",
-      path: "~/Library/Application Support/Herd/config/valet/Sites/wpdev",
-      linkedPath: "~/Mine/wordpress_sites/wpdev",
-      phpVersion: "8.3",
-      nodeVersion: "22",
-      status: "running",
-    },
-  ]);
+  // Real sites, from the Rust backend. There is no mock data here any more:
+  // an empty list means you have not created a site yet, and says so.
+  const {
+    data: backendSites,
+    error: sitesError,
+    loading: sitesLoading,
+    reload: reloadSites,
+  } = useAsync(() => api.siteList(), []);
 
-  const [selectedSite, setSelectedSite] = useState<WordPressSite>(sites[0]);
+  const sites: WordPressSite[] = useMemo(
+    () =>
+      (backendSites ?? []).map((s) => ({
+        id: String(s.id),
+        name: s.domain,
+        url: `http://127.0.0.1:18089/`,
+        path: s.docroot,
+        // A linked site's folder is yours; QuickWP never copies or deletes it.
+        linkedPath: s.is_linked ? s.docroot : "—",
+        phpVersion: s.php_minor,
+        nodeVersion: "—",
+        status: s.enabled ? "running" : "stopped",
+      })),
+    [backendSites],
+  );
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedSite: WordPressSite | null =
+    sites.find((s) => s.id === selectedId) ?? sites[0] ?? null;
+  const setSelectedSite = (s: WordPressSite) => setSelectedId(s.id);
   const [showPreview, setShowPreview] = useState(true);
   const [showPhpDropdown, setShowPhpDropdown] = useState(false);
   const [showNodeDropdown, setShowNodeDropdown] = useState(false);
@@ -131,6 +97,7 @@ export default function SitesTab() {
   const [modalStep, setModalStep] = useState<"select" | "wordpress">("select");
   const [selectedProjectType, setSelectedProjectType] =
     useState<ProjectType | null>(null);
+  void selectedProjectType;
 
   // WordPress site creation states
   const [config, setConfig] = useState<SiteConfig>({
@@ -182,8 +149,14 @@ export default function SitesTab() {
   // Actions dropdown options
   const actionOptions = [
     { id: "terminal", name: "Terminal", icon: CommandLineIcon },
-    { id: "ide", name: "IDE", icon: CodeBracketIcon },
+    { id: "ide", name: "Open in browser", icon: CodeBracketIcon },
     { id: "logs", name: "Logs", icon: DocumentTextIcon },
+    {
+      id: "toggle",
+      name: selectedSite?.status === "running" ? "Stop site" : "Start site",
+      icon: selectedSite?.status === "running" ? StopIcon : PlayIcon,
+    },
+    { id: "delete", name: "Delete site", icon: XMarkIcon },
   ];
 
   const siteDetailTabs = [
@@ -263,57 +236,116 @@ export default function SitesTab() {
     }
   };
 
+  // Real creation. Steps are reported as they actually happen -- a progress bar
+  // that advances on a timer is a progress bar that lies.
   const simulateInstallation = async () => {
     setIsInstalling(true);
     setProgress(0);
     setTerminalOutput([]);
 
-    const steps = [
-      "Checking Laravel Herd status...",
-      "Creating project directory...",
-      "Downloading WordPress...",
-      "Setting up database...",
-      "Configuring wp-config.php...",
-      "Running WordPress installation...",
-      "Installing themes and plugins...",
-      "Finalizing setup...",
-    ];
+    const say = (line: string) => setTerminalOutput((prev) => [...prev, line]);
 
-    for (let i = 0; i < steps.length; i++) {
-      setCurrentStep(steps[i]);
-      setTerminalOutput((prev) => [...prev, `> ${steps[i]}`]);
-      setProgress(((i + 1) / steps.length) * 100);
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      setCurrentStep("Checking PHP " + config.phpVersion + "...");
+      say("> Checking PHP " + config.phpVersion);
+      setProgress(10);
+
+      const versions = await api.phpList();
+      const chosen = versions.find((v) => v.minor === config.phpVersion);
+      if (!chosen) throw new Error("PHP " + config.phpVersion + " is not a version QuickWP ships.");
+
+      if (!chosen.installed) {
+        setCurrentStep("Downloading PHP " + config.phpVersion + "...");
+        say("> PHP " + config.phpVersion + " is not installed yet — downloading (~30MB)");
+        await api.phpInstall(config.phpVersion);
+        say("  verified against its pinned checksum");
+      }
+      setProgress(55);
+
+      setCurrentStep("Creating the site...");
+      say("> Creating " + config.siteUrl);
+      const site = await api.siteCreate({
+        name: config.siteTitle || config.folderName,
+        domain: config.siteUrl,
+        kind: "php",
+        php_minor: config.phpVersion,
+        link_path: null,
+      });
+      setProgress(85);
+
+      setCurrentStep("Starting the PHP pool...");
+      say("> Starting the PHP " + site.php_minor + " pool");
+      const port = await api.phpStart(site.php_minor);
+      say("  pool listening on 127.0.0.1:" + port);
+
+      setCurrentStep("Starting the edge...");
+      await api.stackStart();
+      setProgress(100);
+
+      say("");
+      say("Site created.");
+      say("  docroot   " + site.docroot);
+      say("  php       " + site.php_minor);
+      say("");
+      say("Reachable through the edge on port 18089.");
+      say("A trusted https://" + site.domain + " needs DNS and the local CA — not built yet.");
+
+      await reloadSites();
+      setIsInstalling(false);
+      setCurrentStep("");
+      setTimeout(() => closeModal(), 2500);
+    } catch (e) {
+      say("");
+      say("Failed: " + errorText(e));
+      setIsInstalling(false);
+      setCurrentStep("");
+      setProgress(0);
     }
-
-    setTerminalOutput((prev) => [
-      ...prev,
-      "",
-      "✅ WordPress site created successfully!",
-      `🌐 Site URL: ${config.siteUrl}`,
-      `📁 Project Path: ~/Mine/wordpress_sites/${config.folderName}`,
-      "",
-      "You can now access your site and start developing!",
-    ]);
-
-    setIsInstalling(false);
-    setCurrentStep("");
-
-    // Close modal after successful installation
-    setTimeout(() => {
-      closeModal();
-    }, 2000);
   };
 
   // Version switching functions
-  const handlePhpVersionChange = (version: string) => {
-    setSelectedSite((prev) => ({ ...prev, phpVersion: version }));
+  const handlePhpVersionChange = async (version: string) => {
     setShowPhpDropdown(false);
+    if (!selectedSite) return;
+    try {
+      // A site stores a minor, never a patch. Switching regenerates no config
+      // and touches no certificate -- it just points at another pool.
+      await api.siteSetPhp(selectedSite.name, version);
+      await reloadSites();
+    } catch (e) {
+      alert(errorText(e));
+    }
   };
 
-  const handleNodeVersionChange = (version: string) => {
-    setSelectedSite((prev) => ({ ...prev, nodeVersion: version }));
+  const handleNodeVersionChange = (_version: string) => {
     setShowNodeDropdown(false);
+    // Node version management is not wired to a backend yet.
+  };
+
+  const handleToggleSite = async () => {
+    if (!selectedSite) return;
+    try {
+      await api.siteSetEnabled(selectedSite.name, selectedSite.status !== "running");
+      await reloadSites();
+    } catch (e) {
+      alert(errorText(e));
+    }
+  };
+
+  const handleDeleteSite = async () => {
+    if (!selectedSite) return;
+    const linked = (backendSites ?? []).find((s) => s.domain === selectedSite.name)?.is_linked;
+    const warning = linked
+      ? "Remove " + selectedSite.name + " from QuickWP?\n\nYour folder stays exactly where it is — QuickWP only forgets it."
+      : "Delete " + selectedSite.name + "?\n\nThis removes its docroot at " + selectedSite.path + ".";
+    if (!confirm(warning)) return;
+    try {
+      await api.siteDelete(selectedSite.name);
+      setSelectedId(null);
+      await reloadSites();
+    } catch (e) {
+      alert(errorText(e));
+    }
   };
 
   // Actions handler
@@ -322,13 +354,19 @@ export default function SitesTab() {
 
     switch (actionId) {
       case "terminal":
-        alert("Opening Terminal for " + selectedSite.name);
+        alert("A terminal in the docroot needs a PTY bridge — not built yet.\n\ncd " + selectedSite?.path);
         break;
       case "ide":
-        alert("Opening IDE for " + selectedSite.name);
+        void api.siteOpen(selectedSite!.name).catch((e) => alert(errorText(e)));
         break;
       case "logs":
-        alert("Opening Logs for " + selectedSite.name);
+        alert("Logs live in the QuickWP data directory — the log viewer is not built yet.");
+        break;
+      case "toggle":
+        void handleToggleSite();
+        break;
+      case "delete":
+        void handleDeleteSite();
         break;
       default:
         break;
@@ -354,6 +392,50 @@ export default function SitesTab() {
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, []);
+
+  // Every hook above this point runs unconditionally; these early returns are
+  // after the last one, so the order stays stable.
+  if (sitesError) {
+    return (
+      <div className="p-8">
+        <div className="max-w-xl border border-red-200 bg-red-50 rounded-lg p-5">
+          <h2 className="text-sm font-semibold text-red-900 mb-1">
+            Could not read your sites
+          </h2>
+          <p className="text-xs text-red-800 leading-relaxed">{sitesError}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (sitesLoading) {
+    return (
+      <div className="p-8 text-xs text-gray-500">Loading sites…</div>
+    );
+  }
+
+  if (sites.length === 0) {
+    return (
+      <div className="p-8">
+        <div className="max-w-xl">
+          <h2 className="text-lg font-semibold text-gray-900 mb-1">No sites yet</h2>
+          <p className="text-sm text-gray-600 mb-5">
+            Create your first site and QuickWP provisions a docroot, wires it to a
+            PHP pool, and serves it.
+          </p>
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            <PlusIcon className="h-4 w-4" />
+            New site
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!selectedSite) return null;
 
   return (
     <div className="h-screen flex flex-col">

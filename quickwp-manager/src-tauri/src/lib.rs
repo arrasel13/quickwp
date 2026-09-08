@@ -1,327 +1,307 @@
-use std::process::Command;
-use serde::{Deserialize, Serialize};
+//! Tauri shell.
+//!
+//! Deliberately thin: every command here delegates to `quickwp_core`. The UI
+//! and a future `quickwp` CLI both sit on that crate, so the New Site dialog
+//! and `quickwp site create` cannot drift apart -- they are the same code.
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CommandResult {
-    success: bool,
-    stdout: String,
-    stderr: String,
-    exit_code: Option<i32>,
+use quickwp_core as core;
+use quickwp_core::{php, ports, runtime, server, site, Finding, Quickwp};
+use std::sync::Mutex;
+use tauri::{Emitter, Manager, State};
+
+struct AppState {
+    app: Quickwp,
+    edge: Mutex<Option<server::Edge>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PHPVersion {
-    version: String,
-    full_version: Option<String>,
-    status: String, // "installed" or "available"
-}
+type Res<T> = Result<T, String>;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WordPressSiteConfig {
-    site_title: String,
-    folder_name: String,
-    site_url: String,
-    database_name: String,
-    wp_version: String,
-    enable_debug: bool,
-    admin_user: String,
-    admin_password: String,
-    admin_email: String,
-}
+// ---------------------------------------------------------------- stack
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+#[derive(serde::Serialize)]
+struct StackStatus {
+    edge_running: bool,
+    edge_port: u16,
+    pools: Vec<core::supervisor::ServiceState>,
+    site_count: usize,
+    tld: String,
 }
 
 #[tauri::command]
-async fn execute_command(command: String, args: Vec<String>) -> Result<CommandResult, String> {
-    let output = Command::new(&command)
-        .args(&args)
-        .output()
-        .map_err(|e| format!("Failed to execute command: {}", e))?;
-
-    Ok(CommandResult {
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
+fn stack_status(state: State<'_, AppState>) -> Res<StackStatus> {
+    let pools = runtime::PHP_MINORS
+        .iter()
+        .filter(|m| runtime::is_installed(m, "fpm"))
+        .map(|m| state.app.sup.state(&php::pool_name(m)))
+        .collect();
+    Ok(StackStatus {
+        edge_running: state.edge.lock().unwrap().is_some(),
+        edge_port: ports::NGINX,
+        pools,
+        site_count: site::list(&state.app.db)?.len(),
+        tld: state.app.db.tld()?,
     })
 }
 
 #[tauri::command]
-async fn check_prerequisites() -> Result<CommandResult, String> {
-    // Check if Laravel Herd is installed and running
-    let herd_check = Command::new("herd")
-        .arg("--version")
-        .output();
-
-    // Check if WP-CLI is installed
-    let wp_cli_check = Command::new("wp")
-        .arg("--version")
-        .output();
-
-    let mut messages = Vec::new();
-    let mut success = true;
-
-    match herd_check {
-        Ok(output) if output.status.success() => {
-            messages.push(format!("✅ Laravel Herd: {}", String::from_utf8_lossy(&output.stdout).trim()));
-        }
-        _ => {
-            messages.push("❌ Laravel Herd not found or not running".to_string());
-            success = false;
-        }
+fn stack_start(state: State<'_, AppState>) -> Res<String> {
+    // Start the default pool first: an edge with no PHP behind it serves 502s
+    // that look like the edge failing.
+    let default = state.app.db.default_php()?;
+    if runtime::is_installed(&default, "fpm") {
+        php::start_pool(&state.app.sup, &default)?;
     }
-
-    match wp_cli_check {
-        Ok(output) if output.status.success() => {
-            messages.push(format!("✅ WP-CLI: {}", String::from_utf8_lossy(&output.stdout).trim()));
-        }
-        _ => {
-            messages.push("❌ WP-CLI not found".to_string());
-            success = false;
-        }
+    let mut edge = state.edge.lock().unwrap();
+    if edge.is_none() {
+        *edge = Some(server::start(state.app.db.clone(), ports::NGINX)?);
     }
-
-    Ok(CommandResult {
-        success,
-        stdout: messages.join("\n"),
-        stderr: String::new(),
-        exit_code: if success { Some(0) } else { Some(1) },
-    })
+    Ok(format!("Serving on port {}", ports::NGINX))
 }
 
 #[tauri::command]
-async fn create_wordpress_site(config: WordPressSiteConfig) -> Result<CommandResult, String> {
-    // This is a placeholder for the actual WordPress site creation logic
-    // In a real implementation, this would:
-    // 1. Create the project directory
-    // 2. Download WordPress
-    // 3. Set up the database
-    // 4. Configure wp-config.php
-    // 5. Run the WordPress installation
-
-    let steps = vec![
-        "Checking Laravel Herd status...",
-        "Creating project directory...",
-        "Downloading WordPress...",
-        "Setting up database...",
-        "Configuring wp-config.php...",
-        "Running WordPress installation...",
-        "Installing themes and plugins...",
-        "Finalizing setup...",
-    ];
-
-    let output = format!(
-        "WordPress site creation initiated:\n{}\n✅ Site '{}' would be created at {}.test",
-        steps.join("\n"),
-        config.site_title,
-        config.folder_name
-    );
-
-    Ok(CommandResult {
-        success: true,
-        stdout: output,
-        stderr: String::new(),
-        exit_code: Some(0),
-    })
-}
-
-#[tauri::command]
-async fn open_site_in_browser(url: String) -> Result<(), String> {
-    let full_url = if url.starts_with("http") {
-        url
-    } else {
-        format!("http://{}", url)
-    };
-
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(&full_url)
-            .spawn()
-            .map_err(|e| format!("Failed to open browser: {}", e))?;
+fn stack_stop(state: State<'_, AppState>) -> Res<()> {
+    if let Some(e) = state.edge.lock().unwrap().take() {
+        e.stop();
     }
-
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("cmd")
-            .args(&["/C", "start", &full_url])
-            .spawn()
-            .map_err(|e| format!("Failed to open browser: {}", e))?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        Command::new("xdg-open")
-            .arg(&full_url)
-            .spawn()
-            .map_err(|e| format!("Failed to open browser: {}", e))?;
-    }
-
+    state.app.sup.stop_all();
     Ok(())
 }
 
 #[tauri::command]
-async fn get_php_versions() -> Result<Vec<PHPVersion>, String> {
-    let mut php_versions = Vec::new();
-
-    // List of common PHP versions to check
-    let versions_to_check = vec!["8.5", "8.4", "8.3", "8.2", "8.1", "8.0", "7.4"];
-
-    // First, try to get installed versions from Laravel Herd
-    let herd_output = Command::new("herd")
-        .arg("php")
-        .arg("--list")
-        .output();
-
-    let mut installed_versions = Vec::new();
-
-    if let Ok(output) = herd_output {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            // Parse the output to get installed versions
-            for line in stdout.lines() {
-                // Herd output typically shows versions like "php@8.3" or "8.3"
-                if let Some(version) = extract_php_version(&line) {
-                    installed_versions.push(version);
-                }
-            }
-        }
-    }
-
-    // If Herd doesn't work, try checking system PHP installations
-    if installed_versions.is_empty() {
-        for version in &versions_to_check {
-            let php_check = Command::new("php")
-                .arg(format!("{}", version))
-                .arg("--version")
-                .output();
-
-            if let Ok(output) = php_check {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    if let Some(full_version) = extract_full_php_version(&stdout) {
-                        installed_versions.push((version.to_string(), full_version));
-                    }
-                }
-            }
-        }
-
-        // Also check default PHP
-        let default_php = Command::new("php")
-            .arg("--version")
-            .output();
-
-        if let Ok(output) = default_php {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(full_version) = extract_full_php_version(&stdout) {
-                    let version = extract_major_minor_version(&full_version);
-                    if !installed_versions.iter().any(|(v, _)| v == &version) {
-                        installed_versions.push((version, full_version));
-                    }
-                }
-            }
-        }
-    }
-
-    // Build the response with all versions
-    for version in versions_to_check {
-        let installed = installed_versions.iter()
-            .find(|(v, _)| v == version);
-
-        if let Some((_, full_version)) = installed {
-            php_versions.push(PHPVersion {
-                version: version.to_string(),
-                full_version: Some(full_version.clone()),
-                status: "installed".to_string(),
-            });
-        } else {
-            php_versions.push(PHPVersion {
-                version: version.to_string(),
-                full_version: None,
-                status: "available".to_string(),
-            });
-        }
-    }
-
-    Ok(php_versions)
+fn doctor(state: State<'_, AppState>) -> Res<Vec<Finding>> {
+    Ok(state.app.doctor())
 }
 
-fn extract_php_version(line: &str) -> Option<(String, String)> {
-    // Extract version from Herd output
-    // Example: "php@8.3" or "8.3.25"
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    for part in parts {
-        if part.contains("8.") || part.contains("7.") {
-            let version_str = part.replace("php@", "");
-            let version_parts: Vec<&str> = version_str.split('.').collect();
-            if version_parts.len() >= 2 {
-                let major_minor = format!("{}.{}", version_parts[0], version_parts[1]);
-                return Some((major_minor, version_str));
-            }
-        }
-    }
-    None
+// ------------------------------------------------------------------ php
+
+#[tauri::command]
+fn php_list(state: State<'_, AppState>) -> Res<Vec<php::PhpVersion>> {
+    let default = state.app.db.default_php()?;
+    Ok(php::list(&state.app.sup, &default))
 }
 
-fn extract_full_php_version(output: &str) -> Option<String> {
-    // Extract version from "php --version" output
-    // Example: "PHP 8.3.25 (cli) (built: ..."
-    for line in output.lines() {
-        if line.starts_with("PHP ") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                return Some(parts[1].to_string());
-            }
-        }
+/// Install a PHP minor. Progress is streamed as `php-install-progress`, so a
+/// ~30MB download is legible rather than a frozen button.
+#[tauri::command]
+async fn php_install(app: tauri::AppHandle, minor: String) -> Res<String> {
+    for kind in ["fpm", "cli"] {
+        let handle = app.clone();
+        let label = minor.clone();
+        runtime::install_php(&minor, kind, move |p| {
+            let _ = handle.emit(
+                "php-install-progress",
+                serde_json::json!({
+                    "minor": label,
+                    "component": p.component,
+                    "received": p.received,
+                    "total": p.total,
+                }),
+            );
+        })
+        .await?;
     }
-    None
-}
-
-fn extract_major_minor_version(full_version: &str) -> String {
-    let parts: Vec<&str> = full_version.split('.').collect();
-    if parts.len() >= 2 {
-        format!("{}.{}", parts[0], parts[1])
-    } else {
-        full_version.to_string()
-    }
+    Ok(format!("PHP {minor} installed"))
 }
 
 #[tauri::command]
-async fn install_php_version(version: String) -> Result<CommandResult, String> {
-    // Try to install using Laravel Herd
-    let output = Command::new("herd")
-        .arg("php")
-        .arg("install")
-        .arg(&version)
-        .output()
-        .map_err(|e| format!("Failed to execute herd command: {}", e))?;
+fn php_uninstall(minor: String) -> Res<()> {
+    for kind in ["fpm", "cli"] {
+        if let Ok(d) = runtime::php_dir(&minor, kind) {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+    Ok(())
+}
 
-    Ok(CommandResult {
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
-    })
+#[tauri::command]
+fn php_start(state: State<'_, AppState>, minor: String) -> Res<u16> {
+    Ok(php::start_pool(&state.app.sup, &minor)?)
+}
+
+#[tauri::command]
+fn php_stop(state: State<'_, AppState>, minor: String) -> Res<bool> {
+    Ok(php::stop_pool(&state.app.sup, &minor)?)
+}
+
+/// The honest health check: ask the pool to execute PHP and report what it says.
+/// "Running" and "serving" are different facts.
+#[tauri::command]
+fn php_health(minor: String) -> Res<String> {
+    Ok(php::health(&minor)?)
+}
+
+#[tauri::command]
+fn php_set_default(state: State<'_, AppState>, minor: String) -> Res<()> {
+    if !runtime::PHP_MINORS.contains(&minor.as_str()) {
+        return Err(format!("unknown PHP version {minor}"));
+    }
+    state.app.db.set_setting("default_php", &minor)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn php_ini_get(minor: String) -> Res<Vec<(String, String)>> {
+    Ok(php::ini_settings(&minor))
+}
+
+/// Set a whitelisted directive, then restart that version's pool so it takes
+/// effect. Every site on that version restarts with it.
+#[tauri::command]
+fn php_ini_set(state: State<'_, AppState>, minor: String, key: String, value: String) -> Res<String> {
+    php::set_ini(&minor, &key, &value)?;
+    let was_running = state.app.sup.is_running(&php::pool_name(&minor));
+    if was_running {
+        php::stop_pool(&state.app.sup, &minor)?;
+        php::start_pool(&state.app.sup, &minor)?;
+        Ok(format!("{key} set. PHP {minor} pool restarted."))
+    } else {
+        Ok(format!(
+            "{key} set. PHP {minor} will use it — nothing was running to restart."
+        ))
+    }
+}
+
+// ---------------------------------------------------------------- sites
+
+#[tauri::command]
+fn site_list(state: State<'_, AppState>) -> Res<Vec<site::Site>> {
+    Ok(site::list(&state.app.db)?)
+}
+
+#[tauri::command]
+fn site_create(state: State<'_, AppState>, new: site::NewSite) -> Res<site::Site> {
+    let mut new = new;
+    if new.php_minor.is_empty() {
+        new.php_minor = state.app.db.default_php()?;
+    }
+    if !new.domain.contains('.') {
+        new.domain = format!("{}.{}", new.domain, state.app.db.tld()?);
+    }
+    let s = site::create(&state.app.db, &new)?;
+    // A site is useless without its pool up.
+    if runtime::is_installed(&s.php_minor, "fpm") {
+        let _ = php::start_pool(&state.app.sup, &s.php_minor);
+    }
+    Ok(s)
+}
+
+#[tauri::command]
+fn site_delete(state: State<'_, AppState>, domain: String) -> Res<()> {
+    Ok(site::delete(&state.app.db, &domain)?)
+}
+
+#[tauri::command]
+fn site_set_enabled(state: State<'_, AppState>, domain: String, enabled: bool) -> Res<()> {
+    Ok(site::set_enabled(&state.app.db, &domain, enabled)?)
+}
+
+#[tauri::command]
+fn site_set_php(state: State<'_, AppState>, domain: String, minor: String) -> Res<()> {
+    site::set_php(&state.app.db, &domain, &minor)?;
+    if runtime::is_installed(&minor, "fpm") {
+        let _ = php::start_pool(&state.app.sup, &minor);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn site_add_domain(state: State<'_, AppState>, domain: String, alias: String) -> Res<()> {
+    Ok(site::add_domain(&state.app.db, &domain, &alias)?)
+}
+
+/// The URL that actually reaches a site today.
+///
+/// Until the edge holds 443 with a trusted certificate, that is a loopback URL
+/// with a port. Reporting `https://<domain>` before that is true would be a
+/// link that goes nowhere.
+#[tauri::command]
+fn site_url(state: State<'_, AppState>, _domain: String) -> Res<String> {
+    let _ = state;
+    Ok(format!("http://127.0.0.1:{}/", ports::NGINX))
+}
+
+#[tauri::command]
+fn site_open(state: State<'_, AppState>, domain: String) -> Res<()> {
+    // Host-based routing needs the Host header, which a browser derives from
+    // the URL, so this needs DNS. Until then, open the edge and say so.
+    let _ = (&state, &domain);
+    std::process::Command::new("/usr/bin/open")
+        .arg(format!("http://127.0.0.1:{}/", ports::NGINX))
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ------------------------------------------------------------- settings
+
+#[tauri::command]
+fn settings_get(state: State<'_, AppState>) -> Res<serde_json::Value> {
+    Ok(serde_json::json!({
+        "tld": state.app.db.tld()?,
+        "default_php": state.app.db.default_php()?,
+        "root": core::paths::root().to_string_lossy(),
+        "sites_dir": core::paths::sites().to_string_lossy(),
+        "logs_dir": core::paths::logs().to_string_lossy(),
+    }))
+}
+
+#[tauri::command]
+fn settings_set(state: State<'_, AppState>, key: String, value: String) -> Res<()> {
+    if key == "tld" && (value.contains('.') || value.trim().is_empty()) {
+        return Err("A TLD is a single label, like `test` — no dots.".into());
+    }
+    state.app.db.set_setting(&key, &value)?;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let app = Quickwp::new().expect("QuickWP could not open its data directory");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(AppState {
+            app,
+            edge: Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
-            greet,
-            execute_command,
-            check_prerequisites,
-            create_wordpress_site,
-            open_site_in_browser,
-            get_php_versions,
-            install_php_version
+            stack_status,
+            stack_start,
+            stack_stop,
+            doctor,
+            php_list,
+            php_install,
+            php_uninstall,
+            php_start,
+            php_stop,
+            php_health,
+            php_set_default,
+            php_ini_get,
+            php_ini_set,
+            site_list,
+            site_create,
+            site_delete,
+            site_set_enabled,
+            site_set_php,
+            site_add_domain,
+            site_url,
+            site_open,
+            settings_get,
+            settings_set,
         ])
+        .on_window_event(|window, event| {
+            // Services outlive the app only where that is deliberate. Pools and
+            // the edge are ours, so quitting takes them down rather than
+            // leaving ports held by something with no window.
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    if let Some(e) = state.edge.lock().unwrap().take() {
+                        e.stop();
+                    }
+                    state.app.sup.stop_all();
+                }
+            }
+        })
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .expect("error while running QuickWP");
 }
