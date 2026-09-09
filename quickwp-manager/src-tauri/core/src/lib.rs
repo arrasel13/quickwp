@@ -125,12 +125,33 @@ impl Quickwp {
     pub fn doctor(&self) -> Vec<Finding> {
         let mut out = Vec::new();
 
+        // One conflict explains most of the others, so it is reported once and
+        // first rather than as three separate port warnings the user has to
+        // piece together.
+        let rival = ports::running_dev_tool();
+        if let Some(tool) = &rival {
+            out.push(Finding {
+                level: "warn".into(),
+                title: format!("{tool} is running and owns the ports QuickWP needs"),
+                detail: format!(
+                    "Only one local environment can serve https://name.test with no port \
+                     number, because only one thing can hold ports 80 and 443. Quit {tool} \
+                     before turning on HTTPS here, and start it again when you want it back. \
+                     Everything else is offset so both can stay installed."
+                ),
+            });
+        }
+
         for (label, port) in [
             ("Edge (HTTPS)", ports::EDGE_HTTPS),
             ("Edge (HTTP)", ports::EDGE_HTTP),
             ("Shared nginx", ports::NGINX),
         ] {
             if !ports::is_free(port) && !self.sup.is_running(label) {
+                // Already explained above; do not repeat it per port.
+                if rival.is_some() && (port == ports::EDGE_HTTP || port == ports::EDGE_HTTPS) {
+                    continue;
+                }
                 out.push(Finding {
                     level: "warn".into(),
                     title: format!("Port {port} is in use"),

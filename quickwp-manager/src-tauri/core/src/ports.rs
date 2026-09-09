@@ -75,7 +75,28 @@ pub fn is_free(port: u16) -> bool {
 ///
 /// A generic "failed to start" sends people to Google; naming the process and
 /// its pid sends them to the thing actually in the way.
+///
+/// The hard case is the one that matters most: ports 80 and 443 can only be
+/// held by root, and `lsof` run as a normal user cannot see another user's
+/// sockets -- so the naive answer is "unknown process" exactly when the user
+/// most needs a name. When that happens, look for the local-dev tools that
+/// plausibly hold those ports and say which of them is running.
 pub fn holder(port: u16) -> Option<String> {
+    if let Some(named) = holder_via_lsof(port) {
+        return Some(named);
+    }
+    // Nothing visible to us, but the port is taken: it belongs to another user,
+    // almost certainly root.
+    let mut hint = String::from("a process owned by another user (root, most likely)");
+    if let Some(tool) = running_dev_tool() {
+        hint = format!("{tool}, which holds this port as root");
+    }
+    Some(format!(
+        "{hint}. To see it: sudo lsof -nP -iTCP:{port} -sTCP:LISTEN"
+    ))
+}
+
+fn holder_via_lsof(port: u16) -> Option<String> {
     let out = std::process::Command::new("/usr/sbin/lsof")
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-F", "cp"])
         .output()
@@ -97,6 +118,32 @@ pub fn holder(port: u16) -> Option<String> {
         (Some(c), Some(p)) => Some(format!("{c} (pid {p})")),
         _ => None,
     }
+}
+
+/// Another local environment that could be holding 80/443.
+///
+/// Named rather than guessed at: only one tool can serve https://site.test with
+/// no port number, so knowing *which* one is in the way is the whole answer.
+pub fn running_dev_tool() -> Option<String> {
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-axo", "command="])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    for (needle, name) in [
+        ("dev.rexenv.rexenv", "rexenv"),
+        ("rexenv.app", "rexenv"),
+        ("Herd.app", "Laravel Herd"),
+        ("com.laravel.herd", "Laravel Herd"),
+        ("valet", "Laravel Valet"),
+        ("Local.app", "LocalWP"),
+        ("MAMP", "MAMP"),
+    ] {
+        if text.contains(needle) {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 /// Gate a start on its port being free.
@@ -129,6 +176,19 @@ mod tests {
     #[test]
     fn a_patch_where_a_minor_belongs_is_refused() {
         assert!(fpm_port("8.3.32").is_err());
+    }
+
+    #[test]
+    fn a_port_held_by_root_still_gets_a_useful_message() {
+        // lsof as a normal user sees nothing on a root-held port, and
+        // "unknown process" there is the least useful thing we could say.
+        let msg = holder(443).unwrap_or_default();
+        if !msg.is_empty() {
+            assert!(
+                msg.contains("sudo lsof") || msg.contains("pid "),
+                "the message must name the holder or say how to find it, got: {msg}"
+            );
+        }
     }
 
     #[test]

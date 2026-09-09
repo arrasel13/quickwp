@@ -68,11 +68,18 @@ pub fn resolver_conflict(tld: &str) -> Option<String> {
     if !p.exists() || resolver_is_ours(tld) {
         return None;
     }
-    Some(format!(
-        "{} already exists and does not point at QuickWP. Another tool \
-         (Valet, Herd, or one you uninstalled) owns .{tld} on this Mac.",
-        p.display()
-    ))
+    // Name the tool when it is running, rather than listing suspects. The
+    // resolver file itself cannot say who wrote it, so a running process is
+    // the best evidence available -- and when there is none, the honest answer
+    // is that something uninstalled left it behind.
+    let owner = match crate::ports::running_dev_tool() {
+        Some(tool) => format!("{tool} owns .{tld} on this Mac"),
+        None => format!(
+            "nothing is running that claims it, so a tool you uninstalled \
+             probably left it behind — .{tld} currently resolves nowhere"
+        ),
+    };
+    Some(format!("{} already exists and does not point at QuickWP. {owner}.", p.display()))
 }
 
 pub fn daemon_running() -> bool {
