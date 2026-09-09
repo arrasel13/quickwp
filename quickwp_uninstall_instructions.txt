@@ -1,0 +1,324 @@
+===============================================================================
+                     QUICKWP MANAGER - UNINSTALL INSTRUCTIONS
+===============================================================================
+
+How to remove QuickWP Manager from a Mac, completely and safely.
+
+Read the WARNING in section 6 before you delete anything. Two of the paths
+below can contain work that is yours and not QuickWP's.
+
+Platform: macOS (Apple Silicon). QuickWP is not built for Windows or Linux.
+
+===============================================================================
+1. WHAT QUICKWP PUTS ON YOUR MACHINE
+===============================================================================
+
+QuickWP touches four things outside its own folder, and each one is asked for
+at the moment it is first needed. Everything else lives in a single directory.
+
+  PRIVILEGED (installed only if you turned on HTTPS; needs an admin password)
+
+    /Library/LaunchDaemons/com.quickwp.manager.edge.plist
+        The root service that terminates TLS on ports 80 and 443.
+
+    /usr/local/libexec/quickwp-edge
+        The edge binary that daemon runs. Copied to a root-owned path on
+        purpose, so root never executes out of a user-writable directory.
+
+    /usr/local/etc/quickwp/certs
+        Per-site certificates. Deliberately outside your home folder: macOS
+        stops root daemons reading ~/Library, so certificates kept there
+        would load as zero certificates and every HTTPS connection would
+        close with no bytes.
+
+    /etc/resolver/<tld>
+        One file per TLD you have claimed (".test" by default), pointing
+        that TLD at QuickWP's DNS server on port 15354.
+
+  USER-LEVEL (no password needed)
+
+    ~/Library/LaunchAgents/com.quickwp.manager.dns.plist
+        Keeps the DNS server answering after you quit the app. This is not a
+        convenience. Once /etc/resolver/<tld> exists, lookups for that TLD go
+        nowhere else -- so with no DNS server running, every such name HANGS
+        instead of failing.
+
+    "QuickWP Local CA" in your LOGIN keychain
+        Trust for the local certificate authority. Login keychain, never the
+        System keychain: uninstalling must never require an admin password to
+        undo a trust decision you made as yourself.
+
+  APPLICATION AND DATA
+
+    /Applications/QuickWP Manager.app          the app itself, ~25 MB
+    ~/Library/Application Support/com.quickwp.manager
+        Everything QuickWP owns, in one tree. Typically 1-2 GB:
+          runtimes/     downloaded PHP, MySQL, Mailpit, cloudflared, WP-CLI
+          databases/    MySQL data directories -- YOUR DATABASES LIVE HERE
+          config/       php.ini per version, per-site certificates, and the
+                        CA private key (config/ca/quickwp-ca.key)
+          logs/         every log, QuickWP's own first
+          cache/        download cache
+          bin/          bundled WP-CLI
+          quickwp.sqlite3   the site list and settings
+          mailpit.db        caught mail
+    ~/Library/Caches/com.quickwp.manager       webview cache
+    ~/Library/WebKit/com.quickwp.manager       webview storage
+
+    ~/QuickWP/Sites (or wherever you pointed the sites folder)
+        Where new sites are provisioned. Deliberately somewhere you can find,
+        open in an editor and back up -- not buried in Application Support,
+        because burying a person's own code is what makes a tool hard to
+        leave.
+
+===============================================================================
+2. THE EASY WAY - LET THE APP UNDO ITS OWN SYSTEM CHANGES
+===============================================================================
+
+This is the tested path and the one to prefer. It knows which files are
+QuickWP's and which belong to some other tool.
+
+  1. Open QuickWP Manager.
+  2. Go to Settings -> General.
+  3. Click "Remove system changes".
+  4. Enter your password once.
+
+That single prompt boots out the root daemon, deletes its plist, deletes the
+edge binary, deletes the shared certificates directory, removes the DNS
+LaunchAgent, untrusts the CA in your login keychain, and removes the resolver
+files -- but ONLY resolver files that are actually QuickWP's. A resolver file
+another tool installed is left alone.
+
+It deliberately does not touch your sites, your databases, or the app's data
+directory. That is section 4.
+
+To confirm it worked, run:
+
+    "/Applications/QuickWP Manager.app/Contents/Resources/quickwp" system verify
+
+Every item there is measured, not assumed. It checks that the resolver
+actually resolves and the daemon actually serves, rather than reporting
+success because a file was written.
+
+Then continue at section 4.
+
+===============================================================================
+3. THE MANUAL WAY - IF THE APP WILL NOT LAUNCH
+===============================================================================
+
+Run these in Terminal, in order. Do not skip step 3a: deleting the data
+directory while MySQL is still writing to it can corrupt a database you
+might want to export later.
+
+  3a. Quit the app and stop its services
+
+      osascript -e 'quit app "QuickWP Manager"' 2>/dev/null
+      pkill -f 'com.quickwp.manager/runtimes'
+
+      That second line stops mysqld, php-fpm, Mailpit and any cloudflared
+      tunnel, all of which run out of the runtimes directory.
+
+  3b. Stop and remove the DNS agent   (no password)
+
+      launchctl bootout gui/$(id -u)/com.quickwp.manager.dns 2>/dev/null
+      rm -f ~/Library/LaunchAgents/com.quickwp.manager.dns.plist
+
+  3c. Untrust and remove the local CA   (login keychain will prompt)
+
+      security remove-trusted-cert \
+        ~/Library/Application\ Support/com.quickwp.manager/config/ca/quickwp-ca.pem
+      security delete-certificate -c "QuickWP Local CA" \
+        ~/Library/Keychains/login.keychain-db
+
+      remove-trusted-cert drops the trust setting; delete-certificate removes
+      the certificate itself. Run both, or a dead CA stays in your keychain.
+
+  3d. Remove the root-owned pieces   (one sudo)
+
+      sudo launchctl bootout system/com.quickwp.manager.edge
+      sudo rm -f /Library/LaunchDaemons/com.quickwp.manager.edge.plist
+      sudo rm -f /usr/local/libexec/quickwp-edge
+      sudo rm -rf /usr/local/etc/quickwp
+
+  3e. Remove the resolver files -- CAREFULLY
+
+      First look at what is there:
+
+          ls /etc/resolver
+          grep -r 'port' /etc/resolver
+
+      A file is QuickWP's ONLY if it says "port 15354". Never type a TLD
+      name here from memory -- let grep decide which files to remove:
+
+          # Shows exactly what would be deleted, and deletes nothing:
+          grep -l 'port 15354' /etc/resolver/* 2>/dev/null
+
+          # Delete only those:
+          grep -l 'port 15354' /etc/resolver/* 2>/dev/null \
+            | xargs -r sudo rm -f
+
+      *** Do not delete a resolver file with any other port number. ***
+      /etc/resolver is shared ground. Herd, Valet and rexenv (port 15353)
+      all install files here, and a TLD can change hands: ".test" is a
+      popular name, so the file serving it today may belong to whichever
+      tool claimed it last, not to QuickWP. Deleting someone else's file
+      breaks that tool's name resolution -- and because a resolver file
+      makes lookups go nowhere else, the symptom is names that HANG rather
+      than names that fail, which is a genuinely confusing thing to debug
+      weeks later.
+
+      If grep prints nothing, QuickWP holds no TLD and there is nothing to
+      remove in this step. That is a normal outcome, not a failure.
+
+      Then flush the DNS cache:
+
+          sudo dscacheutil -flushcache
+          sudo killall -HUP mDNSResponder
+
+===============================================================================
+4. REMOVE THE APPLICATION AND ITS DATA
+===============================================================================
+
+Do this after section 2 or section 3.
+
+  4a. Export anything you still want
+
+      Sites created by QuickWP are already normal folders on disk -- copy
+      them out of ~/QuickWP/Sites. Databases are not: they live inside the
+      data directory as MySQL files. To keep one, dump it BEFORE deleting:
+
+          "/Applications/QuickWP Manager.app/Contents/Resources/quickwp" \
+            site list
+
+      then use the app's terminal, or mysqldump from the runtime, to export.
+
+  4b. Delete the app and its data
+
+      rm -rf "/Applications/QuickWP Manager.app"
+      rm -rf ~/Library/Application\ Support/com.quickwp.manager
+      rm -rf ~/Library/Caches/com.quickwp.manager
+      rm -rf ~/Library/WebKit/com.quickwp.manager
+
+  4c. Delete the sites folder -- only if you are sure
+
+      rm -rf ~/QuickWP
+
+      Read section 6 first if you ever used "Link folder".
+
+===============================================================================
+5. REMOVE THE SOURCE CHECKOUT (DEVELOPERS ONLY)
+===============================================================================
+
+The cloned repository is separate from the installed app, and it is where
+almost all the disk usage is. On a working checkout:
+
+    quickwp-manager/src-tauri/target/    ~11 GB    cargo build cache
+    quickwp-manager/node_modules/        ~191 MB   npm install
+    quickwp-manager/src-tauri/bundled/   ~8.5 MB   staged binaries
+    quickwp-manager/dist/                ~684 KB   vite build
+
+To reclaim that space but keep the source:
+
+    cd /path/to/quickwp/quickwp-manager
+    rm -rf node_modules dist src-tauri/bundled
+    cargo clean --manifest-path src-tauri/Cargo.toml
+
+All four are regenerated by `npm install` and `npm run tauri build`. None of
+them is tracked in git -- a fresh clone is about 1.2 MB.
+
+To remove the checkout entirely:
+
+    rm -rf /path/to/quickwp
+
+===============================================================================
+6. WARNING - WHAT NOT TO DELETE BLINDLY
+===============================================================================
+
+  LINKED SITES ARE YOUR FOLDERS, NOT QUICKWP'S.
+  If you used "Link folder" to serve a project you already had, that folder
+  was never copied, moved or deleted -- not even when you deleted the site in
+  QuickWP. It is still wherever you keep your own work, and nothing in this
+  document should be pointed at it. Check the site list before you delete
+  anything:
+
+      "/Applications/QuickWP Manager.app/Contents/Resources/quickwp" site list
+
+  A CUSTOM SITES FOLDER.
+  ~/QuickWP/Sites is only the default. If you changed the sites directory in
+  Settings, step 4c is aimed at the wrong path -- and the right path may be
+  somewhere that also holds work QuickWP never managed.
+
+  DATABASES ARE INSIDE THE DATA DIRECTORY.
+  Deleting ~/Library/Application Support/com.quickwp.manager destroys every
+  MySQL database QuickWP created. Sites survive as files; their databases do
+  not. Dump anything you want first.
+
+  OTHER TOOLS' RESOLVER FILES.
+  Covered in 3e, and worth repeating: /etc/resolver is shared ground. Only
+  files containing "port 15354" belong to QuickWP, and a TLD you once gave
+  to QuickWP may since have been claimed by another tool. Identify files by
+  their port, never by their TLD name. The app's own "Remove system changes"
+  button already does exactly this, which is the best reason to prefer it.
+
+  SITES IMPORTED FROM HERD OR VALET.
+  The import is read-only against the source install -- it copies databases
+  and rewrites connection config behind a diff and a backup, and never
+  modifies the original. Removing QuickWP therefore leaves your Herd or Valet
+  installation exactly as it was. Do not "clean up" their files as part of
+  uninstalling this.
+
+===============================================================================
+7. VERIFY IT IS ALL GONE
+===============================================================================
+
+Run this. Every line should print "gone".
+
+    for p in \
+      "/Library/LaunchDaemons/com.quickwp.manager.edge.plist" \
+      "/usr/local/libexec/quickwp-edge" \
+      "/usr/local/etc/quickwp" \
+      "$HOME/Library/LaunchAgents/com.quickwp.manager.dns.plist" \
+      "/Applications/QuickWP Manager.app" \
+      "$HOME/Library/Application Support/com.quickwp.manager"; do
+      [ -e "$p" ] && echo "STILL THERE: $p" || echo "gone: $p"
+    done
+
+    # No QuickWP processes should be listed:
+    pgrep -fl 'quickwp|com.quickwp.manager' || echo "gone: no processes"
+
+    # No QuickWP resolver files (port 15354) should be listed:
+    grep -l 'port 15354' /etc/resolver/* 2>/dev/null || echo "gone: no resolvers"
+
+    # The CA should no longer be in your keychain:
+    security find-certificate -c "QuickWP Local CA" \
+      ~/Library/Keychains/login.keychain-db 2>/dev/null \
+      && echo "STILL THERE: CA in keychain" || echo "gone: CA"
+
+===============================================================================
+8. TROUBLESHOOTING
+===============================================================================
+
+  "A .test site still loads in my browser"
+      Browser DNS cache. Flush as in 3e, then quit the browser fully. Chrome
+      also keeps its own: visit chrome://net-internals/#dns and clear it.
+
+  "A .test name now hangs forever instead of failing"
+      A resolver file survived but its DNS server did not. Find it with
+      `grep -r port /etc/resolver` and remove the one on port 15354.
+
+  "Port 80 or 443 is still busy"
+      The daemon did not boot out. Check with:
+          sudo launchctl print system/com.quickwp.manager.edge
+      If it is still loaded, repeat step 3d. If it is gone, something else
+      holds the port -- `sudo lsof -nP -iTCP:443 -sTCP:LISTEN` will say what.
+
+  "Browsers still trust QuickWP certificates"
+      delete-certificate in 3c was skipped or failed. Open Keychain Access,
+      choose the login keychain, search "QuickWP", and delete what you find.
+
+  "launchctl bootout says: No such process"
+      Already removed. Harmless -- carry on with the next command.
+
+===============================================================================
+                                END OF DOCUMENT
+===============================================================================
