@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   PlayIcon,
   StopIcon,
@@ -31,6 +31,13 @@ export default function GeneralTab() {
   const [verified, setVerified] = useState<VerifyReport | null>(null);
   // Taking a TLD from another tool is a decision, never a side effect.
   const [takeover, setTakeover] = useState(false);
+  const [sitesDir, setSitesDir] = useState<string>("");
+
+  // Keep the input in step with what the backend reports, without clobbering
+  // an edit in progress.
+  useEffect(() => {
+    if (settings?.sites_dir && sitesDir === "") setSitesDir(settings.sites_dir);
+  }, [settings?.sites_dir]);
 
   const refreshAll = async () => {
     await Promise.all([reload(), reloadSettings(), reloadDoctor()]);
@@ -479,10 +486,48 @@ export default function GeneralTab() {
           <p className="text-xs text-gray-600 mb-3">
             One directory holds your sites, the downloaded runtimes and the logs.
           </p>
+          <div className="border border-gray-200 rounded-lg px-3 py-2 mb-2">
+            <label className="block">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                Sites folder
+              </span>
+              <span className="block text-[11px] text-gray-600 mb-1.5">
+                Where new sites are created. Existing sites stay where they are.
+              </span>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={sitesDir}
+                  onChange={(e) => setSitesDir(e.target.value)}
+                  placeholder={settings?.default_sites_dir ?? "~/QuickWP/Sites"}
+                  className="block w-full px-2 py-1.5 border border-gray-300 rounded-md text-[11px] font-mono focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                />
+                <button
+                  onClick={() => void act(() => api.settingsSet("sites_dir", sitesDir))}
+                  disabled={busy || !sitesDir.trim()}
+                  className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap"
+                >
+                  Save
+                </button>
+              </div>
+              {settings?.sites_dir !== settings?.default_sites_dir && (
+                <button
+                  onClick={() => {
+                    setSitesDir(settings?.default_sites_dir ?? "");
+                    void act(() => api.settingsSet("sites_dir", ""));
+                  }}
+                  disabled={busy}
+                  className="mt-1.5 text-[10px] text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                >
+                  Reset to {settings?.default_sites_dir}
+                </button>
+              )}
+            </label>
+          </div>
+
           <dl className="space-y-2 text-xs">
             {[
               ["Data directory", settings?.root],
-              ["Sites", settings?.sites_dir],
               ["Logs", settings?.logs_dir],
             ].map(([label, value]) => (
               <div key={label as string} className="border border-gray-200 rounded-lg px-3 py-2">

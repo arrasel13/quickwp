@@ -207,6 +207,7 @@ export interface Settings {
   default_php: string;
   root: string;
   sites_dir: string;
+  default_sites_dir: string;
   logs_dir: string;
 }
 
@@ -363,7 +364,7 @@ export const api = {
 
   // settings
   settingsGet: () => call<Settings>("settings_get"),
-  settingsSet: (key: string, value: string) => call<void>("settings_set", { key, value }),
+  settingsSet: (key: string, value: string) => call<string>("settings_set", { key, value }),
 
   onInstallProgress: (cb: (p: InstallProgress) => void) => {
     if (!hasBackend) return Promise.resolve(() => {});

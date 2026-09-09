@@ -194,6 +194,18 @@ fn php_ini_set(state: State<'_, AppState>, minor: String, key: String, value: St
 /// Resolution is explicit rather than a single guess, because the failure mode
 /// otherwise is an admin prompt followed by "file not found" -- a password
 /// asked for nothing.
+/// The bundled `quickwp` CLI, which the DNS agent and the tunnel guard run.
+fn cli_binary() -> std::path::PathBuf {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    for c in [dir.join("quickwp"), dir.join("../Resources/quickwp")] {
+        if c.exists() {
+            return c;
+        }
+    }
+    dir.join("quickwp")
+}
+
 fn edge_binary() -> std::path::PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
     let dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
@@ -251,7 +263,7 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
 
     // DNS first: the resolver file is useless if nothing is answering, and a
     // verify immediately after the install would fail on a race we created.
-    state.app.start_dns()?;
+    let _ = state.app.start_dns();
 
     let mut edge = state.edge.lock().unwrap();
     if edge.is_none() {
@@ -260,6 +272,20 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
     drop(edge);
 
     privileged::install_system(&tld, &edge_binary(), takeover)?;
+
+    // A user agent, so no second password. It is installed after the resolver
+    // exists, because the resolver is what makes running it necessary: from
+    // that moment, a .{tld} lookup that our DNS does not answer hangs.
+    privileged::install_dns_agent(&cli_binary())?;
+
+    // The shared certificate directory exists now, so move everything issued
+    // before it did -- otherwise every site created before this moment fails
+    // its handshake.
+    let migrated = ca::migrate_to_shared()?;
+    if migrated > 0 {
+        quickwp_core::log::write(&format!("migrated {migrated} certificate file(s) to the shared store"));
+    }
+    state.app.ensure_all_certs()?;
 
     // Do not claim success until it is measured. launchd needs a moment.
     let mut report = privileged::verify(&tld);
@@ -978,18 +1004,40 @@ fn settings_get(state: State<'_, AppState>) -> Res<serde_json::Value> {
         "tld": state.app.db.tld()?,
         "default_php": state.app.db.default_php()?,
         "root": core::paths::root().to_string_lossy(),
-        "sites_dir": core::paths::sites().to_string_lossy(),
+        "sites_dir": state.app.db.sites_dir()?.to_string_lossy(),
+        "default_sites_dir": core::paths::default_sites().to_string_lossy(),
         "logs_dir": core::paths::logs().to_string_lossy(),
     }))
 }
 
 #[tauri::command]
-fn settings_set(state: State<'_, AppState>, key: String, value: String) -> Res<()> {
-    if key == "tld" && (value.contains('.') || value.trim().is_empty()) {
-        return Err("A TLD is a single label, like `test` — no dots.".into());
+fn settings_set(state: State<'_, AppState>, key: String, value: String) -> Res<String> {
+    if key == "tld" {
+        if value.contains('.') || value.trim().is_empty() {
+            return Err("A TLD is a single label, like `test` — no dots.".into());
+        }
+        state.app.db.set_setting(&key, value.trim())?;
+        state.app.reload_dns()?;
+        return Ok(format!(
+            "New sites will use .{}. Existing sites keep the names they have.",
+            value.trim()
+        ));
     }
+
+    if key == "sites_dir" {
+        // Validated and created here rather than on first use, so a folder that
+        // cannot be written to is refused now instead of failing every future
+        // site creation.
+        let path = state.app.db.set_sites_dir(&value)?;
+        return Ok(format!(
+            "New sites will be created in {}. Existing sites stay where they are — \
+             QuickWP does not move your code because a preference changed.",
+            path.display()
+        ));
+    }
+
     state.app.db.set_setting(&key, &value)?;
-    Ok(())
+    Ok("Saved.".into())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1000,6 +1048,18 @@ pub fn run() {
     // previous crash is exactly the forgotten share this sweeps up.
     if let Err(e) = tunnel::sweep(&app.db, &app.sup) {
         quickwp_core::log::write(&format!("tunnel sweep failed at launch: {e}"));
+    }
+
+    // If our resolver is installed, .test lookups go to our DNS and nowhere
+    // else -- so a machine with the resolver but no server has names that hang.
+    // Repair that on launch rather than waiting for someone to press Start.
+    if let Ok(tld) = app.db.tld() {
+        if privileged::resolver_is_ours(&tld) && !privileged::dns_agent_running() {
+            let _ = privileged::install_dns_agent(&cli_binary());
+            if !privileged::dns_agent_running() {
+                let _ = app.start_dns();
+            }
+        }
     }
 
     tauri::Builder::default()

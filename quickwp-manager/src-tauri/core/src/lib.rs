@@ -66,12 +66,21 @@ impl Quickwp {
     }
 
     pub fn dns_running(&self) -> bool {
+        if privileged::dns_agent_running() {
+            return true;
+        }
         self.dns.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
     pub fn start_dns(&self) -> Result<u16> {
         let mut guard = self.dns.lock().map_err(|_| Error::other("dns lock poisoned"))?;
         if guard.is_some() {
+            return Ok(ports::DNS);
+        }
+        // The LaunchAgent owns DNS when it is installed. Starting a second
+        // server would just lose the port race and report a failure that is
+        // actually the correct state.
+        if privileged::dns_agent_running() {
             return Ok(ports::DNS);
         }
         let server = dns::start(ports::DNS, self.tlds()?)?;
@@ -90,6 +99,15 @@ impl Quickwp {
 
     /// Restart DNS so a newly added TLD is answered without a relaunch.
     pub fn reload_dns(&self) -> Result<()> {
+        if privileged::dns_agent_running() {
+            // The agent reads the TLD set at startup, so bouncing it is how a
+            // new TLD becomes answerable. launchd brings it straight back.
+            let uid = unsafe { libc::getuid() };
+            let _ = std::process::Command::new("/bin/launchctl")
+                .args(["kickstart", "-k", &format!("gui/{uid}/{}", privileged::DNS_AGENT_LABEL)])
+                .output();
+            return Ok(());
+        }
         if self.dns_running() {
             self.stop_dns();
             self.start_dns()?;

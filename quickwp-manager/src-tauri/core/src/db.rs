@@ -164,6 +164,55 @@ CREATE TABLE IF NOT EXISTS settings (
         })
     }
 
+    /// Where new sites are provisioned. Empty means the default.
+    pub fn sites_dir(&self) -> Result<std::path::PathBuf> {
+        Ok(match self.setting("sites_dir")? {
+            Some(v) if !v.trim().is_empty() => std::path::PathBuf::from(v.trim()),
+            _ => crate::paths::default_sites(),
+        })
+    }
+
+    /// Move the folder new sites are created in.
+    ///
+    /// Existing sites are NOT moved: each one records its own docroot, so they
+    /// keep serving from where they are. Moving someone's code because they
+    /// changed a preference is not a thing a tool should do quietly.
+    pub fn set_sites_dir(&self, dir: &str) -> Result<std::path::PathBuf> {
+        let dir = dir.trim();
+        let path = if dir.is_empty() {
+            crate::paths::default_sites()
+        } else {
+            let expanded = match dir.strip_prefix("~/") {
+                Some(rest) => dirs::home_dir()
+                    .map(|h| h.join(rest))
+                    .unwrap_or_else(|| std::path::PathBuf::from(dir)),
+                None => std::path::PathBuf::from(dir),
+            };
+            if !expanded.is_absolute() {
+                return Err(crate::Error::other(
+                    "Give a full path, starting with / or ~/.",
+                ));
+            }
+            expanded
+        };
+
+        std::fs::create_dir_all(&path).map_err(|e| crate::Error::Io {
+            path: path.clone(),
+            source: e,
+        })?;
+        // Refuse a folder we cannot write into, before it becomes the place
+        // every future site fails to be created in.
+        let probe = path.join(".quickwp-write-test");
+        std::fs::write(&probe, b"ok").map_err(|e| crate::Error::Io {
+            path: path.clone(),
+            source: e,
+        })?;
+        let _ = std::fs::remove_file(&probe);
+
+        self.set_setting("sites_dir", &path.to_string_lossy())?;
+        Ok(path)
+    }
+
     /// The default TLD for new sites. `.test` is reserved by RFC 6761 for
     /// exactly this, which is why it is the default rather than a brand.
     pub fn tld(&self) -> Result<String> {
@@ -205,5 +254,31 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         assert_eq!(db.tld().unwrap(), "test");
         assert_eq!(db.default_php().unwrap(), "8.3");
+    }
+
+    #[test]
+    fn sites_default_somewhere_a_person_can_find() {
+        let db = Db::open_in_memory().unwrap();
+        let d = db.sites_dir().unwrap();
+        assert!(d.ends_with("QuickWP/Sites"), "got {}", d.display());
+        assert!(
+            !d.to_string_lossy().contains("Application Support"),
+            "a user's own code does not belong buried in Application Support"
+        );
+    }
+
+    #[test]
+    fn a_relative_sites_dir_is_refused() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.set_sites_dir("some/relative/path").is_err());
+    }
+
+    #[test]
+    fn a_tilde_path_is_expanded_and_created() {
+        let db = Db::open_in_memory().unwrap();
+        let p = db.set_sites_dir("~/QuickWP/SitesTest").unwrap();
+        assert!(p.is_absolute());
+        assert!(p.exists(), "the folder must exist before sites are put in it");
+        let _ = std::fs::remove_dir_all(&p);
     }
 }

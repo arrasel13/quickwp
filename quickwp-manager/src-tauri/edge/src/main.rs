@@ -225,6 +225,7 @@ impl SniResolver {
             };
             let key_path = p.with_extension("key");
             let Some(ck) = load_pair(&p, &key_path) else {
+                eprintln!("edge: could not load {} (+ .key)", p.display());
                 continue;
             };
             let ck = Arc::new(ck);
@@ -234,6 +235,10 @@ impl SniResolver {
                 map.insert(name.to_ascii_lowercase(), ck.clone());
             }
         }
+        // Worth a line: a resolver with no certificates accepts TLS
+        // connections and then closes them with no bytes, which looks like a
+        // network fault rather than a missing file.
+        eprintln!("edge: loaded {} certificate name(s) from {}", map.len(), self.dir.display());
         *self.certs.write().unwrap() = map;
     }
 }

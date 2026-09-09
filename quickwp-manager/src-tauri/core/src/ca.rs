@@ -37,8 +37,54 @@ pub fn ca_cert_path() -> PathBuf {
 pub fn ca_key_path() -> PathBuf {
     ca_dir().join("quickwp-ca.key")
 }
+/// Where leaf certificates live.
+///
+/// The shared location when it exists, because that is the only place the root
+/// edge can read from. Falls back to the app's own directory before the system
+/// install has run -- and for tests, which never involve a root daemon.
 pub fn certs_dir() -> PathBuf {
+    if paths::shared_certs_usable() {
+        return paths::shared_certs();
+    }
+    local_certs_dir()
+}
+
+pub fn local_certs_dir() -> PathBuf {
     paths::config().join("certs")
+}
+
+/// Copy any certificates issued before the shared location existed.
+///
+/// Without this, every site created before turning on HTTPS would have a
+/// certificate the edge cannot see, and would fail its TLS handshake with no
+/// explanation.
+pub fn migrate_to_shared() -> Result<usize> {
+    if !paths::shared_certs_usable() {
+        return Ok(0);
+    }
+    let from = local_certs_dir();
+    let to = paths::shared_certs();
+    if from == to || !from.is_dir() {
+        return Ok(0);
+    }
+    let mut n = 0;
+    for entry in std::fs::read_dir(&from).into_iter().flatten().flatten() {
+        let p = entry.path();
+        let Some(name) = p.file_name() else { continue };
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "pem" && ext != "key" {
+            continue;
+        }
+        let dest = to.join(name);
+        if std::fs::copy(&p, &dest).is_ok() {
+            if ext == "key" {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600));
+            }
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 pub fn site_cert_path(domain: &str) -> PathBuf {

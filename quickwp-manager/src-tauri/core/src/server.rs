@@ -146,6 +146,20 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
         );
     }
 
+    // The edge terminates TLS and forwards plaintext, so the only evidence a
+    // request arrived over HTTPS is the header it sets. Without translating
+    // that into the CGI variable PHP actually reads, WordPress calls is_ssl()
+    // false and redirects /wp-admin to http:// -- dropping TLS on every admin
+    // request, and breaking the login cookie with it.
+    let via_tls = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("x-forwarded-proto") && v.eq_ignore_ascii_case("https")
+    });
+    let server_port = if via_tls {
+        "443".to_string()
+    } else {
+        ports::NGINX.to_string()
+    };
+
     let script_s = script.to_string_lossy().to_string();
     let docroot_s = site.docroot.clone();
     let cl = content_length.to_string();
@@ -161,9 +175,17 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
         ("SERVER_SOFTWARE", "QuickWP"),
         ("REMOTE_ADDR", "127.0.0.1"),
         ("SERVER_NAME", &host),
+        ("SERVER_PORT", &server_port),
         ("CONTENT_LENGTH", &cl),
-        ("HTTPS", ""),
     ];
+    if via_tls {
+        // PHP treats any non-empty, non-"off" value as on. WordPress reads it
+        // through is_ssl().
+        params.push(("HTTPS", "on"));
+        params.push(("REQUEST_SCHEME", "https"));
+    } else {
+        params.push(("REQUEST_SCHEME", "http"));
+    }
     if !content_type.is_empty() {
         params.push(("CONTENT_TYPE", &content_type));
     }
@@ -333,6 +355,26 @@ fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The header the edge sets, and the variable PHP reads, must line up.
+    #[test]
+    fn a_forwarded_https_header_is_recognised_case_insensitively() {
+        let headers = vec![("X-Forwarded-Proto".to_string(), "https".to_string())];
+        let via = headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("x-forwarded-proto") && v.eq_ignore_ascii_case("https")
+        });
+        assert!(via);
+
+        let lower = vec![("x-forwarded-proto".to_string(), "HTTPS".to_string())];
+        assert!(lower.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("x-forwarded-proto") && v.eq_ignore_ascii_case("https")
+        }));
+
+        let plain = vec![("X-Forwarded-Proto".to_string(), "http".to_string())];
+        assert!(!plain.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("x-forwarded-proto") && v.eq_ignore_ascii_case("https")
+        }));
+    }
 
     #[test]
     fn lf_only_cgi_headers_become_crlf() {

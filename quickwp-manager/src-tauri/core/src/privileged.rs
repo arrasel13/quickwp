@@ -14,9 +14,103 @@ use crate::{ca, paths, ports, Error, Result};
 use std::path::PathBuf;
 
 pub const DAEMON_LABEL: &str = "com.quickwp.manager.edge";
+pub const DNS_AGENT_LABEL: &str = "com.quickwp.manager.dns";
 
 pub fn resolver_path(tld: &str) -> PathBuf {
     PathBuf::from(format!("/etc/resolver/{tld}"))
+}
+
+/// The DNS agent's plist. A per-user LaunchAgent, so it needs no admin rights.
+pub fn dns_agent_plist_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Library/LaunchAgents")
+        .join(format!("{DNS_AGENT_LABEL}.plist"))
+}
+
+pub fn dns_agent_running() -> bool {
+    // A user agent lives in the GUI domain for this uid.
+    let uid = unsafe { libc::getuid() };
+    std::process::Command::new("/bin/launchctl")
+        .args(["print", &format!("gui/{uid}/{DNS_AGENT_LABEL}")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Install the DNS agent, so names keep resolving after QuickWP is closed.
+///
+/// This is not a convenience. Once /etc/resolver/<tld> points at our DNS, a
+/// lookup for that TLD goes nowhere else -- so if our server is not running,
+/// every such name HANGS rather than failing. Tying that to an app window
+/// would mean closing the window breaks name resolution machine-wide.
+///
+/// A user agent needs no password, which is why it is not batched into the
+/// admin prompt.
+pub fn install_dns_agent(cli_binary: &std::path::Path) -> Result<()> {
+    if !cli_binary.exists() {
+        return Err(Error::other(format!(
+            "The quickwp binary is missing at {}. The DNS agent would have nothing to run.",
+            cli_binary.display()
+        )));
+    }
+    let plist = dns_agent_plist_path();
+    paths::mkdir_p(plist.parent().unwrap())?;
+
+    let body = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{cli}</string>
+    <string>__dns</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>{logs}/dns.log</string>
+  <key>StandardErrorPath</key><string>{logs}/dns.log</string>
+</dict>
+</plist>
+"#,
+        label = DNS_AGENT_LABEL,
+        cli = cli_binary.display(),
+        logs = paths::logs().display(),
+    );
+    std::fs::write(&plist, body).map_err(|e| Error::Io {
+        path: plist.clone(),
+        source: e,
+    })?;
+
+    let uid = unsafe { libc::getuid() };
+    let _ = std::process::Command::new("/bin/launchctl")
+        .args(["bootout", &format!("gui/{uid}/{DNS_AGENT_LABEL}")])
+        .output();
+    let out = std::process::Command::new("/bin/launchctl")
+        .args(["bootstrap", &format!("gui/{uid}")])
+        .arg(&plist)
+        .output()
+        .map_err(|e| Error::Io {
+            path: "/bin/launchctl".into(),
+            source: e,
+        })?;
+    if !out.status.success() {
+        return Err(Error::other(format!(
+            "Could not start the DNS agent: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+pub fn remove_dns_agent() {
+    let uid = unsafe { libc::getuid() };
+    let _ = std::process::Command::new("/bin/launchctl")
+        .args(["bootout", &format!("gui/{uid}/{DNS_AGENT_LABEL}")])
+        .output();
+    let _ = std::fs::remove_file(dns_agent_plist_path());
 }
 
 pub fn daemon_plist_path() -> PathBuf {
@@ -178,11 +272,15 @@ pub fn install_script(tld: &str, edge_binary: &std::path::Path) -> String {
     let resolver = resolver_path(tld);
     let plist = daemon_plist_path();
     let installed_edge = edge_install_path();
-    let body = plist_body(&installed_edge, &ca::certs_dir(), &paths::logs());
+    let body = plist_body(&installed_edge, &paths::shared_certs(), &paths::logs());
 
     format!(
         "set -e
-mkdir -p /etc/resolver /usr/local/libexec
+mkdir -p /etc/resolver /usr/local/libexec {certs}
+# Handed to the user so issuing a certificate later needs no password. Root
+# only ever READS these; it never executes anything from here.
+chown -R {user} {certs}
+chmod 700 {certs}
 printf '%s\\n' 'nameserver 127.0.0.1' 'port {dns}' > {resolver}
 chmod 644 {resolver}
 cp {src_edge} {dst_edge}
@@ -196,6 +294,8 @@ chmod 644 {plist}
 launchctl bootout system/{label} 2>/dev/null || true
 launchctl bootstrap system {plist}
 launchctl enable system/{label}",
+        certs = shell_quote(&paths::shared_certs().to_string_lossy()),
+        user = shell_quote(&current_user()),
         dns = ports::DNS,
         resolver = shell_quote(&resolver.to_string_lossy()),
         src_edge = shell_quote(&edge_binary.to_string_lossy()),
@@ -327,9 +427,29 @@ pub fn preflight_blocks(checks: &[Check]) -> bool {
     checks.iter().any(|c| c.blocking && !c.ok)
 }
 
+fn current_user() -> String {
+    std::env::var("USER").unwrap_or_else(|_| "root".into())
+}
+
+/// A temp path unique to this call.
+///
+/// A fixed name is shared state: two preflights running at once clobber each
+/// other's file, and one of them validates something it did not write.
+fn scratch(suffix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "quickwp-preflight-{}-{}-{}",
+        std::process::id(),
+        n,
+        suffix
+    ))
+}
+
 fn plist_is_valid(edge_binary: &std::path::Path) -> bool {
-    let body = plist_body(edge_binary, &ca::certs_dir(), &paths::logs());
-    let tmp = std::env::temp_dir().join("quickwp-preflight.plist");
+    let body = plist_body(edge_binary, &paths::shared_certs(), &paths::logs());
+    let tmp = scratch("plist");
     if std::fs::write(&tmp, body).is_err() {
         return false;
     }
@@ -345,7 +465,7 @@ fn plist_is_valid(edge_binary: &std::path::Path) -> bool {
 
 fn script_is_valid(tld: &str, edge_binary: &std::path::Path) -> bool {
     let script = install_script(tld, edge_binary);
-    let tmp = std::env::temp_dir().join("quickwp-preflight.sh");
+    let tmp = scratch("sh");
     if std::fs::write(&tmp, script).is_err() {
         return false;
     }
@@ -421,6 +541,7 @@ pub fn remove_system_changes(tlds: &[String]) -> Result<()> {
         format!("launchctl bootout system/{DAEMON_LABEL} 2>/dev/null || true"),
         format!("rm -f {}", shell_quote(&plist.to_string_lossy())),
         format!("rm -f {}", shell_quote(&installed_edge.to_string_lossy())),
+        format!("rm -rf {}", shell_quote(&paths::shared_certs().to_string_lossy())),
     ];
     for tld in tlds {
         // Only remove a resolver file that is actually ours.
@@ -439,7 +560,8 @@ pub fn remove_system_changes(tlds: &[String]) -> Result<()> {
         "QuickWP needs your password to remove the DNS resolver and the edge service.",
     )?;
 
-    // Keychain trust is user-level and needs no admin.
+    // Both of these are user-level and need no admin.
+    remove_dns_agent();
     ca::untrust()?;
     Ok(())
 }
@@ -521,6 +643,18 @@ pub fn verify(tld: &str) -> VerifyReport {
         },
     );
 
+    let agent = dns_agent_running();
+    add(
+        "dns-agent",
+        "The DNS agent is running (survives closing the app)",
+        agent,
+        if agent {
+            "loaded in launchd".into()
+        } else {
+            "not loaded — .{tld} names will hang whenever QuickWP is closed".replace("{tld}", tld)
+        },
+    );
+
     let plist = daemon_plist_path().exists();
     add("daemon-file", "The edge daemon is installed", plist,
         daemon_plist_path().to_string_lossy().into_owned());
@@ -533,6 +667,21 @@ pub fn verify(tld: &str) -> VerifyReport {
     let listening = !crate::ports::is_free(ports::EDGE_HTTPS);
     add("port-443", "Something is listening on 443", listening,
         if listening { "bound".into() } else { "nothing is bound".into() });
+
+    // Listening is not serving. An edge with no readable certificates accepts
+    // the connection and closes it with no bytes, which reads as a network
+    // fault; this names it for what it is.
+    let shared = paths::shared_certs_usable();
+    add("certs-readable", "The edge can read the certificates", shared,
+        if shared {
+            paths::shared_certs().to_string_lossy().into_owned()
+        } else {
+            format!(
+                "{} is missing. Certificates in your home directory are invisible to a root \
+                 daemon, so TLS would fail with no explanation.",
+                paths::shared_certs().display()
+            )
+        });
 
     let trusted = ca::is_trusted();
     add("ca-trust", "The certificate authority is trusted", trusted,
@@ -573,6 +722,10 @@ pub fn verify_removed(tlds: &[String]) -> VerifyReport {
     let bin_gone = !edge_install_path().exists();
     add("edge-binary", "The installed edge binary is gone", bin_gone,
         edge_install_path().to_string_lossy().into_owned());
+
+    let agent_gone = !dns_agent_running() && !dns_agent_plist_path().exists();
+    add("dns-agent", "The DNS agent is gone", agent_gone,
+        dns_agent_plist_path().to_string_lossy().into_owned());
 
     for tld in tlds {
         let ours_gone = !resolver_is_ours(tld);

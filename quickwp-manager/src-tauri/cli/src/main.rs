@@ -74,6 +74,32 @@ fn main() {
     // Hidden: the tunnel guard. Not in USAGE because nobody runs it by hand --
     // it is spawned beside every share so that a share always has something
     // watching it, even if whatever started it dies without warning.
+    // Hidden: the DNS server itself, run by the LaunchAgent. Not in USAGE
+    // because nobody runs it by hand.
+    if args[0] == "__dns" {
+        let app = match core::Quickwp::new() {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("dns: {e}");
+                std::process::exit(1);
+            }
+        };
+        let tlds = app.tlds().unwrap_or_else(|_| vec!["test".into()]);
+        match core::dns::start(core::ports::DNS, tlds.clone()) {
+            Ok(_server) => {
+                eprintln!("dns: answering {} on port {}", tlds.join(", "), core::ports::DNS);
+                // launchd owns the lifetime; park here until it stops us.
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                }
+            }
+            Err(e) => {
+                eprintln!("dns: could not start: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args[0] == "__guard" {
         let get = |k: &str| -> Option<String> {
             let i = args.iter().position(|a| a == k)?;
@@ -221,8 +247,13 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
             if core::runtime::is_installed(&default, "fpm") {
                 core::php::start_pool(&app.sup, &default).map_err(|e| e.to_string())?;
             }
-            app.start_dns().map_err(|e| e.to_string())?;
-            Ok(format!("Serving on port {}", core::ports::NGINX))
+            // DNS deliberately is NOT started here: it runs from a LaunchAgent
+            // so names keep resolving after any one process exits. A CLI that
+            // started it would take it down again on the next line.
+            Ok(format!(
+                "Pools started. The edge and DNS are owned by the app — open QuickWP to serve on {}.",
+                core::ports::NGINX
+            ))
         }
         ("stop", _) => {
             app.stop_dns();

@@ -60,6 +60,10 @@ interface ProjectOption {
 export default function SitesTab() {
   // Real sites, from the Rust backend. There is no mock data here any more:
   // an empty list means you have not created a site yet, and says so.
+  // Whether the stack can serve a real name yet decides which URL is honest.
+  const { data: stack } = useAsync(() => api.stackStatus(), []);
+  const httpsReady = stack?.https_ready ?? false;
+
   const {
     data: backendSites,
     error: sitesError,
@@ -72,7 +76,9 @@ export default function SitesTab() {
       (backendSites ?? []).map((s) => ({
         id: String(s.id),
         name: s.domain,
-        url: `http://127.0.0.1:18089/`,
+        // The name the site answers on. The loopback address is shown beneath
+        // it as the fallback, not offered as the site's address.
+        url: `${httpsReady ? "https" : "http"}://${s.domain}/`,
         path: s.docroot,
         // A linked site's folder is yours; QuickWP never copies or deletes it.
         linkedPath: s.is_linked ? s.docroot : "—",
@@ -80,7 +86,7 @@ export default function SitesTab() {
         nodeVersion: "—",
         status: s.enabled ? "running" : "stopped",
       })),
-    [backendSites],
+    [backendSites, httpsReady],
   );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -737,6 +743,7 @@ export default function SitesTab() {
                               <input
                                 type="text"
                                 value={selectedSite.nodeVersion}
+                                title="Node versions are not managed by QuickWP yet"
                                 readOnly
                                 className="w-16 px-2 py-1 text-xs text-center border border-gray-300 rounded-l-md bg-white focus:outline-none focus:ring-0 focus:ring-gray-300"
                               />
@@ -818,6 +825,14 @@ export default function SitesTab() {
                             >
                               {selectedSite.url}
                             </a>
+                            {/* The loopback address is where the request lands,
+                                not where the site lives. Shown as context, not
+                                offered as the address. */}
+                            <p className="mt-1 text-[10px] text-gray-400 font-mono">
+                              {httpsReady
+                                ? `resolves to 127.0.0.1 · served on 443`
+                                : `not resolving yet — reachable on 127.0.0.1:${stack?.edge_port ?? 18089} until HTTPS is on`}
+                            </p>
                           </div>
                         </div>
                       </div>
