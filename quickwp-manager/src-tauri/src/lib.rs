@@ -420,18 +420,8 @@ fn site_create(state: State<'_, AppState>, new: site::NewSite) -> Res<site::Site
 }
 
 #[tauri::command]
-fn site_delete(state: State<'_, AppState>, domain: String) -> Res<()> {
-    // Drop the database with the site. Leaving it behind means the next site
-    // with the same name silently adopts the old one's tables.
-    if let Some(s) = site::find(&state.app.db, &domain)? {
-        if let Some(name) = s.db_name.clone() {
-            let series = default_db_series(&state);
-            if database::is_installed(&series) && database::adopt_if_ours(&series) {
-                let _ = database::drop_for_site(&series, &name);
-            }
-        }
-    }
-    Ok(site::delete(&state.app.db, &domain)?)
+fn site_delete(state: State<'_, AppState>, domain: String) -> Res<Vec<String>> {
+    Ok(state.app.delete_site(&domain)?)
 }
 
 #[tauri::command]

@@ -115,6 +115,59 @@ impl Quickwp {
         Ok(())
     }
 
+    /// Delete a site: its record, its docroot, its database and its certificate.
+    ///
+    /// Lives here rather than in the Tauri layer because the app and the CLI
+    /// must mean the same thing by "delete". They did not: the app dropped the
+    /// database and the CLI left it behind, so the next site with that name
+    /// silently adopted the old one's tables.
+    ///
+    /// A LINKED site is the exception the whole feature rests on: its folder is
+    /// the user's, so only our record of it goes.
+    pub fn delete_site(&self, domain: &str) -> Result<Vec<String>> {
+        let Some(s) = site::find(&self.db, domain)? else {
+            return Err(Error::other(format!("no site answers on `{domain}`")));
+        };
+        let mut removed = Vec::new();
+
+        if let Some(name) = s.db_name.clone() {
+            let series = s
+                .db_engine
+                .clone()
+                .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string());
+            if database::is_installed(&series) && database::adopt_if_ours(&series) {
+                match database::drop_for_site(&series, &name) {
+                    Ok(()) => removed.push(format!("database `{name}`")),
+                    // A database we cannot reach is reported, not swallowed:
+                    // silently leaving one behind is how the next site with
+                    // this name inherits its tables.
+                    Err(e) => removed.push(format!("database `{name}` NOT dropped: {e}")),
+                }
+            } else {
+                removed.push(format!(
+                    "database `{name}` left behind — MySQL is not running, so it could not be dropped"
+                ));
+            }
+        }
+
+        for p in [ca::site_cert_path(&s.domain), ca::site_key_path(&s.domain)] {
+            if p.exists() && std::fs::remove_file(&p).is_ok() {
+                removed.push(format!("certificate {}", p.display()));
+            }
+        }
+
+        if s.is_linked {
+            removed.push(format!("kept your folder at {}", s.docroot));
+        } else {
+            removed.push(format!("docroot {}", s.docroot));
+        }
+
+        site::delete(&self.db, &s.domain)?;
+        removed.push(format!("site record for {}", s.domain));
+        log::write(&format!("site deleted: {} ({})", s.domain, removed.join("; ")));
+        Ok(removed)
+    }
+
     /// Issue a certificate for a site if the one on disk does not already cover
     /// every name it answers on. Compared against the name SET, not file
     /// existence -- see `ca::covers`.

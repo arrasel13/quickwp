@@ -307,8 +307,16 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
         }
         ("site", "delete") => {
             let d = need(args, 2, "domain")?;
-            core::site::delete(&app.db, &d).map_err(|e| e.to_string())?;
-            Ok(format!("Deleted {d}"))
+            // Same code the app's delete runs, so the two cannot mean
+            // different things by the same word.
+            let removed = app.delete_site(&d).map_err(|e| e.to_string())?;
+            Ok(out(json, &removed, || {
+                let mut s = format!("Deleted {d}:\n");
+                for r in &removed {
+                    s.push_str(&format!("  - {r}\n"));
+                }
+                s.trim_end().to_string()
+            }))
         }
         ("site", "start") | ("site", "stop") => {
             let on = a(1) == "start";
