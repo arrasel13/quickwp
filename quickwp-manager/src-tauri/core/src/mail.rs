@@ -99,12 +99,33 @@ pub fn stop(sup: &Supervisor) -> Result<bool> {
 }
 
 /// The `sendmail_path` a pool uses when the catch-all is on.
+///
+/// PHP hands this to popen, so the binary path is single-quoted: QuickWP lives
+/// under "Application Support", and an unquoted path with a space becomes two
+/// arguments and a mail that silently never sends.
 pub fn sendmail_path() -> Result<String> {
     Ok(format!(
-        "{} sendmail -t --smtp-addr 127.0.0.1:{}",
+        "'{}' sendmail -t --smtp-addr 127.0.0.1:{}",
         binary()?.display(),
         ports::MAILPIT_SMTP
     ))
+}
+
+/// The same environment, encoded for a php-fpm pool.
+///
+/// php-fpm refuses `env[X] = ` *and* `env[X] = ""` with "empty value", and then
+/// will not start at all -- so an unset MAIL_USERNAME would take every pool
+/// down with it. Laravel reads `(null)` as an explicit null, which is exactly
+/// what an absent username means, and keeps the precedence that makes this work
+/// at all: a variable present in the environment is never overwritten by .env.
+pub fn fpm_env() -> Vec<(String, String)> {
+    laravel_env()
+        .into_iter()
+        .map(|(k, v)| {
+            let v = if v.is_empty() { "(null)".to_string() } else { v };
+            (k, v)
+        })
+        .collect()
 }
 
 /// The environment a pool carries so Laravel is caught too.
@@ -189,11 +210,36 @@ mod tests {
     }
 
     #[test]
+    fn the_sendmail_path_quotes_a_binary_path_containing_spaces() {
+        // Only meaningful once Mailpit is installed; the shape is the point.
+        if let Ok(p) = sendmail_path() {
+            assert!(p.starts_with('\''), "the binary path must be quoted for popen");
+            assert!(p.contains("sendmail -t"));
+        }
+    }
+
+    #[test]
     fn laravel_env_carries_every_key_that_outranks_dotenv() {
         let env = laravel_env();
         for key in ["MAIL_MAILER", "MAIL_HOST", "MAIL_PORT", "MAIL_URL", "MAIL_SCHEME"] {
             assert!(env.iter().any(|(k, _)| k == key), "missing {key}");
         }
+    }
+
+    #[test]
+    fn the_fpm_encoding_never_emits_an_empty_value() {
+        // php-fpm refuses one and then fails to start, taking every site on
+        // that version with it.
+        for (k, v) in fpm_env() {
+            assert!(!v.is_empty(), "{k} would be an empty value php-fpm refuses");
+        }
+        assert!(
+            fpm_env().iter().any(|(k, v)| k == "MAIL_USERNAME" && v == "(null)"),
+            "an absent username must be an explicit null Laravel understands"
+        );
+        // The process environment keeps real empties: that is a raw env var,
+        // not a config file, and "(null)" there would be a literal string.
+        assert!(laravel_env().iter().any(|(k, v)| k == "MAIL_USERNAME" && v.is_empty()));
     }
 
     #[test]

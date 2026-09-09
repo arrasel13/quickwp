@@ -17,6 +17,8 @@ pub mod migrate;
 pub mod paths;
 pub mod php;
 pub mod ports;
+pub mod proc;
+pub mod pty;
 pub mod privileged;
 pub mod server;
 pub mod site;

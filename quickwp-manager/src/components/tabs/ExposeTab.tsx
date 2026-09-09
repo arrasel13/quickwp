@@ -129,6 +129,14 @@ export default function ExposeTab() {
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-gray-900 truncate">{t.domain}</p>
                       <p className="text-[11px] font-mono text-blue-700 truncate">{t.public_url}</p>
+                      <p className="text-[10px] text-gray-500">
+                        {t.expires_at
+                          ? `started from the CLI · closes in ${Math.max(
+                              0,
+                              Math.round((t.expires_at - Date.now() / 1000) / 60),
+                            )} min`
+                          : "closes when QuickWP quits"}
+                      </p>
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
                       <button
@@ -181,10 +189,12 @@ export default function ExposeTab() {
       )}
 
       <p className="text-[11px] leading-relaxed text-gray-500 max-w-3xl">
-        <strong>Tunnels close when QuickWP quits.</strong> The rest of the stack outlives the app
-        on purpose; a share does not. A public URL serving your development machine, still up
-        because you forgot about it, is not a convenience — a share you have forgotten is a share
-        you did not consent to. Every share is also written to the app log.
+        <strong>Every share is guarded.</strong> A small guard process watches whatever started
+        the share and closes it the moment that goes — a crash included, because macOS cannot
+        signal a child when its parent dies, so the guard polls and matches on the owner's start
+        time as well as its pid. A share started from the CLI has no window to close, so it
+        carries a deadline the guard enforces. QuickWP also sweeps on launch: a tunnel left
+        running by a previous crash is found and closed. Every share is written to the app log.
       </p>
     </div>
   );

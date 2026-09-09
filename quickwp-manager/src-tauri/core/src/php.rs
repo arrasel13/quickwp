@@ -181,13 +181,17 @@ fn write_pool_config(minor: &str, port: u16, catch_all: bool) -> Result<PathBuf>
     // the MAIL_* environment for Laravel -- live in `mail`.
     if catch_all && crate::mail::is_installed() {
         if let Ok(path) = crate::mail::sendmail_path() {
-            ini.push(format!("php_admin_value[sendmail_path] = {path}"));
+            ini.push(format!("php_admin_value[sendmail_path] = \"{path}\""));
         }
-        for (k, v) in crate::mail::laravel_env() {
+        for (k, v) in crate::mail::fpm_env() {
             // A variable already in the process environment is never
             // overwritten by Laravel's .env -- that is the lever that works,
             // because its sendmail transport does not consult php.ini at all.
-            ini.push(format!("env[{k}] = {v}"));
+            //
+            // Quoted without exception: php-fpm refuses a bare empty value with
+            // "empty value" and then fails to start at all, so an unset MAIL_*
+            // key would take every pool down with it.
+            ini.push(format!("env[{k}] = \"{v}\""));
         }
     }
     let ini = ini.join("\n");
@@ -358,6 +362,20 @@ mod tests {
         assert_eq!(bytes("512M"), 512 * 1024 * 1024);
         assert_eq!(bytes("1G"), 1024 * 1024 * 1024);
         assert_eq!(bytes("120"), 120);
+    }
+
+    #[test]
+    fn every_generated_env_line_is_quoted_even_when_empty() {
+        // php-fpm rejects `env[X] = ` outright and then will not start, so an
+        // empty MAIL_USERNAME must not be emitted bare.
+        for (k, v) in crate::mail::fpm_env() {
+            let line = format!("env[{k}] = \"{v}\"");
+            assert!(line.ends_with('"'), "{line} must end quoted");
+            assert!(
+                !line.trim_end().ends_with("= "),
+                "{line} would be an empty value php-fpm refuses"
+            );
+        }
     }
 
     #[test]

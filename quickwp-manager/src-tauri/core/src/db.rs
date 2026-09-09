@@ -111,6 +111,21 @@ CREATE TABLE IF NOT EXISTS runtimes (
   PRIMARY KEY (component, version, arch)
 );
 
+-- Open public shares, recorded so ANY QuickWP process can see and stop one.
+-- A share held only in the memory of a process that has since died is a share
+-- nobody can find, which is the state this table exists to prevent.
+CREATE TABLE IF NOT EXISTS tunnels (
+  domain     TEXT PRIMARY KEY,
+  url        TEXT NOT NULL,
+  pid        INTEGER NOT NULL,
+  guard_pid  INTEGER,
+  owner      TEXT NOT NULL DEFAULT 'app',
+  started_at INTEGER NOT NULL,
+  -- NULL for an app-owned share (it dies with the app); a deadline for a
+  -- CLI-owned one, which has no window to close.
+  expires_at INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

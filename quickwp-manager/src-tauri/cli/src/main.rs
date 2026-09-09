@@ -42,9 +42,11 @@ DATABASES
 
 MAIL / TUNNELS
   mail                         Mailpit status
-  tunnel start <domain>        Share a site publicly; prints the URL
+  tunnel install               Download cloudflared
+  tunnel list                  Everything currently shared publicly
+  tunnel start <domain>        Share a site publicly; prints the URL.
+                               A CLI share closes itself after an hour.
   tunnel stop <domain>
-  tunnel list
 
 LOGS
   logs                         Every log QuickWP can show
@@ -64,6 +66,31 @@ fn main() {
     }
     if args[0] == "--version" || args[0] == "-v" {
         println!("quickwp {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    // Hidden: the tunnel guard. Not in USAGE because nobody runs it by hand --
+    // it is spawned beside every share so that a share always has something
+    // watching it, even if whatever started it dies without warning.
+    if args[0] == "__guard" {
+        let get = |k: &str| -> Option<String> {
+            let i = args.iter().position(|a| a == k)?;
+            args.get(i + 1).cloned()
+        };
+        let Some(tunnel_pid) = get("--tunnel-pid").and_then(|v| v.parse().ok()) else {
+            eprintln!("__guard: --tunnel-pid is required");
+            std::process::exit(2);
+        };
+        let domain = get("--domain").unwrap_or_default();
+        let parent = match (
+            get("--parent-pid").and_then(|v| v.parse::<u32>().ok()),
+            get("--parent-start").and_then(|v| v.parse::<u64>().ok()),
+        ) {
+            (Some(p), Some(s)) => Some((p, s)),
+            _ => None,
+        };
+        let expires = get("--expires").and_then(|v| v.parse::<u64>().ok());
+        core::tunnel::guard_loop(tunnel_pid, &domain, parent, expires);
         return;
     }
 
@@ -345,17 +372,62 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
         // -------------------------------------------------------- tunnels
         ("tunnel", "start") => {
             let d = need(args, 2, "domain")?;
-            // A tunnel is bound to the running app: quitting closes it, so the
-            // CLI cannot own one on its own.
-            Err(format!(
-                "Tunnels are owned by the app, so that quitting always closes them — \
-                 a share you have forgotten is a share you did not consent to.\n\
-                 Open QuickWP and share {d} from the Expose tab."
+            if core::site::find(&app.db, &d).map_err(|e| e.to_string())?.is_none() {
+                return Err(format!("no site answers on `{d}`"));
+            }
+            if !core::tunnel::is_installed() {
+                return Err("cloudflared is not installed. Run `quickwp tunnel install`.".into());
+            }
+            // The CLI exits immediately, so it cannot be the owner. The share
+            // carries a deadline instead, and a guard process enforces it --
+            // that is what makes a share with no window safe to start.
+            let url = core::tunnel::start(&app.db, &app.sup, &d, None)
+                .map_err(|e| e.to_string())?;
+            let mins = core::tunnel::CLI_TUNNEL_SECONDS / 60;
+            Ok(format!(
+                "{url}\n\n{d} is PUBLIC. Anyone with that link reaches it.\n\
+                 It closes automatically in {mins} minutes, or now with:\n  quickwp tunnel stop {d}"
             ))
         }
-        ("tunnel", "stop") | ("tunnel", "list") => Err(
-            "Tunnels live in the running app. Open QuickWP → Expose.".into(),
-        ),
+        ("tunnel", "install") => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            rt.block_on(core::tunnel::install(|_| {})).map_err(|e| e.to_string())?;
+            Ok("cloudflared installed".into())
+        }
+        ("tunnel", "stop") => {
+            let d = need(args, 2, "domain")?;
+            let stopped = core::tunnel::stop(&app.db, &app.sup, &d).map_err(|e| e.to_string())?;
+            Ok(if stopped {
+                format!("{d} is no longer public.")
+            } else {
+                format!("{d} was not shared.")
+            })
+        }
+        ("tunnel", "list") | ("tunnel", "") => {
+            core::tunnel::sweep(&app.db, &app.sup).map_err(|e| e.to_string())?;
+            let ts = core::tunnel::list(&app.db).map_err(|e| e.to_string())?;
+            Ok(out(json, &ts, || {
+                if ts.is_empty() {
+                    return "Nothing is shared publicly.".into();
+                }
+                ts.iter()
+                    .map(|t| {
+                        let left = t
+                            .expires_at
+                            .map(|e| {
+                                let secs = e.saturating_sub(core::proc::now());
+                                format!("closes in {}m", secs / 60)
+                            })
+                            .unwrap_or_else(|| "closes with the app".into());
+                        format!("{:<24} {}  ({}, {left})", t.domain, t.public_url, t.owner)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }))
+        }
 
         // ----------------------------------------------------------- logs
         ("logs", "") => {

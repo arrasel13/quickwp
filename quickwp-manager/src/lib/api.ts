@@ -141,6 +141,11 @@ export interface MailStatus {
 export interface Tunnel {
   domain: string;
   public_url: string;
+  owner: "app" | "cli";
+  started_at: number;
+  /** Set for a share with no window to close it; the guard enforces it. */
+  expires_at: number | null;
+  pid: number;
 }
 
 export interface LogSource {
@@ -317,8 +322,13 @@ export const api = {
   logsSources: () => call<LogSource[]>("logs_sources"),
   logsTail: (id: string, lines?: number) => call<string>("logs_tail", { id, lines }),
 
-  // terminal
-  siteExec: (domain: string, command: string) => call<number>("site_exec", { domain, command }),
+  // terminal — a real PTY
+  ptyOpen: (id: string, domain: string, cols: number, rows: number) =>
+    call<void>("pty_open", { id, domain, cols, rows }),
+  ptyWrite: (id: string, data: string) => call<void>("pty_write", { id, data }),
+  ptyResize: (id: string, cols: number, rows: number) =>
+    call<void>("pty_resize", { id, cols, rows }),
+  ptyClose: (id: string) => call<boolean>("pty_close", { id }),
   siteTerminal: (domain: string) => call<void>("site_terminal", { domain }),
 
   // migration stages 2 and 3
@@ -343,6 +353,16 @@ export const api = {
   onExecLine: (cb: (l: ExecLine) => void) => {
     if (!hasBackend) return Promise.resolve(() => {});
     return listen<ExecLine>("exec-line", (e) => cb(e.payload));
+  },
+
+  onPtyOutput: (cb: (p: { id: string; data: string }) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<{ id: string; data: string }>("pty-output", (e) => cb(e.payload));
+  },
+
+  onPtyExit: (cb: (p: { id: string }) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<{ id: string }>("pty-exit", (e) => cb(e.payload));
   },
 };
 

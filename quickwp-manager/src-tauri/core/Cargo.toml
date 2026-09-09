@@ -23,6 +23,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pemfile = "2"
 time = "0.3"
 x509-parser = "0.18"
+portable-pty = "0.9"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

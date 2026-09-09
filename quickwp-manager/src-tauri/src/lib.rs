@@ -6,8 +6,8 @@
 
 use quickwp_core as core;
 use quickwp_core::{
-    ca, database, exec, log as qlog, mail, migrate, php, ports, privileged, runtime, server, site,
-    tunnel, wordpress, Finding, Quickwp,
+    ca, database, exec, log as qlog, mail, migrate, php, ports, privileged, pty, runtime, server,
+    site, tunnel, wordpress, Finding, Quickwp,
 };
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
@@ -15,7 +15,7 @@ use tauri::{Emitter, Manager, State};
 struct AppState {
     app: Quickwp,
     edge: Mutex<Option<server::Edge>>,
-    tunnels: tunnel::Tunnels,
+    ptys: pty::Ptys,
 }
 
 type Res<T> = Result<T, String>;
@@ -713,9 +713,12 @@ fn mail_set_catch_all(state: State<'_, AppState>, on: bool) -> Res<String> {
 
 #[tauri::command]
 fn tunnel_status(state: State<'_, AppState>) -> Res<serde_json::Value> {
+    // Sweeping on read is what makes a forgotten share findable: a row whose
+    // process is gone, or one past its deadline, is reconciled here.
+    let _ = tunnel::sweep(&state.app.db, &state.app.sup);
     Ok(serde_json::json!({
         "installed": tunnel::is_installed(),
-        "tunnels": state.tunnels.list(),
+        "tunnels": tunnel::list(&state.app.db)?,
     }))
 }
 
@@ -739,12 +742,19 @@ fn tunnel_start(state: State<'_, AppState>, domain: String) -> Res<String> {
     if state.edge.lock().unwrap().is_none() {
         return Err("Start the stack first — a share with nothing behind it publishes an error page.".into());
     }
-    Ok(state.tunnels.start(&state.app.sup, &domain)?)
+    // The app owns this share, so the guard watches THIS process and closes
+    // the tunnel the moment it goes -- crash included.
+    Ok(tunnel::start(
+        &state.app.db,
+        &state.app.sup,
+        &domain,
+        Some(std::process::id()),
+    )?)
 }
 
 #[tauri::command]
 fn tunnel_stop(state: State<'_, AppState>, domain: String) -> Res<bool> {
-    Ok(state.tunnels.stop(&state.app.sup, &domain)?)
+    Ok(tunnel::stop(&state.app.db, &state.app.sup, &domain)?)
 }
 
 // ----------------------------------------------------------------- logs
@@ -787,6 +797,61 @@ async fn site_exec(
 fn site_terminal(state: State<'_, AppState>, domain: String) -> Res<()> {
     let site = site_by_domain(&state, &domain)?;
     Ok(exec::open_terminal(&site)?)
+}
+
+
+// ------------------------------------------------------------ terminal
+
+/// Open a real shell in a site's docroot.
+///
+/// A PTY, not a pipe: the child gets a TTY, so it line-edits, paints colour and
+/// can be answered. Output arrives as `pty-output` events keyed by session id.
+#[tauri::command]
+fn pty_open(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    domain: String,
+    cols: u16,
+    rows: u16,
+) -> Res<()> {
+    let site = site_by_domain(&state, &domain)?;
+    let out_handle = app.clone();
+    let out_id = id.clone();
+    let exit_handle = app.clone();
+    let exit_id = id.clone();
+
+    state.ptys.open(
+        &id,
+        &site,
+        cols.max(20),
+        rows.max(5),
+        move |chunk| {
+            let _ = out_handle.emit(
+                "pty-output",
+                serde_json::json!({ "id": out_id, "data": chunk }),
+            );
+        },
+        move || {
+            let _ = exit_handle.emit("pty-exit", serde_json::json!({ "id": exit_id }));
+        },
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+fn pty_write(state: State<'_, AppState>, id: String, data: String) -> Res<()> {
+    Ok(state.ptys.write(&id, &data)?)
+}
+
+#[tauri::command]
+fn pty_resize(state: State<'_, AppState>, id: String, cols: u16, rows: u16) -> Res<()> {
+    Ok(state.ptys.resize(&id, cols.max(20), rows.max(5))?)
+}
+
+#[tauri::command]
+fn pty_close(state: State<'_, AppState>, id: String) -> Res<bool> {
+    Ok(state.ptys.close(&id)?)
 }
 
 // -------------------------------------------------- migration stages 2/3
@@ -849,12 +914,18 @@ fn settings_set(state: State<'_, AppState>, key: String, value: String) -> Res<(
 pub fn run() {
     let app = Quickwp::new().expect("QuickWP could not open its data directory");
 
+    // Reconcile shares before the window opens. A tunnel left running by a
+    // previous crash is exactly the forgotten share this sweeps up.
+    if let Err(e) = tunnel::sweep(&app.db, &app.sup) {
+        quickwp_core::log::write(&format!("tunnel sweep failed at launch: {e}"));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             app,
             edge: Mutex::new(None),
-            tunnels: tunnel::Tunnels::new(),
+            ptys: pty::Ptys::new(),
         })
         .invoke_handler(tauri::generate_handler![
             stack_status,
@@ -919,6 +990,10 @@ pub fn run() {
             logs_tail,
             site_exec,
             site_terminal,
+            pty_open,
+            pty_write,
+            pty_resize,
+            pty_close,
             settings_get,
             settings_set,
         ])
@@ -934,7 +1009,8 @@ pub fn run() {
                     // A public URL still up because you forgot about it is not
                     // a convenience: a share you have forgotten is a share you
                     // did not consent to. Tunnels close first.
-                    state.tunnels.stop_all(&state.app.sup);
+                    state.ptys.close_all();
+                    tunnel::stop_all(&state.app.db, &state.app.sup);
                     state.app.stop_dns();
                     state.app.sup.stop_all();
                 }
