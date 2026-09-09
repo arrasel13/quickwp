@@ -14,6 +14,11 @@ const KEEP: usize = 3;
 
 /// Append a line to the app log, rotating at 2MB.
 pub fn write(message: &str) {
+    // Unit tests must not write into the real app log: a test asserting on
+    // tunnel sweeping was leaving `ghost.test` in a user's diagnostics.
+    if cfg!(test) {
+        return;
+    }
     let path = paths::app_log();
     if paths::mkdir_p(path.parent().unwrap()).is_err() {
         return;

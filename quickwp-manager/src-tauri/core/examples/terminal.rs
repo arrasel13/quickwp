@@ -54,19 +54,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("QuickWP terminal + guard spike\n");
 
-    step("1/5", "opening a pseudo-terminal");
+    step("1/6", "opening a pseudo-terminal");
     let out = Arc::new(Mutex::new(String::new()));
     let sink = out.clone();
     ptys().open("t1", &site, 80, 24, move |c| sink.lock().unwrap().push_str(&c), || {})?;
     println!("ok");
 
-    step("2/5", "the child sees a TTY (not a pipe)");
+    step("2/6", "the child sees a TTY (not a pipe)");
     // `test -t 0` is the question that separates a real terminal from a runner.
     ptys().write("t1", "test -t 0 && echo QUICKWP_IS_A_TTY\n")?;
     let saw_tty = wait_for(&out, "QUICKWP_IS_A_TTY");
     println!("{}", if saw_tty { "ok" } else { "FAILED" });
 
-    step("3/5", "an interactive prompt can be answered");
+    step("3/6", "an interactive prompt can be answered");
     // Portable across sh/bash/zsh: `read -p` is bash-only and this shell is
     // whatever the user's SHELL is.
     ptys().write("t1", "printf 'name? '; read n; echo GOT=$n\n")?;
@@ -75,12 +75,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let answered = wait_for(&out, "GOT=quickwp");
     println!("{}", if answered { "ok" } else { "FAILED" });
 
-    step("4/5", "resize reaches the child");
+    step("4/6", "resize reaches the child");
     let resized = ptys().resize("t1", 120, 40).is_ok();
     ptys().close("t1")?;
     println!("{}", if resized { "ok" } else { "FAILED" });
 
-    step("5/5", "the guard reaps an orphan when its owner dies");
+    step("5/6", "the guard reaps an orphan when its owner dies");
     let mut orphan = std::process::Command::new("/bin/sleep").arg("600").spawn()?;
     let orphan_pid = orphan.id();
     let mut owner = std::process::Command::new("/bin/sleep").arg("1").spawn()?;
@@ -108,10 +108,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = orphan.wait();
     println!("{}", if reaped { "ok  (orphan killed by the guard)" } else { "FAILED" });
 
-    if !(saw_tty && answered && resized && reaped) {
+    step("6/6", "the guard closes a share that has outlived its deadline");
+    // This is the ONLY thing keeping a CLI-started share from running forever:
+    // the CLI exits immediately, so there is no owner to watch, and the
+    // deadline is the whole safety story.
+    let mut timed = std::process::Command::new("/bin/sleep").arg("600").spawn()?;
+    let timed_pid = timed.id();
+    let deadline = core::proc::now() + 2;
+    let g2 = std::thread::spawn(move || {
+        core::tunnel::guard_loop(timed_pid, "expiry.test", None, Some(deadline))
+    });
+    let mut expired = false;
+    for _ in 0..60 {
+        let _ = timed.try_wait();
+        if !core::proc::is_alive(timed_pid) {
+            expired = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let _ = g2.join();
+    let _ = timed.kill();
+    let _ = timed.wait();
+    println!("{}", if expired { "ok  (closed at its deadline)" } else { "FAILED" });
+
+    if !(saw_tty && answered && resized && reaped && expired) {
         eprintln!("\n--- terminal output seen ---\n{}", out.lock().unwrap());
         return Err("a check failed".into());
     }
-    println!("\nPASS  a real TTY, and a guard that closes what its owner left behind.");
+    println!("\nPASS  a real TTY, and a guard that closes both an orphan and an expired share.");
     Ok(())
 }

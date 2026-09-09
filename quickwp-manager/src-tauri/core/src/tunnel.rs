@@ -382,4 +382,63 @@ mod tests {
         // close itself.
         assert!(CLI_TUNNEL_SECONDS > 0);
     }
+
+    #[test]
+    fn sweep_forgets_a_share_whose_process_is_gone() {
+        // A row left behind by a crash is exactly the forgotten share the
+        // sweep exists to find. It must not linger in the table claiming the
+        // machine is exposed when it is not.
+        let db = Db::open_in_memory().unwrap();
+        let sup = Supervisor::new();
+        let dead = {
+            let mut c = std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
+            let pid = c.id();
+            let _ = c.wait(); // reaped, so it is gone rather than a zombie
+            pid
+        };
+        record(
+            &db,
+            &Tunnel {
+                domain: "ghost.test".into(),
+                public_url: "https://ghost.trycloudflare.com".into(),
+                owner: "app".into(),
+                started_at: proc::now(),
+                expires_at: None,
+                pid: dead,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(list(&db).unwrap().len(), 1);
+        sweep(&db, &sup).unwrap();
+        assert!(
+            list(&db).unwrap().is_empty(),
+            "a share whose process is gone must not stay recorded"
+        );
+    }
+
+    #[test]
+    fn sweep_leaves_a_live_unexpired_share_alone() {
+        let db = Db::open_in_memory().unwrap();
+        let sup = Supervisor::new();
+        record(
+            &db,
+            &Tunnel {
+                domain: "live.test".into(),
+                public_url: "https://live.trycloudflare.com".into(),
+                owner: "cli".into(),
+                started_at: proc::now(),
+                expires_at: Some(proc::now() + 3600),
+                pid: std::process::id(), // us: definitely alive
+            },
+            None,
+        )
+        .unwrap();
+        sweep(&db, &sup).unwrap();
+        assert_eq!(
+            list(&db).unwrap().len(),
+            1,
+            "sweeping must not close a share that is still legitimately open"
+        );
+    }
 }

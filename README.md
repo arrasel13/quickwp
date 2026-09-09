@@ -90,7 +90,7 @@ Two runnable proofs live in the core crate:
 
 ```bash
 cd quickwp-manager/src-tauri/core
-cargo test                       # 57 tests, including a refused checksum
+cargo test                       # 59 tests, including a refused checksum
 cargo run --example spike        # download -> verify -> pool -> execute PHP
 cargo run --example serve        # create sites -> serve them, stop one in isolation
 cargo run --example https        # real edge binary, curl pinned to our CA
@@ -101,7 +101,9 @@ cargo run --example terminal     # a real TTY, and the tunnel guard reaping an o
 
 `cargo run --example live_tunnel` is deliberately not in that list: it publishes
 a throwaway site to the internet for about a minute. Run it on purpose or not
-at all.
+at all. It falls back to a public resolver and pins the address when the local
+resolver will not answer for a `*.trycloudflare.com` name — some networks do
+not, and that is not a reason to leave the round trip unproven.
 
 ### The CLI
 

@@ -11,6 +11,53 @@ fn step(n: &str, s: &str) {
     std::io::stdout().flush().ok();
 }
 
+
+/// Resolve a hostname through a public resolver.
+///
+/// Some networks (this one included) do not return records for ephemeral
+/// *.trycloudflare.com hostnames, while resolving trycloudflare.com itself
+/// perfectly well. Asking a public resolver directly separates "Cloudflare has
+/// not published this name" from "the local resolver will not tell us about
+/// it" -- and, once we have the address, the round trip can be made anyway by
+/// pinning it, which exercises the real public path end to end.
+fn resolve_public(host: &str) -> Option<String> {
+    for server in ["1.1.1.1", "8.8.8.8"] {
+        let out = std::process::Command::new("/usr/bin/dig")
+            .arg(format!("@{server}"))
+            .args(["+short", "+time=3", "+tries=1", host, "A"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        if let Some(ip) = text
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        {
+            return Some(ip.to_string());
+        }
+    }
+    None
+}
+
+fn fetch(url: &str, pin: Option<(&str, &str)>) -> (String, String) {
+    let mut cmd = std::process::Command::new("/usr/bin/curl");
+    cmd.args(["-sS", "-i", "-L", "--max-time", "20"]);
+    if let Some((host, ip)) = pin {
+        // Pinning the address bypasses the local resolver without changing
+        // anything else: TLS still validates against the real hostname, and
+        // the request still travels through Cloudflare's edge.
+        cmd.args(["--resolve", &format!("{host}:443:{ip}")]);
+    }
+    cmd.arg(url);
+    match cmd.output() {
+        Ok(o) => (
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        ),
+        Err(e) => (String::new(), e.to_string()),
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let minor = "8.3";
@@ -53,37 +100,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("      {url}  (public right now)");
 
     step("4/6", "fetching it from the outside");
+    let host = url.trim_start_matches("https://").trim_end_matches('/').to_string();
     let mut body = String::new();
     let mut errtext = String::new();
     let mut reached = false;
-    for _ in 0..20 {
-        let out = std::process::Command::new("/usr/bin/curl")
-            .args(["-sS", "-i", "-L", "--max-time", "15", &url])
-            .output()?;
-        body = String::from_utf8_lossy(&out.stdout).into_owned();
-        errtext = String::from_utf8_lossy(&out.stderr).into_owned();
+    let mut pinned_ip: Option<String> = None;
+
+    for attempt in 0..20 {
+        let (b, e) = fetch(&url, pinned_ip.as_deref().map(|ip| (host.as_str(), ip)));
+        body = b;
+        errtext = e;
         if body.contains(&marker) {
             reached = true;
             break;
         }
+        // The local resolver will not answer for this name. Ask a public one
+        // and pin the address, so the round trip can still be made.
+        if pinned_ip.is_none() && errtext.contains("Could not resolve host") && attempt >= 2 {
+            pinned_ip = resolve_public(&host);
+            if let Some(ip) = &pinned_ip {
+                println!("\n      local DNS will not answer for this name; Cloudflare published");
+                println!("      it at {ip}, so the address is pinned and the fetch continues");
+                print!("      retrying ... ");
+                std::io::stdout().flush().ok();
+                continue;
+            }
+        }
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
-    // Distinguish "our code is broken" from "this network cannot resolve the
-    // hostname". Both look like an empty body, and only one is a bug here.
-    let dns_blocked = errtext.contains("Could not resolve host");
+
+    let dns_blocked = !reached && errtext.contains("Could not resolve host");
     println!(
         "{}",
-        if reached {
+        if reached && pinned_ip.is_some() {
+            "ok  (our own page came back, through Cloudflare, address pinned)"
+        } else if reached {
             "ok  (our own page came back)"
         } else if dns_blocked {
-            "INCONCLUSIVE — the hostname does not resolve on this network"
+            "INCONCLUSIVE — the name is unresolvable even from a public resolver"
         } else {
             "FAILED"
         }
     );
     if !reached {
-        // A control fetch straight at the router: if THIS works, the origin is
-        // fine and the problem is between Cloudflare and us.
         let ctl = std::process::Command::new("/usr/bin/curl")
             .args([
                 "-sS", "-i", "--max-time", "10",
@@ -97,10 +156,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--- control, straight at the router ---\n{}",
             String::from_utf8_lossy(&ctl.stdout).chars().take(400).collect::<String>()
         );
-        let log = core::paths::logs().join(format!("tunnel-{domain}.log"));
-        let lg = std::fs::read_to_string(&log).unwrap_or_default();
-        let tail: Vec<&str> = lg.lines().rev().take(14).collect();
-        println!("--- cloudflared tail ---\n{}", tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
     }
 
     step("5/6", "closing the share");
@@ -126,15 +181,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if dns_blocked {
-        // cloudflared registered, the origin served, the share opened and
-        // closed. What could not be exercised is the public round trip, and
-        // the reason is outside QuickWP.
+        // Not even a public resolver has the name, so there is nothing to pin
+        // and no round trip to make. Everything QuickWP controls still worked.
         println!(
             "\nINCONCLUSIVE  the tunnel registered with Cloudflare and the origin served\n\
-             correctly, but *.trycloudflare.com hostnames do not resolve from this\n\
-             network, so the public round trip could not be made from here.\n\
-             Everything QuickWP controls -- opening, recording, guarding and closing\n\
-             a share -- did work. Try the URL from another machine to confirm."
+             correctly, but the hostname is unresolvable even from 1.1.1.1, so the\n\
+             public round trip could not be made from here. Opening, recording,\n\
+             guarding and closing a share all worked."
         );
         return Ok(());
     }
