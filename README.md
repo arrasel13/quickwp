@@ -90,13 +90,18 @@ Two runnable proofs live in the core crate:
 
 ```bash
 cd quickwp-manager/src-tauri/core
-cargo test                       # 44 tests, including a refused checksum
+cargo test                       # 57 tests, including a refused checksum
 cargo run --example spike        # download -> verify -> pool -> execute PHP
 cargo run --example serve        # create sites -> serve them, stop one in isolation
 cargo run --example https        # real edge binary, curl pinned to our CA
 cargo run --example wordpress    # MySQL -> WordPress -> served over TLS
 cargo run --example tools        # Mailpit + cloudflared install and run
+cargo run --example terminal     # a real TTY, and the tunnel guard reaping an orphan
 ```
+
+`cargo run --example live_tunnel` is deliberately not in that list: it publishes
+a throwaway site to the internet for about a minute. Run it on purpose or not
+at all.
 
 ### The CLI
 

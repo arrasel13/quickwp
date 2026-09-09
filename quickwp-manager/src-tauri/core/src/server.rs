@@ -183,15 +183,7 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
 
     match fastcgi::request(&format!("127.0.0.1:{pool_port}"), &params, &body) {
         Ok(resp) => {
-            // php-fpm returns CGI headers then the body; pass both through.
-            let raw = if resp.stdout.contains("\r\n\r\n") || resp.stdout.contains("\n\n") {
-                format!("HTTP/1.1 200 OK\r\nConnection: close\r\n{}", resp.stdout.replacen('\n', "\r\n", 0))
-            } else {
-                format!(
-                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\n\r\n{}",
-                    resp.stdout
-                )
-            };
+            let raw = cgi_to_http(&resp.stdout);
             stream.write_all(raw.as_bytes())?;
             stream.flush()
         }
@@ -206,6 +198,66 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
             ),
         ),
     }
+}
+
+/// Turn a CGI response into a well-formed HTTP/1.1 one.
+///
+/// php-fpm terminates its headers with bare LF. Emitting a CRLF status line and
+/// then passing those through unchanged produces a response with mixed line
+/// endings: curl and browsers tolerate it, but a strict intermediary does not --
+/// a Cloudflare tunnel returned an empty body for exactly this, while the same
+/// page was fine locally. So every header is normalised to CRLF here, and the
+/// CGI `Status:` header becomes the status line rather than being sent on as a
+/// header nobody reads.
+fn cgi_to_http(stdout: &str) -> String {
+    let (head, body) = match stdout.find("\r\n\r\n") {
+        Some(i) => (&stdout[..i], &stdout[i + 4..]),
+        None => match stdout.find("\n\n") {
+            Some(i) => (&stdout[..i], &stdout[i + 2..]),
+            // No header block at all: treat the whole thing as a body rather
+            // than sending headerless bytes and letting the client guess.
+            None => ("", stdout),
+        },
+    };
+
+    let mut status = "200 OK".to_string();
+    let mut headers: Vec<String> = Vec::new();
+    let mut has_type = false;
+
+    for line in head.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name.eq_ignore_ascii_case("Status") {
+            status = value.to_string();
+            continue;
+        }
+        if name.eq_ignore_ascii_case("Content-Type") {
+            has_type = true;
+        }
+        // Never forward a length or a connection header from PHP: we set both
+        // ourselves, and a stale Content-Length truncates the response.
+        if name.eq_ignore_ascii_case("Content-Length")
+            || name.eq_ignore_ascii_case("Connection")
+            || name.eq_ignore_ascii_case("Transfer-Encoding")
+        {
+            continue;
+        }
+        headers.push(format!("{name}: {value}"));
+    }
+
+    if !has_type {
+        headers.push("Content-Type: text/html; charset=UTF-8".into());
+    }
+    headers.push(format!("Content-Length: {}", body.len()));
+    headers.push("Connection: close".into());
+
+    format!("HTTP/1.1 {status}\r\n{}\r\n\r\n{body}", headers.join("\r\n"))
 }
 
 fn mime_for(p: &std::path::Path) -> &'static str {
@@ -276,4 +328,47 @@ padding:0 1.5rem;color:#1a1f27;background:#f7f8fa}}code{{background:#e9edf2;padd
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lf_only_cgi_headers_become_crlf() {
+        // php-fpm emits bare LF. A response mixing CRLF and LF is tolerated by
+        // curl and rejected by a strict proxy -- a tunnel served an empty body
+        // for exactly this.
+        let out = cgi_to_http("Content-type: text/html\nX-Powered-By: PHP\n\n<h1>hi</h1>");
+        assert!(out.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(!out.trim_end().contains("\n\n"), "no bare LF may survive");
+        for line in out.split("\r\n").take_while(|l| !l.is_empty()) {
+            assert!(!line.contains('\n'), "header `{line}` still holds a bare LF");
+        }
+        assert!(out.ends_with("<h1>hi</h1>"));
+        assert!(out.contains("Content-Length: 11"));
+    }
+
+    #[test]
+    fn a_cgi_status_header_becomes_the_status_line() {
+        let out = cgi_to_http("Status: 404 Not Found\nContent-type: text/html\n\nnope");
+        assert!(out.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(!out.contains("Status:"), "Status is a CGI header, not an HTTP one");
+    }
+
+    #[test]
+    fn a_stale_content_length_from_php_is_not_forwarded() {
+        // Forwarding PHP's own length truncates the body when anything else
+        // has touched it.
+        let out = cgi_to_http("Content-type: text/html\nContent-Length: 99999\n\nshort");
+        assert!(out.contains("Content-Length: 5"));
+        assert!(!out.contains("99999"));
+    }
+
+    #[test]
+    fn a_body_with_no_headers_still_gets_a_content_type() {
+        let out = cgi_to_http("just bytes");
+        assert!(out.contains("Content-Type: text/html"));
+        assert!(out.ends_with("just bytes"));
+    }
 }
