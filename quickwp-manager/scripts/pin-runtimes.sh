@@ -14,7 +14,10 @@ ARCHES="${1:-aarch64}"
 [ "$ARCHES" = "both" ] && ARCHES="aarch64 x86_64"
 
 PHP_MINORS=("8.0.30" "8.1.34" "8.2.32" "8.3.32" "8.4.23" "8.5.8")
-BASE="https://dl.static-php.dev/static-php-cli/common"
+# The `bulk` variant, not `common`: common ships pdo_mysql but NOT mysqli, and
+# WordPress requires mysqli specifically. bulk also carries intl, imagick,
+# sodium and OPcache -- the extension set a real WordPress site expects.
+BASE="https://dl.static-php.dev/static-php-cli/bulk"
 
 hash_url() {
   # Stream the asset through sha256 without keeping it on disk.

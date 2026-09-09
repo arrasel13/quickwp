@@ -5,10 +5,12 @@
 //! dialog and `quickwp site create` run the same code.
 
 pub mod ca;
+pub mod database;
 pub mod db;
 pub mod dns;
 pub mod error;
 pub mod fastcgi;
+pub mod migrate;
 pub mod paths;
 pub mod php;
 pub mod ports;
@@ -17,6 +19,7 @@ pub mod server;
 pub mod site;
 pub mod runtime;
 pub mod supervisor;
+pub mod wordpress;
 
 pub use error::{Error, Result};
 

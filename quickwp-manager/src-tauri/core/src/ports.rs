@@ -139,3 +139,16 @@ mod tests {
         assert_eq!(xdebug_port("8.3").unwrap(), 9893);
     }
 }
+
+/// The pid holding a port, for adopting or stopping a service the supervisor
+/// did not spawn.
+pub fn holder_pid(port: u16) -> Option<u32> {
+    let out = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-F", "p"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.starts_with('p'))
+        .and_then(|l| l[1..].parse().ok())
+}

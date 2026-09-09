@@ -301,3 +301,55 @@ mod tests {
         assert!(!dest.with_extension("part").exists(), "the partial must be discarded");
     }
 }
+
+pub use pins::{MysqlPin, WpCliPin, MYSQL_PINS, MYSQL_SERIES, WPCLI_PIN};
+
+pub fn mysql_pin(series: &str) -> Result<&'static MysqlPin> {
+    let a = arch();
+    MYSQL_PINS
+        .iter()
+        .find(|p| p.series == series && p.arch == a)
+        .ok_or_else(|| Error::other(format!("no MySQL {series} build pinned for {a}")))
+}
+
+/// Install a pinned MySQL. Same order as everything else: verify, then extract.
+pub async fn install_mysql(
+    series: &str,
+    on_progress: impl Fn(Progress) + Send + 'static,
+) -> Result<PathBuf> {
+    let pin = mysql_pin(series)?;
+    let dest = paths::runtime_dir("mysql", &format!("{}-{}", pin.version, pin.arch));
+    if dest.join("bin/mysqld").exists() {
+        return Ok(dest);
+    }
+
+    paths::ensure_dirs()?;
+    let label = format!("MySQL {}", pin.version);
+    let tmp = paths::downloads_cache().join(format!("mysql-{}-{}.tar.gz", pin.version, pin.arch));
+    download_verified(&label, pin.url, pin.sha256, &tmp, on_progress).await?;
+
+    let staging = dest.with_extension("staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    paths::mkdir_p(&staging)?;
+    extract_tar_gz(&tmp, &staging)?;
+
+    // The vendor tarball nests everything under mysql-<version>-<os>-<arch>/.
+    let found = find_file(&staging, "mysqld")
+        .ok_or_else(|| Error::other(format!("{label}: no `mysqld` in the extracted archive")))?;
+    // bin/mysqld -> the tree root is two levels up.
+    let root = found
+        .parent()
+        .and_then(|p| p.parent())
+        .ok_or_else(|| Error::other(format!("{label}: unexpected archive layout")))?
+        .to_path_buf();
+
+    let _ = std::fs::remove_dir_all(&dest);
+    paths::mkdir_p(dest.parent().unwrap())?;
+    std::fs::rename(&root, &dest).map_err(|e| Error::Io {
+        path: dest.clone(),
+        source: e,
+    })?;
+    let _ = std::fs::remove_dir_all(&staging);
+    let _ = std::fs::remove_file(&tmp);
+    Ok(dest)
+}

@@ -15,6 +15,14 @@ A modern desktop application for managing WordPress development environments, bu
   falling through to a neighbour.
 - **php.ini editor**: a whitelist of the directives local development actually
   needs, edited per version, validated before it can break a pool.
+- **Real HTTPS**: a local CA trusted in your *login* keychain, per-site
+  certificates, DNS for your own TLD, and a minimal root daemon that terminates
+  TLS on 443 and does nothing else. All of it removable from one button.
+- **MySQL**: 8.4 and 8.0, each with its own data directory, on an offset port.
+- **WordPress**: bundled WP-CLI, one-step install, magic login, plugin and theme
+  management, search-replace that defaults to a dry run.
+- **Import from Herd**: finds what Herd and Valet serve and brings it across.
+  The source install is strictly read-only.
 
 macOS on Apple Silicon today. The platform-specific parts are isolated;
 Windows and Linux are not built.
@@ -75,9 +83,11 @@ Two runnable proofs live in the core crate:
 
 ```bash
 cd quickwp-manager/src-tauri/core
-cargo test                       # 14 tests, including a refused checksum
+cargo test                       # 28 tests, including a refused checksum
 cargo run --example spike        # download -> verify -> pool -> execute PHP
-cargo run --example serve        # create sites -> serve them over HTTP
+cargo run --example serve        # create sites -> serve them, stop one in isolation
+cargo run --example https        # real edge binary, curl pinned to our CA
+cargo run --example wordpress    # MySQL -> WordPress -> served over TLS
 ```
 
 `scripts/pin-runtimes.sh` regenerates the checksums in

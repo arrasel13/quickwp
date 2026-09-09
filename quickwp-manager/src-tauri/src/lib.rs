@@ -5,7 +5,10 @@
 //! and `quickwp site create` cannot drift apart -- they are the same code.
 
 use quickwp_core as core;
-use quickwp_core::{ca, php, ports, privileged, runtime, server, site, Finding, Quickwp};
+use quickwp_core::{
+    ca, database, migrate, php, ports, privileged, runtime, server, site, wordpress, Finding,
+    Quickwp,
+};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
@@ -317,6 +320,16 @@ fn site_create(state: State<'_, AppState>, new: site::NewSite) -> Res<site::Site
 
 #[tauri::command]
 fn site_delete(state: State<'_, AppState>, domain: String) -> Res<()> {
+    // Drop the database with the site. Leaving it behind means the next site
+    // with the same name silently adopts the old one's tables.
+    if let Some(s) = site::find(&state.app.db, &domain)? {
+        if let Some(name) = s.db_name.clone() {
+            let series = default_db_series(&state);
+            if database::is_installed(&series) && database::adopt_if_ours(&series) {
+                let _ = database::drop_for_site(&series, &name);
+            }
+        }
+    }
     Ok(site::delete(&state.app.db, &domain)?)
 }
 
@@ -372,6 +385,242 @@ fn site_open(state: State<'_, AppState>, domain: String) -> Res<()> {
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+
+// ------------------------------------------------------------ databases
+
+#[tauri::command]
+fn db_list(state: State<'_, AppState>) -> Res<Vec<database::EngineStatus>> {
+    Ok(database::list(&state.app.sup))
+}
+
+#[tauri::command]
+async fn db_install(app: tauri::AppHandle, series: String) -> Res<String> {
+    let handle = app.clone();
+    let label = series.clone();
+    runtime::install_mysql(&series, move |p| {
+        let _ = handle.emit(
+            "download-progress",
+            serde_json::json!({
+                "id": format!("mysql-{label}"),
+                "component": p.component,
+                "received": p.received,
+                "total": p.total,
+            }),
+        );
+    })
+    .await?;
+    Ok(format!("MySQL {series} installed"))
+}
+
+#[tauri::command]
+fn db_start(state: State<'_, AppState>, series: String) -> Res<u16> {
+    Ok(database::start(&state.app.sup, &series)?)
+}
+
+#[tauri::command]
+fn db_stop(state: State<'_, AppState>, series: String) -> Res<bool> {
+    Ok(database::stop(&state.app.sup, &series)?)
+}
+
+#[tauri::command]
+fn db_databases(series: String) -> Res<Vec<String>> {
+    Ok(database::databases(&series)?)
+}
+
+#[tauri::command]
+fn db_export(series: String, db_name: String) -> Res<String> {
+    Ok(database::export(&series, &db_name)?.to_string_lossy().into())
+}
+
+/// Import OVERWRITES the target's tables, so the caller confirms first.
+#[tauri::command]
+fn db_import(series: String, db_name: String, file: String) -> Res<String> {
+    database::import(&series, &db_name, std::path::Path::new(&file))?;
+    Ok(format!("Imported into `{db_name}`."))
+}
+
+// ----------------------------------------------------------- wordpress
+
+#[tauri::command]
+async fn wp_ensure_cli(app: tauri::AppHandle) -> Res<String> {
+    let handle = app.clone();
+    wordpress::ensure_wp_cli(move |p| {
+        let _ = handle.emit(
+            "download-progress",
+            serde_json::json!({
+                "id": "wp-cli",
+                "component": p.component,
+                "received": p.received,
+                "total": p.total,
+            }),
+        );
+    })
+    .await?;
+    Ok(format!("WP-CLI {} ready", runtime::WPCLI_PIN.version))
+}
+
+fn site_by_domain(state: &State<'_, AppState>, domain: &str) -> Res<site::Site> {
+    site::find(&state.app.db, domain)?
+        .ok_or_else(|| format!("no site answers on `{domain}`"))
+}
+
+#[derive(serde::Serialize)]
+struct WpStatus {
+    is_wordpress: bool,
+    version: String,
+}
+
+#[tauri::command]
+fn wp_status(state: State<'_, AppState>, domain: String) -> Res<WpStatus> {
+    let site = site_by_domain(&state, &domain)?;
+    let is_wordpress = wordpress::is_wordpress(&site);
+    Ok(WpStatus {
+        version: if is_wordpress {
+            wordpress::core_version(&site).unwrap_or_default()
+        } else {
+            String::new()
+        },
+        is_wordpress,
+    })
+}
+
+/// Install WordPress into an existing site: database, config, core, admin.
+#[tauri::command]
+fn wp_install(
+    state: State<'_, AppState>,
+    domain: String,
+    req: wordpress::WpInstallRequest,
+) -> Res<wordpress::WpInstallResult> {
+    let site = site_by_domain(&state, &domain)?;
+    let series = default_db_series(&state);
+
+    if !database::is_installed(&series) {
+        return Err(format!(
+            "MySQL {series} is not installed yet. Install it from the Services tab first —              WordPress needs a database."
+        ));
+    }
+    database::start(&state.app.sup, &series)?;
+    php::start_pool(&state.app.sup, &site.php_minor)?;
+
+    let creds = database::create_for_site(&series, &site.domain)?;
+    let url = site_url(state.clone(), site.domain.clone())?;
+    let url = url.trim_end_matches('/').to_string();
+
+    let res = wordpress::install(&site, &req, &series, &creds, &url)?;
+
+    site::set_database(&state.app.db, site.id, &series, &creds.name)?;
+    Ok(res)
+}
+
+fn default_db_series(state: &State<'_, AppState>) -> String {
+    state
+        .app
+        .db
+        .setting("db_series")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string())
+}
+
+#[tauri::command]
+fn wp_magic_login(state: State<'_, AppState>, domain: String, user: String) -> Res<String> {
+    let site = site_by_domain(&state, &domain)?;
+    let url = site_url(state.clone(), site.domain.clone())?;
+    let link = wordpress::magic_login(&site, url.trim_end_matches('/'), &user)?;
+    std::process::Command::new("/usr/bin/open")
+        .arg(&link)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(link)
+}
+
+#[tauri::command]
+fn wp_items(state: State<'_, AppState>, domain: String, kind: String) -> Res<Vec<wordpress::WpItem>> {
+    let site = site_by_domain(&state, &domain)?;
+    Ok(match kind.as_str() {
+        "theme" => wordpress::themes(&site)?,
+        _ => wordpress::plugins(&site)?,
+    })
+}
+
+#[tauri::command]
+fn wp_install_item(
+    state: State<'_, AppState>,
+    domain: String,
+    kind: String,
+    source: String,
+    activate: bool,
+    force: bool,
+) -> Res<String> {
+    let site = site_by_domain(&state, &domain)?;
+    Ok(wordpress::install_item(&site, &kind, &source, activate, force)?)
+}
+
+#[tauri::command]
+fn wp_set_item_state(
+    state: State<'_, AppState>,
+    domain: String,
+    kind: String,
+    name: String,
+    activate: bool,
+) -> Res<String> {
+    let site = site_by_domain(&state, &domain)?;
+    Ok(wordpress::set_item_state(&site, &kind, &name, activate)?)
+}
+
+#[tauri::command]
+fn wp_delete_item(
+    state: State<'_, AppState>,
+    domain: String,
+    kind: String,
+    name: String,
+) -> Res<String> {
+    let site = site_by_domain(&state, &domain)?;
+    Ok(wordpress::delete_item(&site, &kind, &name)?)
+}
+
+/// Defaults to a dry run: the operation most likely to be right in intent and
+/// wrong in scope.
+#[tauri::command]
+fn wp_search_replace(
+    state: State<'_, AppState>,
+    domain: String,
+    from: String,
+    to: String,
+    dry_run: bool,
+) -> Res<String> {
+    let site = site_by_domain(&state, &domain)?;
+    Ok(wordpress::search_replace(&site, &from, &to, dry_run)?)
+}
+
+// ----------------------------------------------------------- migration
+
+#[tauri::command]
+fn migrate_scan(state: State<'_, AppState>) -> Res<migrate::ScanResult> {
+    Ok(migrate::scan(&state.app.db)?)
+}
+
+/// Import found sites. The source installation is never written to.
+#[tauri::command]
+fn migrate_import(
+    state: State<'_, AppState>,
+    requests: Vec<migrate::ImportRequest>,
+) -> Res<Vec<String>> {
+    let mut done = Vec::new();
+    for req in &requests {
+        match migrate::import_site(&state.app.db, req) {
+            Ok(s) => {
+                let _ = state.app.ensure_cert(&s);
+                done.push(format!("Imported {}", s.domain));
+            }
+            // One refusal must not abandon the rest: report it and continue.
+            Err(e) => done.push(format!("Skipped {}: {e}", req.domain)),
+        }
+    }
+    let _ = state.app.reload_dns();
+    Ok(done)
 }
 
 // ------------------------------------------------------------- settings
@@ -434,6 +683,24 @@ pub fn run() {
             site_add_domain,
             site_url,
             site_open,
+            db_list,
+            db_install,
+            db_start,
+            db_stop,
+            db_databases,
+            db_export,
+            db_import,
+            wp_ensure_cli,
+            wp_status,
+            wp_install,
+            wp_magic_login,
+            wp_items,
+            wp_install_item,
+            wp_set_item_state,
+            wp_delete_item,
+            wp_search_replace,
+            migrate_scan,
+            migrate_import,
             settings_get,
             settings_set,
         ])

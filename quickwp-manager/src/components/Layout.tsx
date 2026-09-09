@@ -11,6 +11,7 @@ import {
   CommandLineIcon,
   Square3Stack3DIcon,
   KeyIcon,
+  ArrowRightCircleIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 
@@ -21,6 +22,8 @@ import PHPTab from "./tabs/PHPTab";
 import NodeTab from "./tabs/NodeTab";
 import AboutTab from "./tabs/AboutTab";
 import PasswordGeneratorTab from "./tabs/PasswordGeneratorTab";
+import ServicesTab from "./tabs/ServicesTab";
+import MigrateTab from "./tabs/MigrateTab";
 
 const tabs = [
   { name: "General", icon: HomeIcon, component: GeneralTab },
@@ -33,17 +36,13 @@ const tabs = [
     component: GeneralTab,
     badge: "Soon",
   },
-  {
-    name: "Services",
-    icon: CircleStackIcon,
-    component: GeneralTab,
-    badge: "Soon",
-  },
+  { name: "Services", icon: CircleStackIcon, component: ServicesTab },
   { name: "Mail", icon: EnvelopeIcon, component: GeneralTab, badge: "Soon" },
   { name: "Dumps", icon: CircleStackIcon, component: GeneralTab, badge: "Soon" },
   { name: "Debugger", icon: BugAntIcon, component: GeneralTab, badge: "Soon" },
-  { name: "Shortcuts", icon: CommandLineIcon, component: GeneralTab },
-  { name: "Integrations", icon: Square3Stack3DIcon, component: GeneralTab },
+  { name: "Import from Herd", icon: ArrowRightCircleIcon, component: MigrateTab },
+  { name: "Shortcuts", icon: CommandLineIcon, component: GeneralTab, badge: "Soon" },
+  { name: "Integrations", icon: Square3Stack3DIcon, component: GeneralTab, badge: "Soon" },
   {
     name: "Password Generator",
     icon: KeyIcon,

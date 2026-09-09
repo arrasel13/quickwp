@@ -23,6 +23,8 @@ pub struct Site {
     /// directory makes itself hard to leave.
     pub is_linked: bool,
     pub xdebug: bool,
+    pub db_engine: Option<String>,
+    pub db_name: Option<String>,
     pub aliases: Vec<String>,
 }
 
@@ -48,6 +50,8 @@ fn row_to_site(r: &rusqlite::Row) -> rusqlite::Result<Site> {
         enabled: r.get::<_, i64>("enabled")? != 0,
         is_linked: r.get::<_, i64>("is_linked")? != 0,
         xdebug: r.get::<_, i64>("xdebug")? != 0,
+        db_engine: r.get("db_engine")?,
+        db_name: r.get("db_name")?,
         aliases: Vec::new(),
     })
 }
@@ -159,6 +163,17 @@ pub fn set_enabled(db: &Db, domain: &str, enabled: bool) -> Result<()> {
         c.execute(
             "UPDATE sites SET enabled = ?1 WHERE id = ?2",
             params![enabled as i64, site.id],
+        )?;
+        Ok(())
+    })
+}
+
+/// Record which engine and schema a site uses, once one has been provisioned.
+pub fn set_database(db: &Db, id: i64, engine: &str, db_name: &str) -> Result<()> {
+    db.with(|c| {
+        c.execute(
+            "UPDATE sites SET kind = 'wordpress', db_engine = ?1, db_name = ?2 WHERE id = ?3",
+            params![engine, db_name, id],
         )?;
         Ok(())
     })

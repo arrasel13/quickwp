@@ -55,7 +55,8 @@ pub fn list(sup: &Supervisor, default_minor: &str) -> Vec<PhpVersion> {
                 .unwrap_or_default();
             PhpVersion {
                 installed: runtime::is_installed(m, "fpm"),
-                running: sup.is_running(&pool_name(m)),
+                running: sup.is_running(&pool_name(m))
+                    || (runtime::is_installed(m, "fpm") && adopt_if_ours(m)),
                 port: ports::fpm_port(m).unwrap_or(0),
                 is_default: *m == default_minor,
                 eol: is_eol(m),
@@ -210,11 +211,34 @@ access.log = {logs}/php-fpm-{minor}.access.log
     Ok(conf)
 }
 
+/// Is a pool already listening on this minor's port, and is it actually this
+/// minor?
+///
+/// Pools outlive the app, so relaunching QuickWP should adopt its own pool
+/// rather than refusing to start because the port is taken. The check is the
+/// honest one: ask the pool to execute PHP and compare the version it reports.
+/// A pool that answers with a different version is somebody else's.
+pub fn adopt_if_ours(minor: &str) -> bool {
+    let Ok(port) = ports::fpm_port(minor) else {
+        return false;
+    };
+    if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        return false;
+    }
+    match health(minor) {
+        Ok(v) => v.starts_with(&format!("{minor}.")),
+        Err(_) => false,
+    }
+}
+
 /// Start the pool for a minor. Idempotent.
 pub fn start_pool(sup: &Supervisor, minor: &str) -> Result<u16> {
     let port = ports::fpm_port(minor)?;
     let name = pool_name(minor);
     if sup.is_running(&name) {
+        return Ok(port);
+    }
+    if adopt_if_ours(minor) {
         return Ok(port);
     }
     let bin = runtime::fpm_binary(minor)?;
@@ -248,7 +272,28 @@ pub fn start_pool(sup: &Supervisor, minor: &str) -> Result<u16> {
 }
 
 pub fn stop_pool(sup: &Supervisor, minor: &str) -> Result<bool> {
-    sup.stop(&pool_name(minor))
+    if sup.stop(&pool_name(minor))? {
+        return Ok(true);
+    }
+    // A pool we adopted rather than spawned is not in the supervisor. Find it
+    // by the port it holds and signal its process group.
+    if let Ok(port) = ports::fpm_port(minor) {
+        if adopt_if_ours(minor) {
+            if let Some(pid) = ports::holder_pid(port) {
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGTERM);
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+                for _ in 0..30 {
+                    if ports::is_free(port) {
+                        return Ok(true);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Ask the pool to execute a script. This is the honest health check.

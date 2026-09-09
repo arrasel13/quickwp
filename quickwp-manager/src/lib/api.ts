@@ -18,6 +18,58 @@ export interface PhpVersion {
   xdebug_capable: boolean;
 }
 
+export interface EngineStatus {
+  engine: string;
+  series: string;
+  version: string;
+  installed: boolean;
+  running: boolean;
+  port: number;
+  data_dir: string;
+}
+
+export interface DbCredentials {
+  name: string;
+  user: string;
+  password: string;
+  host: string;
+  port: number;
+}
+
+export interface WpItem {
+  name: string;
+  status: string;
+  version: string;
+  update: string;
+  title: string;
+}
+
+export interface WpInstallResult {
+  url: string;
+  admin_user: string;
+  /** Shown once. Never stored in the clear. */
+  admin_password: string;
+  db: DbCredentials;
+}
+
+export interface FoundSite {
+  name: string;
+  domain: string;
+  aliases: string[];
+  path: string;
+  source: string;
+  php_minor: string | null;
+  is_wordpress: boolean;
+  importable: boolean;
+  note: string | null;
+}
+
+export interface ScanResult {
+  sites: FoundSite[];
+  tools: string[];
+  stale_resolvers: string[];
+}
+
 export interface Site {
   id: number;
   name: string;
@@ -29,6 +81,8 @@ export interface Site {
   enabled: boolean;
   is_linked: boolean;
   xdebug: boolean;
+  db_engine: string | null;
+  db_name: string | null;
   aliases: string[];
 }
 
@@ -143,6 +197,61 @@ export const api = {
   siteUrl: (domain: string) => call<string>("site_url", { domain }),
   siteOpen: (domain: string) => call<void>("site_open", { domain }),
 
+  // databases
+  dbList: () => call<EngineStatus[]>("db_list"),
+  dbInstall: (series: string) => call<string>("db_install", { series }),
+  dbStart: (series: string) => call<number>("db_start", { series }),
+  dbStop: (series: string) => call<boolean>("db_stop", { series }),
+  dbDatabases: (series: string) => call<string[]>("db_databases", { series }),
+  dbExport: (series: string, dbName: string) =>
+    call<string>("db_export", { series, dbName }),
+  dbImport: (series: string, dbName: string, file: string) =>
+    call<string>("db_import", { series, dbName, file }),
+
+  // wordpress
+  wpEnsureCli: () => call<string>("wp_ensure_cli"),
+  wpStatus: (domain: string) =>
+    call<{ is_wordpress: boolean; version: string }>("wp_status", { domain }),
+  wpInstall: (
+    domain: string,
+    req: {
+      title: string;
+      admin_user: string;
+      admin_email: string;
+      admin_password: string | null;
+      version: string | null;
+    },
+  ) => call<WpInstallResult>("wp_install", { domain, req }),
+  wpMagicLogin: (domain: string, user: string) =>
+    call<string>("wp_magic_login", { domain, user }),
+  wpItems: (domain: string, kind: "plugin" | "theme") =>
+    call<WpItem[]>("wp_items", { domain, kind }),
+  wpInstallItem: (
+    domain: string,
+    kind: "plugin" | "theme",
+    source: string,
+    activate: boolean,
+    force: boolean,
+  ) => call<string>("wp_install_item", { domain, kind, source, activate, force }),
+  wpSetItemState: (domain: string, kind: string, name: string, activate: boolean) =>
+    call<string>("wp_set_item_state", { domain, kind, name, activate }),
+  wpDeleteItem: (domain: string, kind: string, name: string) =>
+    call<string>("wp_delete_item", { domain, kind, name }),
+  wpSearchReplace: (domain: string, from: string, to: string, dryRun: boolean) =>
+    call<string>("wp_search_replace", { domain, from, to, dryRun }),
+
+  // migration from Herd / Valet
+  migrateScan: () => call<ScanResult>("migrate_scan"),
+  migrateImport: (
+    requests: {
+      domain: string;
+      path: string;
+      name: string;
+      aliases: string[];
+      php_minor: string;
+    }[],
+  ) => call<string[]>("migrate_import", { requests }),
+
   // settings
   settingsGet: () => call<Settings>("settings_get"),
   settingsSet: (key: string, value: string) => call<void>("settings_set", { key, value }),
@@ -150,6 +259,11 @@ export const api = {
   onInstallProgress: (cb: (p: InstallProgress) => void) => {
     if (!hasBackend) return Promise.resolve(() => {});
     return listen<InstallProgress>("php-install-progress", (e) => cb(e.payload));
+  },
+
+  onDownloadProgress: (cb: (p: InstallProgress & { id: string }) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<InstallProgress & { id: string }>("download-progress", (e) => cb(e.payload));
   },
 };
 
