@@ -29,6 +29,8 @@ export default function GeneralTab() {
   const [notice, setNotice] = useState<string | null>(null);
   const [preflight, setPreflight] = useState<PreflightCheck[] | null>(null);
   const [verified, setVerified] = useState<VerifyReport | null>(null);
+  // Taking a TLD from another tool is a decision, never a side effect.
+  const [takeover, setTakeover] = useState(false);
 
   const refreshAll = async () => {
     await Promise.all([reload(), reloadSettings(), reloadDoctor()]);
@@ -194,7 +196,7 @@ export default function GeneralTab() {
                     setBusy(true);
                     setNotice(null);
                     try {
-                      setPreflight(await api.httpsPreflight());
+                      setPreflight(await api.httpsPreflight(takeover));
                     } catch (e) {
                       setNotice(errorText(e));
                     } finally {
@@ -213,7 +215,7 @@ export default function GeneralTab() {
                     setBusy(true);
                     setNotice(null);
                     try {
-                      const checks = await api.httpsPreflight();
+                      const checks = await api.httpsPreflight(takeover);
                       setPreflight(checks);
                       if (checks.some((c) => c.blocking && !c.ok)) {
                         setNotice(
@@ -221,7 +223,7 @@ export default function GeneralTab() {
                         );
                         return;
                       }
-                      setNotice(await api.httpsEnable());
+                      setNotice(await api.httpsEnable(takeover));
                       setVerified(await api.httpsVerify());
                       await refreshAll();
                     } catch (e) {
@@ -352,6 +354,28 @@ export default function GeneralTab() {
                 </li>
               ))}
             </ul>
+            {preflight.some((c) => c.id === "resolver-free" && !c.ok) && (
+              <label className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={takeover}
+                  onChange={(e) => {
+                    setTakeover(e.target.checked);
+                    void api
+                      .httpsPreflight(e.target.checked)
+                      .then(setPreflight)
+                      .catch((err) => setNotice(errorText(err)));
+                  }}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                />
+                <span className="text-[11px] text-amber-900 leading-relaxed">
+                  <strong>Take this TLD over.</strong> QuickWP will replace the resolver file so
+                  the domain points here instead. The other tool keeps its sites and settings —
+                  only the name stops resolving to it, and its own uninstall still works. Leave
+                  this unticked to pick a different TLD in Settings instead.
+                </span>
+              </label>
+            )}
             {preflight.some((c) => c.blocking && !c.ok) && (
               <p className="mt-2 text-[11px] text-gray-600">
                 QuickWP will not ask for your password for an install that cannot succeed.

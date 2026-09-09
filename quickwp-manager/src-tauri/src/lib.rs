@@ -217,9 +217,15 @@ fn edge_binary() -> std::path::PathBuf {
 /// leaves the ones before it intact and nothing half-applied.
 /// Everything checked before a password is asked for.
 #[tauri::command]
-fn https_preflight(state: State<'_, AppState>) -> Res<Vec<privileged::Check>> {
+fn https_preflight(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Vec<privileged::Check>> {
     let tld = state.app.db.tld()?;
-    Ok(privileged::preflight(&tld, &edge_binary()))
+    Ok(privileged::preflight(&tld, &edge_binary(), takeover.unwrap_or(false)))
+}
+
+/// Would claiming the current TLD take it from another tool?
+#[tauri::command]
+fn https_tld_is_foreign(state: State<'_, AppState>) -> Res<bool> {
+    Ok(privileged::tld_is_foreign(&state.app.db.tld()?))
 }
 
 /// Measured facts about the installed system state, after the fact.
@@ -230,7 +236,8 @@ fn https_verify(state: State<'_, AppState>) -> Res<privileged::VerifyReport> {
 }
 
 #[tauri::command]
-fn https_enable(state: State<'_, AppState>) -> Res<String> {
+fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<String> {
+    let takeover = takeover.unwrap_or(false);
     let tld = state.app.db.tld()?;
 
     // The CA and the certificates cost nothing and need no privilege, so they
@@ -252,7 +259,7 @@ fn https_enable(state: State<'_, AppState>) -> Res<String> {
     }
     drop(edge);
 
-    privileged::install_system(&tld, &edge_binary())?;
+    privileged::install_system(&tld, &edge_binary(), takeover)?;
 
     // Do not claim success until it is measured. launchd needs a moment.
     let mut report = privileged::verify(&tld);
@@ -999,6 +1006,7 @@ pub fn run() {
             doctor,
             https_enable,
             https_preflight,
+            https_tld_is_foreign,
             https_verify,
             https_trust_ca,
             https_regenerate_certs,

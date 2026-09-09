@@ -8,7 +8,9 @@
 //! you evaluate. 80 and 443 are the exception -- `https://site.test` with no
 //! port number *means* 443, so only one tool can serve at a time.
 
-use std::net::{SocketAddr, TcpListener};
+use std::io::ErrorKind;
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::time::Duration;
 
 pub const EDGE_HTTP: u16 = 80;
 pub const EDGE_HTTPS: u16 = 443;
@@ -66,9 +68,33 @@ fn split_minor(minor: &str) -> crate::Result<(u16, u16)> {
 }
 
 /// True when nothing holds the port on loopback.
+///
+/// Binding is not a sufficient test for ports below 1024. Only root may bind
+/// those, so an unprivileged process gets PermissionDenied whether or not
+/// anything is actually there -- which made QuickWP report 80 and 443 as "in
+/// use" on a machine where they were completely free, and told the user to
+/// quit a tool they had already quit.
+///
+/// So: a refusal to bind is only occupancy when it is EADDRINUSE. When we are
+/// simply not allowed to bind, ask the other question instead -- is anything
+/// listening? -- which needs no privilege at all.
 pub fn is_free(port: u16) -> bool {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
-    TcpListener::bind(addr).is_ok()
+    match TcpListener::bind(addr) {
+        Ok(_) => true,
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => !is_listening(port),
+        Err(_) => false,
+    }
+}
+
+/// Is something accepting connections on this port right now?
+///
+/// This is the question that survives not being root. It cannot see a socket
+/// bound to another interface, which is fine: what matters here is whether the
+/// address QuickWP would serve on is already answering.
+pub fn is_listening(port: u16) -> bool {
+    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
 }
 
 /// Who holds a port, for the message when a start is refused.
@@ -122,8 +148,11 @@ fn holder_via_lsof(port: u16) -> Option<String> {
 
 /// Another local environment that could be holding 80/443.
 ///
-/// Named rather than guessed at: only one tool can serve https://site.test with
-/// no port number, so knowing *which* one is in the way is the whole answer.
+/// Only ever used to EXPLAIN a port that is actually taken, or a resolver file
+/// that is actually foreign. A process existing is not evidence that it holds a
+/// port: rexenv's DNS agent keeps running by design after the app is quit, and
+/// treating that as "rexenv holds 443" told users to quit something they had
+/// already quit.
 pub fn running_dev_tool() -> Option<String> {
     let out = std::process::Command::new("/bin/ps")
         .args(["-axo", "command="])
@@ -176,6 +205,26 @@ mod tests {
     #[test]
     fn a_patch_where_a_minor_belongs_is_refused() {
         assert!(fpm_port("8.3.32").is_err());
+    }
+
+    #[test]
+    fn a_privileged_port_with_nothing_on_it_reads_as_free() {
+        // We cannot bind 80 as a normal user, but that is a permission error,
+        // not occupancy. Reporting it as "in use" is the bug this guards.
+        if is_listening(80) {
+            return; // something really is there; nothing to assert
+        }
+        assert!(is_free(80), "port 80 is free when nothing is listening on it");
+    }
+
+    #[test]
+    fn a_port_we_hold_ourselves_is_not_free() {
+        let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert!(!is_free(port));
+        assert!(is_listening(port));
+        drop(l);
+        assert!(is_free(port));
     }
 
     #[test]

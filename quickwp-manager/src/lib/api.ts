@@ -239,9 +239,11 @@ export const api = {
   doctor: () => call<Finding[]>("doctor"),
 
   // https
-  httpsPreflight: () => call<PreflightCheck[]>("https_preflight"),
+  httpsPreflight: (takeover = false) =>
+    call<PreflightCheck[]>("https_preflight", { takeover }),
+  httpsTldIsForeign: () => call<boolean>("https_tld_is_foreign"),
   httpsVerify: () => call<VerifyReport>("https_verify"),
-  httpsEnable: () => call<string>("https_enable"),
+  httpsEnable: (takeover = false) => call<string>("https_enable", { takeover }),
   httpsTrustCa: () => call<string>("https_trust_ca"),
   httpsRegenerateCerts: () => call<string>("https_regenerate_certs"),
   removeSystemChanges: () => call<string>("remove_system_changes"),

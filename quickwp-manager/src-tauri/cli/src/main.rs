@@ -171,7 +171,8 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
                 .ok()
                 .and_then(|e| e.parent().map(|d| d.join("quickwp-edge")))
                 .unwrap_or_default();
-            let checks = core::privileged::preflight(&tld, &edge);
+            let takeover = args.iter().any(|a| a == "--takeover");
+            let checks = core::privileged::preflight(&tld, &edge, takeover);
             let blocks = core::privileged::preflight_blocks(&checks);
             Ok(out(json, &checks, || {
                 let mut s: String = checks

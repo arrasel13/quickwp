@@ -68,18 +68,24 @@ pub fn resolver_conflict(tld: &str) -> Option<String> {
     if !p.exists() || resolver_is_ours(tld) {
         return None;
     }
-    // Name the tool when it is running, rather than listing suspects. The
-    // resolver file itself cannot say who wrote it, so a running process is
-    // the best evidence available -- and when there is none, the honest answer
-    // is that something uninstalled left it behind.
+    // Be precise about what quitting does and does not fix. rexenv's DNS runs
+    // from a LaunchAgent that deliberately outlives its app, so "quit it first"
+    // is advice that cannot work -- and telling someone to do a thing they have
+    // already done is worse than saying nothing.
     let owner = match crate::ports::running_dev_tool() {
-        Some(tool) => format!("{tool} owns .{tld} on this Mac"),
+        Some(tool) => format!(
+            "{tool} owns it. Its DNS keeps answering after you quit the app — that is by \
+             design, not a leftover — so quitting does not release it. Remove {tool}'s \
+             system changes from its own settings, pick a different TLD in Settings, or \
+             take .{tld} over deliberately."
+        ),
         None => format!(
-            "nothing is running that claims it, so a tool you uninstalled \
-             probably left it behind — .{tld} currently resolves nowhere"
+            "Nothing running claims it, so a tool that was uninstalled left it behind and \
+             .{tld} currently resolves nowhere. Pick a different TLD in Settings, or take \
+             it over deliberately."
         ),
     };
-    Some(format!("{} already exists and does not point at QuickWP. {owner}.", p.display()))
+    Some(format!("{} points somewhere else. {owner}", p.display()))
 }
 
 pub fn daemon_running() -> bool {
@@ -215,7 +221,7 @@ pub struct Check {
 }
 
 /// Everything that must hold before the admin prompt appears.
-pub fn preflight(tld: &str, edge_binary: &std::path::Path) -> Vec<Check> {
+pub fn preflight(tld: &str, edge_binary: &std::path::Path, takeover: bool) -> Vec<Check> {
     let mut out = Vec::new();
     let mut add = |id: &str, label: &str, ok: bool, fix: &str, blocking: bool| {
         out.push(Check {
@@ -236,23 +242,17 @@ pub fn preflight(tld: &str, edge_binary: &std::path::Path) -> Vec<Check> {
         true,
     );
 
-    // Naming the rival first: it explains the port checks below.
-    let rival = crate::ports::running_dev_tool();
-    add(
-        "no-rival",
-        "No other local environment is holding the ports",
-        rival.is_none(),
-        &match &rival {
-            Some(t) => format!(
-                "{t} is running and holds ports 80 and 443. Quit it first — only one tool can serve https://name.{tld} with no port number."
-            ),
-            None => String::new(),
-        },
-        true,
-    );
-
-    for (port, label) in [(ports::EDGE_HTTP, "Port 80 is free"), (ports::EDGE_HTTPS, "Port 443 is free")] {
+    // Occupancy is measured, never inferred from a process existing. A tool's
+    // name is only used to EXPLAIN a port that is genuinely taken.
+    let mut taken: Vec<u16> = Vec::new();
+    for (port, label) in [
+        (ports::EDGE_HTTP, "Port 80 is free"),
+        (ports::EDGE_HTTPS, "Port 443 is free"),
+    ] {
         let free = crate::ports::is_free(port);
+        if !free {
+            taken.push(port);
+        }
         add(
             &format!("port-{port}"),
             label,
@@ -265,13 +265,33 @@ pub fn preflight(tld: &str, edge_binary: &std::path::Path) -> Vec<Check> {
         );
     }
 
+    let rival = crate::ports::running_dev_tool();
+    let rival_holds_ports = !taken.is_empty() && rival.is_some();
+    add(
+        "no-rival",
+        "No other local environment is serving on 80/443",
+        !rival_holds_ports,
+        &match (&rival, taken.first()) {
+            (Some(t), Some(_)) => format!(
+                "{t} is serving on {}. Quit it first — only one tool can serve https://name.{tld} with no port number.",
+                taken.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" and ")
+            ),
+            _ => String::new(),
+        },
+        true,
+    );
+
     let conflict = resolver_conflict(tld);
     add(
         "resolver-free",
         &format!("Nothing else owns .{tld}"),
         conflict.is_none(),
         &conflict.clone().unwrap_or_default(),
-        true,
+        // Blocking, but answerable: the user can choose a different TLD, or
+        // deliberately take this one over. Taking over another tool's resolver
+        // is never done silently, which is why it is a separate decision rather
+        // than something the install just does.
+        !takeover,
     );
 
     add(
@@ -344,8 +364,8 @@ fn script_is_valid(tld: &str, edge_binary: &std::path::Path) -> bool {
 ///
 /// Refuses before prompting if the preflight blocks: asking for a password to
 /// perform an operation that cannot succeed is the worst of both outcomes.
-pub fn install_system(tld: &str, edge_binary: &std::path::Path) -> Result<()> {
-    let checks = preflight(tld, edge_binary);
+pub fn install_system(tld: &str, edge_binary: &std::path::Path, takeover: bool) -> Result<()> {
+    let checks = preflight(tld, edge_binary, takeover);
     if preflight_blocks(&checks) {
         let reasons: Vec<String> = checks
             .iter()
@@ -364,6 +384,12 @@ pub fn install_system(tld: &str, edge_binary: &std::path::Path) -> Result<()> {
             "QuickWP needs your password once to route .{tld} to your Mac and let it serve on port 443."
         ),
     )
+}
+
+/// Is claiming this TLD a takeover from another tool, rather than a fresh
+/// install? The UI asks for that consent explicitly.
+pub fn tld_is_foreign(tld: &str) -> bool {
+    resolver_conflict(tld).is_some()
 }
 
 /// Install a resolver file for an additional TLD.
@@ -603,7 +629,7 @@ mod artifact_tests {
     fn preflight_blocks_when_the_edge_binary_is_missing() {
         // The worst outcome is a password prompt for an install that installs
         // a daemon pointing at nothing.
-        let checks = preflight("test", std::path::Path::new("/definitely/not/here"));
+        let checks = preflight("test", std::path::Path::new("/definitely/not/here"), false);
         let edge = checks.iter().find(|c| c.id == "edge-binary").unwrap();
         assert!(!edge.ok);
         assert!(edge.blocking);
@@ -612,7 +638,8 @@ mod artifact_tests {
 
     #[test]
     fn install_refuses_without_prompting_when_preflight_blocks() {
-        let err = install_system("test", std::path::Path::new("/definitely/not/here")).unwrap_err();
+        let err =
+            install_system("test", std::path::Path::new("/definitely/not/here"), false).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("Not asking for your password"), "got: {msg}");
     }
