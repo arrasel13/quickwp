@@ -90,7 +90,7 @@ Two runnable proofs live in the core crate:
 
 ```bash
 cd quickwp-manager/src-tauri/core
-cargo test                       # 59 tests, including a refused checksum
+cargo test                       # 65 tests, including a refused checksum
 cargo run --example spike        # download -> verify -> pool -> execute PHP
 cargo run --example serve        # create sites -> serve them, stop one in isolation
 cargo run --example https        # real edge binary, curl pinned to our CA
@@ -104,6 +104,21 @@ a throwaway site to the internet for about a minute. Run it on purpose or not
 at all. It falls back to a public resolver and pins the address when the local
 resolver will not answer for a `*.trycloudflare.com` name — some networks do
 not, and that is not a reason to leave the round trip unproven.
+
+### Before turning on HTTPS
+
+QuickWP installs three privileged things: a DNS resolver file, a root
+LaunchDaemon on ports 80/443, and certificate-authority trust in your *login*
+keychain. Check what would happen before any password is asked for:
+
+```bash
+./src-tauri/target/debug/quickwp system preflight
+```
+
+Every blocking failure is a reason the install could not succeed, so it is
+refused rather than prompting. Afterwards, `quickwp system verify` measures what
+is actually installed and serving — not merely that files were written. Settings
+→ *Remove system changes* reverses all of it and verifies that too.
 
 ### The CLI
 

@@ -129,6 +129,27 @@ export interface Finding {
   detail: string;
 }
 
+export interface PreflightCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  fix: string;
+  /** A failed blocking check means the install cannot succeed. */
+  blocking: boolean;
+}
+
+export interface VerifyItem {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface VerifyReport {
+  items: VerifyItem[];
+  all_ok: boolean;
+}
+
 export interface MailStatus {
   installed: boolean;
   running: boolean;
@@ -218,6 +239,8 @@ export const api = {
   doctor: () => call<Finding[]>("doctor"),
 
   // https
+  httpsPreflight: () => call<PreflightCheck[]>("https_preflight"),
+  httpsVerify: () => call<VerifyReport>("https_verify"),
   httpsEnable: () => call<string>("https_enable"),
   httpsTrustCa: () => call<string>("https_trust_ca"),
   httpsRegenerateCerts: () => call<string>("https_regenerate_certs"),

@@ -11,7 +11,7 @@ import {
   LockOpenIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
-import { api, errorText, hasBackend, Finding } from "../../lib/api";
+import { api, errorText, hasBackend, Finding, PreflightCheck, VerifyReport } from "../../lib/api";
 import { useAsync } from "../../lib/useAsync";
 
 const LEVEL_STYLE: Record<string, { ring: string; icon: typeof CheckCircleIcon; tone: string }> = {
@@ -27,6 +27,8 @@ export default function GeneralTab() {
   const { data: findings, reload: reloadDoctor } = useAsync(() => api.doctor(), []);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [preflight, setPreflight] = useState<PreflightCheck[] | null>(null);
+  const [verified, setVerified] = useState<VerifyReport | null>(null);
 
   const refreshAll = async () => {
     await Promise.all([reload(), reloadSettings(), reloadDoctor()]);
@@ -185,14 +187,57 @@ export default function GeneralTab() {
             </div>
           </div>
           {!status?.https_ready ? (
-            <button
-              onClick={() => void act(api.httpsEnable)}
-              disabled={busy}
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-green-700 hover:bg-green-800 disabled:opacity-50"
-            >
-              <LockClosedIcon className="h-4 w-4" />
-              Turn on HTTPS
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() =>
+                  void (async () => {
+                    setBusy(true);
+                    setNotice(null);
+                    try {
+                      setPreflight(await api.httpsPreflight());
+                    } catch (e) {
+                      setNotice(errorText(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  })()
+                }
+                disabled={busy}
+                className="px-3 py-2 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+              >
+                Check first
+              </button>
+              <button
+                onClick={() =>
+                  void (async () => {
+                    setBusy(true);
+                    setNotice(null);
+                    try {
+                      const checks = await api.httpsPreflight();
+                      setPreflight(checks);
+                      if (checks.some((c) => c.blocking && !c.ok)) {
+                        setNotice(
+                          "Not asking for your password — the checks below have to pass first.",
+                        );
+                        return;
+                      }
+                      setNotice(await api.httpsEnable());
+                      setVerified(await api.httpsVerify());
+                      await refreshAll();
+                    } catch (e) {
+                      setNotice(errorText(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  })()
+                }
+                disabled={busy}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-green-700 hover:bg-green-800 disabled:opacity-50"
+              >
+                <LockClosedIcon className="h-4 w-4" />
+                Turn on HTTPS
+              </button>
+            </div>
           ) : (
             <button
               onClick={() => {
@@ -203,7 +248,20 @@ export default function GeneralTab() {
                   )
                 )
                   return;
-                void act(api.removeSystemChanges);
+                void (async () => {
+                  setBusy(true);
+                  setNotice(null);
+                  try {
+                    setNotice(await api.removeSystemChanges());
+                    setVerified(null);
+                    setPreflight(null);
+                    await refreshAll();
+                  } catch (e) {
+                    setNotice(errorText(e));
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
               }}
               disabled={busy}
               className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
@@ -264,6 +322,71 @@ export default function GeneralTab() {
             </div>
           ))}
         </div>
+
+        {preflight && (
+          <div className="mt-4 border-t border-gray-100 pt-3">
+            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">
+              Checked before anything asks for your password
+            </h3>
+            <ul className="space-y-1.5">
+              {preflight.map((c) => (
+                <li key={c.id} className="flex items-start gap-2">
+                  <span
+                    className={clsx(
+                      "mt-0.5 text-[10px] font-mono px-1.5 py-0.5 rounded flex-shrink-0",
+                      c.ok
+                        ? "bg-green-100 text-green-800"
+                        : c.blocking
+                          ? "bg-red-100 text-red-800"
+                          : "bg-amber-100 text-amber-900",
+                    )}
+                  >
+                    {c.ok ? "OK" : c.blocking ? "STOP" : "WARN"}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="text-xs text-gray-900">{c.label}</span>
+                    {!c.ok && c.fix && (
+                      <span className="block text-[11px] text-gray-600 leading-relaxed">{c.fix}</span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {preflight.some((c) => c.blocking && !c.ok) && (
+              <p className="mt-2 text-[11px] text-gray-600">
+                QuickWP will not ask for your password for an install that cannot succeed.
+              </p>
+            )}
+          </div>
+        )}
+
+        {verified && (
+          <div className="mt-4 border-t border-gray-100 pt-3">
+            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">
+              Measured after the install — not just "files were written"
+            </h3>
+            <ul className="space-y-1.5">
+              {verified.items.map((i) => (
+                <li key={i.id} className="flex items-start gap-2">
+                  <span
+                    className={clsx(
+                      "mt-0.5 text-[10px] font-mono px-1.5 py-0.5 rounded flex-shrink-0",
+                      i.ok ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800",
+                    )}
+                  >
+                    {i.ok ? "OK" : "NO"}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="text-xs text-gray-900">{i.label}</span>
+                    {i.detail && (
+                      <span className="block text-[11px] text-gray-500 break-all">{i.detail}</span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {status?.system?.ca_exists && !status?.system?.ca_trusted && (
           <div className="mt-3 flex items-center gap-2">

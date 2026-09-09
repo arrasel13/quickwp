@@ -209,6 +209,6 @@ mod tests {
     fn an_empty_command_is_refused() {
         let dir = std::env::temp_dir().join("quickwp-exec-empty");
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(run_streaming(&a_site(&dir), "   ", |_| {}).is_err());
+        assert!(run_streaming(&a_site(&dir), " ", |_| {}).is_err());
     }
 }

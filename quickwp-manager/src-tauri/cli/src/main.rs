@@ -19,6 +19,8 @@ STACK
   start                        Start the shared stack
   stop                         Stop the shared stack
   doctor                       Diagnose ports, DNS and certificate trust
+  system preflight             Everything checked before HTTPS asks for a password
+  system verify                Measure what is actually installed and working
 
 SITES
   site list                    Every site and whether it is serving
@@ -160,6 +162,48 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
                     ));
                 }
                 s.trim_end().to_string()
+            }))
+        }
+        // Checked before any password is asked for.
+        ("system", "preflight") => {
+            let tld = app.db.tld().map_err(|e| e.to_string())?;
+            let edge = std::env::current_exe()
+                .ok()
+                .and_then(|e| e.parent().map(|d| d.join("quickwp-edge")))
+                .unwrap_or_default();
+            let checks = core::privileged::preflight(&tld, &edge);
+            let blocks = core::privileged::preflight_blocks(&checks);
+            Ok(out(json, &checks, || {
+                let mut s: String = checks
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "[{}] {}{}",
+                            if c.ok { " ok " } else if c.blocking { "STOP" } else { "warn" },
+                            c.label,
+                            if c.ok { String::new() } else { format!("\n       {}", c.fix) }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                s.push_str(if blocks {
+                    "\n\nNot ready: fix the STOP lines first. QuickWP will not ask for your \
+                     password for an install that cannot succeed."
+                } else {
+                    "\n\nReady. Turn on HTTPS from the app's General tab."
+                });
+                s
+            }))
+        }
+        ("system", "verify") => {
+            let tld = app.db.tld().map_err(|e| e.to_string())?;
+            let r = core::privileged::verify(&tld);
+            Ok(out(json, &r, || {
+                r.items
+                    .iter()
+                    .map(|i| format!("[{}] {} — {}", if i.ok { "ok" } else { "no" }, i.label, i.detail))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             }))
         }
         ("doctor", _) => {

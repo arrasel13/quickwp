@@ -215,17 +215,26 @@ fn edge_binary() -> std::path::PathBuf {
 /// generate the CA (no privilege), trust it (login password), then write the
 /// resolver and load the edge daemon (admin password). Cancelling any step
 /// leaves the ones before it intact and nothing half-applied.
+/// Everything checked before a password is asked for.
+#[tauri::command]
+fn https_preflight(state: State<'_, AppState>) -> Res<Vec<privileged::Check>> {
+    let tld = state.app.db.tld()?;
+    Ok(privileged::preflight(&tld, &edge_binary()))
+}
+
+/// Measured facts about the installed system state, after the fact.
+#[tauri::command]
+fn https_verify(state: State<'_, AppState>) -> Res<privileged::VerifyReport> {
+    let tld = state.app.db.tld()?;
+    Ok(privileged::verify(&tld))
+}
+
 #[tauri::command]
 fn https_enable(state: State<'_, AppState>) -> Res<String> {
     let tld = state.app.db.tld()?;
 
-    if let Some(conflict) = privileged::resolver_conflict(&tld) {
-        return Err(format!(
-            "{conflict}\n\nQuit that tool, or choose a different TLD in Settings, \
-             then try again. QuickWP will not overwrite it without you deciding."
-        ));
-    }
-
+    // The CA and the certificates cost nothing and need no privilege, so they
+    // are done first: if the prompt is then cancelled, nothing is half-done.
     ca::ensure_ca()?;
     let issued = state.app.ensure_all_certs()?;
 
@@ -233,17 +242,44 @@ fn https_enable(state: State<'_, AppState>) -> Res<String> {
         ca::trust()?;
     }
 
-    privileged::install_system(&tld, &edge_binary())?;
-
+    // DNS first: the resolver file is useless if nothing is answering, and a
+    // verify immediately after the install would fail on a race we created.
     state.app.start_dns()?;
 
     let mut edge = state.edge.lock().unwrap();
     if edge.is_none() {
         *edge = Some(server::start(state.app.db.clone(), ports::NGINX)?);
     }
+    drop(edge);
+
+    privileged::install_system(&tld, &edge_binary())?;
+
+    // Do not claim success until it is measured. launchd needs a moment.
+    let mut report = privileged::verify(&tld);
+    for _ in 0..20 {
+        if report.all_ok {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        report = privileged::verify(&tld);
+    }
+
+    if !report.all_ok {
+        let failed: Vec<String> = report
+            .items
+            .iter()
+            .filter(|i| !i.ok)
+            .map(|i| format!("• {} — {}", i.label, i.detail))
+            .collect();
+        return Err(format!(
+            "The install ran, but not everything came up:\n{}\n\nNothing was rolled back — \
+             use Remove system changes to undo it, or check logs/edge.log.",
+            failed.join("\n")
+        ));
+    }
 
     Ok(format!(
-        "HTTPS is on. {issued} certificate(s) issued.\nYour sites are now at https://<name>.{tld}"
+        "HTTPS is on, and verified.\n{issued} certificate(s) issued.\nYour sites are now at https://<name>.{tld}"
     ))
 }
 
@@ -273,8 +309,25 @@ fn remove_system_changes(state: State<'_, AppState>) -> Res<String> {
     let tlds = state.app.tlds()?;
     privileged::remove_system_changes(&tlds)?;
     state.app.stop_dns();
-    Ok("Removed the DNS resolver, the edge service and the certificate trust. \
-        Your sites and their files are untouched."
+
+    // Prove it reversed, rather than trusting the script ran.
+    let report = privileged::verify_removed(&tlds);
+    if !report.all_ok {
+        let left: Vec<String> = report
+            .items
+            .iter()
+            .filter(|i| !i.ok)
+            .map(|i| format!("• {} — {}", i.label, i.detail))
+            .collect();
+        return Err(format!(
+            "Removal ran, but some of it is still there:\n{}\n\nTry again, or remove those \
+             by hand.",
+            left.join("\n")
+        ));
+    }
+
+    Ok("Removed and verified: the DNS resolver, the edge service and the certificate trust \
+        are gone. Your sites, their files and their databases are untouched."
         .into())
 }
 
@@ -933,6 +986,8 @@ pub fn run() {
             stack_stop,
             doctor,
             https_enable,
+            https_preflight,
+            https_verify,
             https_trust_ca,
             https_regenerate_certs,
             remove_system_changes,
