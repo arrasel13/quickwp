@@ -97,7 +97,6 @@ export default function SitesTab() {
   const [modalStep, setModalStep] = useState<"select" | "wordpress">("select");
   const [selectedProjectType, setSelectedProjectType] =
     useState<ProjectType | null>(null);
-  void selectedProjectType;
 
   // WordPress site creation states
   const [config, setConfig] = useState<SiteConfig>({
@@ -116,6 +115,7 @@ export default function SitesTab() {
   const [progress, setProgress] = useState(0);
   const [terminalOutput, setTerminalOutput] = useState<string[]>([]);
   const [currentStep, setCurrentStep] = useState("");
+  const [installDone, setInstallDone] = useState(false);
 
   // Project type options
   const projectOptions: ProjectOption[] = [
@@ -223,80 +223,141 @@ export default function SitesTab() {
     setTerminalOutput([]);
     setProgress(0);
     setIsInstalling(false);
+    setInstallDone(false);
   };
 
-  const handleProjectSelect = (projectType: ProjectType) => {
+  const handleProjectSelect = async (projectType: ProjectType) => {
     setSelectedProjectType(projectType);
     if (projectType === "wordpress") {
       setModalStep("wordpress");
-    } else {
-      // For Laravel and existing projects, we'll handle them later
-      alert(`${projectType} project creation will be implemented soon!`);
-      closeModal();
+      return;
     }
+    if (projectType === "existing") {
+      // Linking serves a folder where it already is. Nothing is copied, and
+      // deleting the site later removes only QuickWP's record of it.
+      const path = prompt(
+        "Link an existing folder\n\nQuickWP serves it where it is — nothing is copied or " +
+          "moved, and deleting the site later leaves your folder alone.\n\nFull path:",
+      );
+      if (!path) return;
+      const suggested = path.split("/").filter(Boolean).pop() ?? "site";
+      const domain = prompt("Domain for this site:", `${suggested}.test`);
+      if (!domain) return;
+      try {
+        await api.siteCreate({
+          name: suggested,
+          domain,
+          kind: "php",
+          php_minor: "",
+          link_path: path,
+        });
+        await reloadSites();
+        closeModal();
+      } catch (e) {
+        alert(errorText(e));
+      }
+      return;
+    }
+    alert("Laravel projects are not built yet.");
+    closeModal();
   };
 
-  // Real creation. Steps are reported as they actually happen -- a progress bar
-  // that advances on a timer is a progress bar that lies.
   const simulateInstallation = async () => {
     setIsInstalling(true);
+    setInstallDone(false);
     setProgress(0);
     setTerminalOutput([]);
 
     const say = (line: string) => setTerminalOutput((prev) => [...prev, line]);
+    const wantsWordPress = selectedProjectType === "wordpress";
 
     try {
-      setCurrentStep("Checking PHP " + config.phpVersion + "...");
-      say("> Checking PHP " + config.phpVersion);
-      setProgress(10);
+      setCurrentStep(`Checking PHP ${config.phpVersion}...`);
+      say(`> Checking PHP ${config.phpVersion}`);
+      setProgress(8);
 
       const versions = await api.phpList();
       const chosen = versions.find((v) => v.minor === config.phpVersion);
-      if (!chosen) throw new Error("PHP " + config.phpVersion + " is not a version QuickWP ships.");
-
+      if (!chosen) throw new Error(`PHP ${config.phpVersion} is not a version QuickWP ships.`);
       if (!chosen.installed) {
-        setCurrentStep("Downloading PHP " + config.phpVersion + "...");
-        say("> PHP " + config.phpVersion + " is not installed yet — downloading (~30MB)");
+        setCurrentStep(`Downloading PHP ${config.phpVersion}...`);
+        say(`> PHP ${config.phpVersion} is not installed yet — downloading (~35MB)`);
         await api.phpInstall(config.phpVersion);
         say("  verified against its pinned checksum");
+      }
+      setProgress(25);
+
+      if (wantsWordPress) {
+        // WordPress needs a database and WP-CLI. Both are fetched on demand,
+        // and the first one is a large download, so say so rather than
+        // appearing to hang.
+        const engines = await api.dbList();
+        const engine = engines.find((e) => e.installed) ?? engines[0];
+        if (!engine.installed) {
+          setCurrentStep(`Downloading MySQL ${engine.series}...`);
+          say(`> MySQL ${engine.series} is not installed yet — downloading (~250MB, once)`);
+          await api.dbInstall(engine.series);
+        }
+        setCurrentStep("Starting MySQL...");
+        say("> Starting MySQL");
+        await api.dbStart(engine.series);
+        setProgress(45);
+
+        setCurrentStep("Fetching WP-CLI...");
+        say("> " + (await api.wpEnsureCli()));
       }
       setProgress(55);
 
       setCurrentStep("Creating the site...");
-      say("> Creating " + config.siteUrl);
+      say(`> Creating ${config.siteUrl}`);
       const site = await api.siteCreate({
         name: config.siteTitle || config.folderName,
         domain: config.siteUrl,
-        kind: "php",
+        kind: wantsWordPress ? "wordpress" : "php",
         php_minor: config.phpVersion,
         link_path: null,
       });
-      setProgress(85);
+      setProgress(65);
 
       setCurrentStep("Starting the PHP pool...");
-      say("> Starting the PHP " + site.php_minor + " pool");
       const port = await api.phpStart(site.php_minor);
-      say("  pool listening on 127.0.0.1:" + port);
-
-      setCurrentStep("Starting the edge...");
+      say(`  pool listening on 127.0.0.1:${port}`);
       await api.stackStart();
-      setProgress(100);
+      setProgress(75);
 
-      say("");
-      say("Site created.");
-      say("  docroot   " + site.docroot);
-      say("  php       " + site.php_minor);
-      say("");
-      say("Reachable through the edge on port 18089.");
-      say("A trusted https://" + site.domain + " needs DNS and the local CA — not built yet.");
+      if (wantsWordPress) {
+        setCurrentStep("Installing WordPress...");
+        say("> Installing WordPress — core, database, wp-config.php, admin user");
+        const res = await api.wpInstall(site.domain, {
+          title: config.siteTitle || site.domain,
+          admin_user: config.adminUser || "admin",
+          admin_email: config.adminEmail || `admin@${site.domain}`,
+          admin_password: config.adminPassword || null,
+          version: config.wpVersion === "latest" ? null : config.wpVersion,
+        });
+        setProgress(100);
+        say("");
+        say("WordPress installed.");
+        say(`  url        ${res.url}`);
+        say(`  admin      ${res.admin_user}`);
+        // Shown once, and only here: it is never stored in the clear.
+        say(`  password   ${res.admin_password}      <- copy this now`);
+        say(`  database   ${res.db.name}`);
+      } else {
+        setProgress(100);
+        say("");
+        say("Site created.");
+        say(`  docroot   ${site.docroot}`);
+        say(`  php       ${site.php_minor}`);
+      }
 
       await reloadSites();
       setIsInstalling(false);
+      setInstallDone(true);
       setCurrentStep("");
-      setTimeout(() => closeModal(), 2500);
     } catch (e) {
       say("");
-      say("Failed: " + errorText(e));
+      say(`Failed: ${errorText(e)}`);
       setIsInstalling(false);
       setCurrentStep("");
       setProgress(0);
@@ -414,31 +475,13 @@ export default function SitesTab() {
     );
   }
 
-  if (sites.length === 0) {
-    return (
-      <div className="p-8">
-        <div className="max-w-xl">
-          <h2 className="text-lg font-semibold text-gray-900 mb-1">No sites yet</h2>
-          <p className="text-sm text-gray-600 mb-5">
-            Create your first site and QuickWP provisions a docroot, wires it to a
-            PHP pool, and serves it.
-          </p>
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-          >
-            <PlusIcon className="h-4 w-4" />
-            New site
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!selectedSite) return null;
 
   return (
     <div className="h-screen flex flex-col">
+      {/* The dialog below must stay mounted even with no sites, or
+          "New site" sets state with nothing there to show it. */}
+      {selectedSite ? (
+        <>
       {/* Header */}
       <div className="border-b border-gray-200 p-4 flex-shrink-0">
         <div className="flex items-center justify-between">
@@ -850,6 +893,26 @@ export default function SitesTab() {
           </Tab.Group>
         </div>
       </div>
+
+        </>
+      ) : (
+        <div className="flex-1 p-8">
+          <div className="max-w-xl">
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">No sites yet</h2>
+            <p className="text-sm text-gray-600 mb-5">
+              Create your first site and QuickWP provisions a docroot, wires it to a PHP
+              pool, and serves it.
+            </p>
+            <button
+              onClick={openModal}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            >
+              <PlusIcon className="h-4 w-4" />
+              New site
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Add New Site Modal */}
       <Transition appear show={isModalOpen} as={Fragment}>
@@ -1272,8 +1335,8 @@ export default function SitesTab() {
                             Back
                           </button>
                           <button
-                            onClick={simulateInstallation}
-                            disabled={!config.siteTitle || isInstalling}
+                            onClick={installDone ? closeModal : simulateInstallation}
+                            disabled={(!config.siteTitle && !installDone) || isInstalling}
                             className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {isInstalling ? (
@@ -1281,6 +1344,11 @@ export default function SitesTab() {
                                 <StopIcon className="h-5 w-5 mr-2" />
                                 Installing...
                               </>
+                            ) : installDone ? (
+                              // Not auto-closed: the admin password is printed
+                              // once and closing on a timer would take it away
+                              // before it could be copied.
+                              <>Done — close</>
                             ) : (
                               <>
                                 <PlayIcon className="h-5 w-5 mr-2" />

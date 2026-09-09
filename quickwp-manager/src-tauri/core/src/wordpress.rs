@@ -189,6 +189,34 @@ pub fn install(
     })
 }
 
+/// Point an installed WordPress at a new address.
+///
+/// WordPress writes its own URL into the database and into generated markup,
+/// so a site installed at one address serves redirects to it forever. Turning
+/// on HTTPS changes the address, and without this every site would bounce
+/// visitors back to the URL it was born with.
+pub fn set_site_url(site: &Site, new_url: &str) -> Result<String> {
+    let new_url = new_url.trim_end_matches('/');
+    let mut c = wp(site)?;
+    c.args(["option", "get", "home"]);
+    let old = run(c, "Reading the site URL")?.trim().to_string();
+    if old.is_empty() || old == new_url {
+        return Ok(format!("Already at {new_url}"));
+    }
+
+    for key in ["home", "siteurl"] {
+        let mut c = wp(site)?;
+        c.args(["option", "update", key, new_url]);
+        run(c, &format!("Setting {key}"))?;
+    }
+    // Content holds absolute URLs too -- a redirect alone leaves images and
+    // links pointing at the old address.
+    let mut c = wp(site)?;
+    c.args(["search-replace", &old, new_url, "--all-tables", "--report-changed-only"]);
+    let report = run(c, "Rewriting URLs in content")?;
+    Ok(format!("{old} -> {new_url}\n{}", report.trim()))
+}
+
 pub fn is_wordpress(site: &Site) -> bool {
     PathBuf::from(&site.docroot).join("wp-includes/version.php").exists()
 }

@@ -285,8 +285,22 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
         ));
     }
 
+    // Every WordPress site was installed against http://<domain>; now that the
+    // address has a scheme change, they would redirect visitors back to http
+    // forever unless their stored URL moves with it.
+    let mut moved = 0;
+    for s in site::list(&state.app.db)? {
+        if !wordpress::is_wordpress(&s) {
+            continue;
+        }
+        if wordpress::set_site_url(&s, &format!("https://{}", s.domain)).is_ok() {
+            moved += 1;
+        }
+    }
+
     Ok(format!(
-        "HTTPS is on, and verified.\n{issued} certificate(s) issued.\nYour sites are now at https://<name>.{tld}"
+        "HTTPS is on, and verified.\n{issued} certificate(s) issued.\n\
+         {moved} WordPress site(s) moved to https.\nYour sites are now at https://<name>.{tld}"
     ))
 }
 
@@ -427,15 +441,24 @@ fn site_add_domain(state: State<'_, AppState>, domain: String, alias: String) ->
 /// link that goes nowhere.
 #[tauri::command]
 fn site_url(state: State<'_, AppState>, _domain: String) -> Res<String> {
+    Ok(format!("{}/", canonical_url(&state, &_domain)?))
+}
+
+/// The address a site should believe it lives at.
+///
+/// Always the site's own hostname, never a loopback address with a port.
+/// WordPress writes this into its database at install time and serves
+/// redirects to it forever, so installing with `http://127.0.0.1:18089` bakes
+/// in an address that breaks the moment the site is reached by name.
+fn canonical_url(state: &State<'_, AppState>, domain: &str) -> Res<String> {
     let tld = state.app.db.tld()?;
     let sys = privileged::state(&tld);
-    if sys.resolver_installed && sys.daemon_running {
-        Ok(format!("https://{_domain}/"))
+    let scheme = if sys.resolver_installed && sys.daemon_running && sys.ca_trusted {
+        "https"
     } else {
-        // Reporting https://<domain> before that resolves would be a link that
-        // goes nowhere.
-        Ok(format!("http://127.0.0.1:{}/", ports::NGINX))
-    }
+        "http"
+    };
+    Ok(format!("{scheme}://{domain}"))
 }
 
 #[tauri::command]
@@ -566,8 +589,7 @@ fn wp_install(
     php::start_pool(&state.app.sup, &site.php_minor)?;
 
     let creds = database::create_for_site(&series, &site.domain)?;
-    let url = site_url(state.clone(), site.domain.clone())?;
-    let url = url.trim_end_matches('/').to_string();
+    let url = canonical_url(&state, &site.domain)?;
 
     let res = wordpress::install(&site, &req, &series, &creds, &url)?;
 
@@ -588,8 +610,8 @@ fn default_db_series(state: &State<'_, AppState>) -> String {
 #[tauri::command]
 fn wp_magic_login(state: State<'_, AppState>, domain: String, user: String) -> Res<String> {
     let site = site_by_domain(&state, &domain)?;
-    let url = site_url(state.clone(), site.domain.clone())?;
-    let link = wordpress::magic_login(&site, url.trim_end_matches('/'), &user)?;
+    let url = canonical_url(&state, &site.domain)?;
+    let link = wordpress::magic_login(&site, &url, &user)?;
     std::process::Command::new("/usr/bin/open")
         .arg(&link)
         .spawn()
