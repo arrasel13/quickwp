@@ -192,3 +192,34 @@ pub const WPCLI_PIN: WpCliPin = WpCliPin {
     url: "https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar",
     sha256: "ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c",
 };
+
+// ------------------------------------------------- mailpit / cloudflared
+//
+// Both publish official macOS builds, so the pin points at the vendor's own
+// release asset.
+
+#[derive(Debug, Clone, Copy)]
+pub struct ToolPin {
+    pub version: &'static str,
+    pub arch: &'static str,
+    pub url: &'static str,
+    pub sha256: &'static str,
+}
+
+pub const MAILPIT_PINS: [ToolPin; 1] = [
+    ToolPin {
+        version: "1.31.1",
+        arch: "aarch64",
+        url: "https://github.com/axllent/mailpit/releases/download/v1.31.1/mailpit-darwin-arm64.tar.gz",
+        sha256: "71c10f33f36c78a2864c4df906f11736b092a80ad1371742bd4e90e65d778e1b",
+    },
+];
+
+pub const CLOUDFLARED_PINS: [ToolPin; 1] = [
+    ToolPin {
+        version: "2026.8.3",
+        arch: "aarch64",
+        url: "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-darwin-arm64.tgz",
+        sha256: "40c9144d86df8937c5b43293a1f7d2d2107029aa74725023dd46b1b27154352f",
+    },
+];

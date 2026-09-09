@@ -14,6 +14,7 @@ ARCHES="${1:-aarch64}"
 # bintar, so supporting it means producing a reproducible build of our own --
 # tracked, not claimed.
 MYSQL_VERSIONS=("8.4.9" "8.0.44")
+[ "${SKIP_MYSQL:-}" = "1" ] && MYSQL_VERSIONS=()
 WPCLI_VERSION="2.12.0"
 
 hash_url() { curl -fsSL "$1" | shasum -a 256 | cut -d' ' -f1; }
@@ -24,7 +25,7 @@ echo
 
 for arch in $ARCHES; do
   ma="$(mysql_arch "$arch")"
-  for v in "${MYSQL_VERSIONS[@]}"; do
+  for v in ${MYSQL_VERSIONS[@]+"${MYSQL_VERSIONS[@]}"}; do
     series="${v%.*}"
     url="https://cdn.mysql.com/Downloads/MySQL-${series}/mysql-${v}-macos15-${ma}.tar.gz"
     >&2 echo "hashing mysql ${v} ${arch} (large) ..."
@@ -37,6 +38,35 @@ for arch in $ARCHES; do
     echo "sha256 = \"$sum\""
     echo
   done
+done
+
+MAILPIT_VERSION="1.31.1"
+CLOUDFLARED_VERSION="2026.8.3"
+
+go_arch() { [ "$1" = "aarch64" ] && echo "arm64" || echo "amd64"; }
+
+for arch in $ARCHES; do
+  ga="$(go_arch "$arch")"
+
+  url="https://github.com/axllent/mailpit/releases/download/v${MAILPIT_VERSION}/mailpit-darwin-${ga}.tar.gz"
+  >&2 echo "hashing mailpit ${MAILPIT_VERSION} ${arch} ..."
+  sum="$(hash_url "$url")"
+  echo "[[mailpit]]"
+  echo "version = \"$MAILPIT_VERSION\""
+  echo "arch   = \"$arch\""
+  echo "url    = \"$url\""
+  echo "sha256 = \"$sum\""
+  echo
+
+  url="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-darwin-${ga}.tgz"
+  >&2 echo "hashing cloudflared ${CLOUDFLARED_VERSION} ${arch} ..."
+  sum="$(hash_url "$url")"
+  echo "[[cloudflared]]"
+  echo "version = \"$CLOUDFLARED_VERSION\""
+  echo "arch   = \"$arch\""
+  echo "url    = \"$url\""
+  echo "sha256 = \"$sum\""
+  echo
 done
 
 # WP-CLI is architecture-independent: one phar run by whichever PHP the site uses.

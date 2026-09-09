@@ -6,7 +6,7 @@ import {
   ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
-import { api, errorText, hasBackend, FoundSite } from "../../lib/api";
+import { api, errorText, hasBackend, FoundSite, ConfigDiff } from "../../lib/api";
 import { useAsync } from "../../lib/useAsync";
 
 export default function MigrateTab() {
@@ -14,6 +14,10 @@ export default function MigrateTab() {
   const [chosen, setChosen] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
+  // Stage 2 and 3 act on sites already imported, so they read the live list.
+  const { data: mine, reload: reloadMine } = useAsync(() => api.siteList(), []);
+  const [stageBusy, setStageBusy] = useState<string | null>(null);
+  const [diff, setDiff] = useState<{ domain: string; diff: ConfigDiff } | null>(null);
 
   const importable = (scan?.sites ?? []).filter((s) => s.importable);
   const selected = importable.filter((s) => chosen[s.domain]);
@@ -113,6 +117,152 @@ export default function MigrateTab() {
         </div>
       )}
 
+
+      {/* Stages 2 and 3 ------------------------------------------------ */}
+      {(mine ?? []).filter((s) => s.is_linked).length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+          <h2 className="text-lg font-semibold text-gray-900">Bring the data across</h2>
+          <p className="text-xs text-gray-600 mb-3">
+            Stage 2 copies a site's database into QuickWP's MySQL. Stage 3 points its config at
+            the copy — the most invasive step, so it shows a diff and takes a backup first.
+          </p>
+
+          <div className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
+            {(mine ?? [])
+              .filter((s) => s.is_linked)
+              .map((s) => (
+                <div key={s.id} className="px-3 py-3">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-gray-900">{s.domain}</p>
+                      <p className="text-[11px] text-gray-500">
+                        {s.db_name ? (
+                          <>
+                            Copied into <code className="bg-gray-100 px-1 rounded">{s.db_name}</code>
+                          </>
+                        ) : (
+                          "No database copied yet"
+                        )}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button
+                        onClick={() =>
+                          void (async () => {
+                            setStageBusy(s.domain);
+                            setLog([]);
+                            try {
+                              const r = await api.migrateCopyDatabase(s.domain);
+                              setLog([
+                                `${r.site}: ${r.source_db} -> ${r.target_db}`,
+                                r.message,
+                              ]);
+                              await reloadMine();
+                            } catch (e) {
+                              setLog([errorText(e)]);
+                            } finally {
+                              setStageBusy(null);
+                            }
+                          })()
+                        }
+                        disabled={stageBusy !== null}
+                        className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {stageBusy === s.domain ? "Copying…" : "Copy database"}
+                      </button>
+                      <button
+                        onClick={() =>
+                          void (async () => {
+                            setStageBusy(s.domain);
+                            try {
+                              const d = await api.migratePreviewConfig(s.domain);
+                              setDiff({ domain: s.domain, diff: d });
+                            } catch (e) {
+                              setLog([errorText(e)]);
+                            } finally {
+                              setStageBusy(null);
+                            }
+                          })()
+                        }
+                        disabled={stageBusy !== null || !s.db_name}
+                        className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-40"
+                      >
+                        Preview config rewrite
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {diff && (
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+          <h2 className="text-sm font-semibold text-gray-900 mb-1">
+            {diff.diff.changes.length} line(s) would change
+          </h2>
+          <p className="text-[11px] font-mono text-gray-500 mb-3 break-all">{diff.diff.file}</p>
+
+          {diff.diff.changes.length === 0 ? (
+            <p className="text-xs text-gray-600">
+              Nothing to change — this config already points at QuickWP.
+            </p>
+          ) : (
+            <div className="border border-gray-200 rounded-lg overflow-hidden font-mono text-[11px]">
+              {diff.diff.changes.map((c) => (
+                <div key={c.line_number} className="border-b border-gray-100 last:border-0">
+                  <div className="bg-red-50 text-red-900 px-3 py-1 flex gap-2">
+                    <span className="text-red-400 tabular-nums w-8 text-right flex-shrink-0">
+                      {c.line_number}
+                    </span>
+                    <span className="break-all">- {c.before.trim()}</span>
+                  </div>
+                  <div className="bg-green-50 text-green-900 px-3 py-1 flex gap-2">
+                    <span className="text-green-500 tabular-nums w-8 text-right flex-shrink-0">
+                      {c.line_number}
+                    </span>
+                    <span className="break-all">+ {c.after.trim()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              onClick={() =>
+                void (async () => {
+                  setStageBusy(diff.domain);
+                  try {
+                    const msg = await api.migrateApplyConfig(diff.domain);
+                    setLog([msg]);
+                    setDiff(null);
+                  } catch (e) {
+                    setLog([errorText(e)]);
+                  } finally {
+                    setStageBusy(null);
+                  }
+                })()
+              }
+              disabled={stageBusy !== null || diff.diff.changes.length === 0}
+              className="px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40"
+            >
+              Apply, with a backup
+            </button>
+            <button
+              onClick={() => setDiff(null)}
+              className="px-3 py-2 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
+            >
+              Leave it alone
+            </button>
+            <span className="text-[11px] text-gray-500">
+              Declining is a supported outcome — the site keeps talking to whatever it talks to now.
+            </span>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <p className="text-xs text-gray-500">Scanning…</p>
       ) : (scan?.sites.length ?? 0) === 0 ? (
@@ -194,9 +344,9 @@ export default function MigrateTab() {
             </div>
 
             <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
-              Databases are not copied yet: this brings the sites and their files across. Tool-level
-              Herd configuration — parked directories, custom drivers, per-tool extensions — is
-              worth reviewing by hand.
+              Sites import as <em>linked</em>, so your code never moves. Copy their databases
+              below. Tool-level Herd configuration — parked directories, custom drivers, per-tool
+              extensions — is worth reviewing by hand.
             </p>
           </div>
         </div>

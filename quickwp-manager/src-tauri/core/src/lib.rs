@@ -9,7 +9,10 @@ pub mod database;
 pub mod db;
 pub mod dns;
 pub mod error;
+pub mod exec;
 pub mod fastcgi;
+pub mod log;
+pub mod mail;
 pub mod migrate;
 pub mod paths;
 pub mod php;
@@ -19,6 +22,7 @@ pub mod server;
 pub mod site;
 pub mod runtime;
 pub mod supervisor;
+pub mod tunnel;
 pub mod wordpress;
 
 pub use error::{Error, Result};

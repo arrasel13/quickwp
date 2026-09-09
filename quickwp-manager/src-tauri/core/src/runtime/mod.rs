@@ -353,3 +353,59 @@ pub async fn install_mysql(
     let _ = std::fs::remove_file(&tmp);
     Ok(dest)
 }
+
+pub use pins::{ToolPin, CLOUDFLARED_PINS, MAILPIT_PINS};
+
+fn tool_pin(pins: &'static [ToolPin], name: &str) -> Result<&'static ToolPin> {
+    let a = arch();
+    pins.iter()
+        .find(|p| p.arch == a)
+        .ok_or_else(|| Error::other(format!("no {name} build pinned for {a}")))
+}
+
+pub fn mailpit_pin() -> Result<&'static ToolPin> {
+    tool_pin(&MAILPIT_PINS, "Mailpit")
+}
+pub fn cloudflared_pin() -> Result<&'static ToolPin> {
+    tool_pin(&CLOUDFLARED_PINS, "cloudflared")
+}
+
+pub fn tool_binary(name: &str, version: &str) -> PathBuf {
+    paths::runtime_dir(name, version).join(name)
+}
+
+/// Install a single-binary tool from a pinned tarball.
+pub async fn install_tool(
+    name: &'static str,
+    pin: &'static ToolPin,
+    on_progress: impl Fn(Progress) + Send + 'static,
+) -> Result<PathBuf> {
+    let dest_dir = paths::runtime_dir(name, pin.version);
+    let bin = dest_dir.join(name);
+    if bin.exists() {
+        return Ok(bin);
+    }
+    paths::ensure_dirs()?;
+
+    let label = format!("{name} {}", pin.version);
+    let tmp = paths::downloads_cache().join(format!("{name}-{}-{}.tgz", pin.version, pin.arch));
+    download_verified(&label, pin.url, pin.sha256, &tmp, on_progress).await?;
+
+    let staging = dest_dir.with_extension("staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    paths::mkdir_p(&staging)?;
+    extract_tar_gz(&tmp, &staging)?;
+
+    let found = find_file(&staging, name)
+        .ok_or_else(|| Error::other(format!("{label}: no `{name}` in the archive")))?;
+    paths::mkdir_p(&dest_dir)?;
+    let _ = std::fs::remove_file(&bin);
+    std::fs::rename(&found, &bin).map_err(|e| Error::Io {
+        path: bin.clone(),
+        source: e,
+    })?;
+    let _ = std::fs::remove_dir_all(&staging);
+    let _ = std::fs::remove_file(&tmp);
+    make_executable(&bin)?;
+    Ok(bin)
+}

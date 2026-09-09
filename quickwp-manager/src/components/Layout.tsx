@@ -12,6 +12,7 @@ import {
   Square3Stack3DIcon,
   KeyIcon,
   ArrowRightCircleIcon,
+  DocumentTextIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 
@@ -24,24 +25,23 @@ import AboutTab from "./tabs/AboutTab";
 import PasswordGeneratorTab from "./tabs/PasswordGeneratorTab";
 import ServicesTab from "./tabs/ServicesTab";
 import MigrateTab from "./tabs/MigrateTab";
+import MailTab from "./tabs/MailTab";
+import ExposeTab from "./tabs/ExposeTab";
+import LogsTab from "./tabs/LogsTab";
+import TerminalTab from "./tabs/TerminalTab";
 
 const tabs = [
   { name: "General", icon: HomeIcon, component: GeneralTab },
   { name: "Sites", icon: GlobeAltIcon, component: SitesTab },
   { name: "PHP", icon: CodeBracketIcon, component: PHPTab },
   { name: "Node", icon: CubeIcon, component: NodeTab },
-  {
-    name: "Expose",
-    icon: RocketLaunchIcon,
-    component: GeneralTab,
-    badge: "Soon",
-  },
+  { name: "Expose", icon: RocketLaunchIcon, component: ExposeTab },
   { name: "Services", icon: CircleStackIcon, component: ServicesTab },
-  { name: "Mail", icon: EnvelopeIcon, component: GeneralTab, badge: "Soon" },
-  { name: "Dumps", icon: CircleStackIcon, component: GeneralTab, badge: "Soon" },
+  { name: "Mail", icon: EnvelopeIcon, component: MailTab },
+  { name: "Logs", icon: DocumentTextIcon, component: LogsTab },
+  { name: "Terminal", icon: CommandLineIcon, component: TerminalTab },
   { name: "Debugger", icon: BugAntIcon, component: GeneralTab, badge: "Soon" },
   { name: "Import from Herd", icon: ArrowRightCircleIcon, component: MigrateTab },
-  { name: "Shortcuts", icon: CommandLineIcon, component: GeneralTab, badge: "Soon" },
   { name: "Integrations", icon: Square3Stack3DIcon, component: GeneralTab, badge: "Soon" },
   {
     name: "Password Generator",

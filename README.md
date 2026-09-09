@@ -21,8 +21,15 @@ A modern desktop application for managing WordPress development environments, bu
 - **MySQL**: 8.4 and 8.0, each with its own data directory, on an offset port.
 - **WordPress**: bundled WP-CLI, one-step install, magic login, plugin and theme
   management, search-replace that defaults to a dry run.
-- **Import from Herd**: finds what Herd and Valet serve and brings it across.
-  The source install is strictly read-only.
+- **Import from Herd**: finds what Herd and Valet serve, copies their databases
+  and rewrites connection config behind a diff, a backup and your consent. The
+  source install is strictly read-only throughout.
+- **Mail catching**: Mailpit, with all three escape routes covered — PHP's
+  `mail()`, SMTP plugins that call `isSMTP()`, and Laravel's env precedence.
+- **Public tunnels**: a Cloudflare quick tunnel per site. They close when the
+  app quits, deliberately.
+- **Logs and a terminal**: every log in one place with QuickWP's own first, and
+  a command runner in the docroot with the site's PHP and `wp` on PATH.
 
 macOS on Apple Silicon today. The platform-specific parts are isolated;
 Windows and Linux are not built.
@@ -83,11 +90,24 @@ Two runnable proofs live in the core crate:
 
 ```bash
 cd quickwp-manager/src-tauri/core
-cargo test                       # 28 tests, including a refused checksum
+cargo test                       # 44 tests, including a refused checksum
 cargo run --example spike        # download -> verify -> pool -> execute PHP
 cargo run --example serve        # create sites -> serve them, stop one in isolation
 cargo run --example https        # real edge binary, curl pinned to our CA
 cargo run --example wordpress    # MySQL -> WordPress -> served over TLS
+cargo run --example tools        # Mailpit + cloudflared install and run
+```
+
+### The CLI
+
+`quickwp` is a second binary over the same core crate, so the app and the
+terminal cannot drift — the New Site dialog and `quickwp site create` are the
+same code.
+
+```bash
+cargo build -p quickwp-cli
+./src-tauri/target/debug/quickwp status
+./src-tauri/target/debug/quickwp php list --json
 ```
 
 `scripts/pin-runtimes.sh` regenerates the checksums in

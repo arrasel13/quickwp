@@ -6,8 +6,8 @@
 
 use quickwp_core as core;
 use quickwp_core::{
-    ca, database, migrate, php, ports, privileged, runtime, server, site, wordpress, Finding,
-    Quickwp,
+    ca, database, exec, log as qlog, mail, migrate, php, ports, privileged, runtime, server, site,
+    tunnel, wordpress, Finding, Quickwp,
 };
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
@@ -15,6 +15,7 @@ use tauri::{Emitter, Manager, State};
 struct AppState {
     app: Quickwp,
     edge: Mutex<Option<server::Edge>>,
+    tunnels: tunnel::Tunnels,
 }
 
 type Res<T> = Result<T, String>;
@@ -623,6 +624,205 @@ fn migrate_import(
     Ok(done)
 }
 
+
+// ----------------------------------------------------------------- mail
+
+fn catch_all_on(state: &State<'_, AppState>) -> bool {
+    // Absent is ON deliberately: a site created before the switch existed is
+    // caught too, because "every site's mail is caught" must not quietly mean
+    // "every site created after you found the switch".
+    state
+        .app
+        .db
+        .setting("catch_all")
+        .ok()
+        .flatten()
+        .map(|v| v != "0")
+        .unwrap_or(true)
+}
+
+#[tauri::command]
+fn mail_status(state: State<'_, AppState>) -> Res<mail::MailStatus> {
+    Ok(mail::status(&state.app.sup, catch_all_on(&state)))
+}
+
+#[tauri::command]
+async fn mail_install(app: tauri::AppHandle) -> Res<String> {
+    let handle = app.clone();
+    mail::install(move |p| {
+        let _ = handle.emit(
+            "download-progress",
+            serde_json::json!({ "id": "mailpit", "component": p.component,
+                                "received": p.received, "total": p.total }),
+        );
+    })
+    .await?;
+    Ok("Mailpit installed".into())
+}
+
+#[tauri::command]
+fn mail_start(state: State<'_, AppState>) -> Res<u16> {
+    let port = mail::start(&state.app.sup)?;
+    apply_catch_all(&state, catch_all_on(&state))?;
+    Ok(port)
+}
+
+#[tauri::command]
+fn mail_stop(state: State<'_, AppState>) -> Res<bool> {
+    Ok(mail::stop(&state.app.sup)?)
+}
+
+#[tauri::command]
+fn mail_open(state: State<'_, AppState>) -> Res<()> {
+    let st = mail::status(&state.app.sup, catch_all_on(&state));
+    std::process::Command::new("/usr/bin/open")
+        .arg(st.ui_url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Flipping the switch installs or removes the mu-plugin on every WordPress
+/// site and restarts the running pools, so the toggle stays pending until that
+/// is true of the machine rather than only of the setting.
+fn apply_catch_all(state: &State<'_, AppState>, on: bool) -> Res<()> {
+    for s in site::list(&state.app.db)? {
+        let _ = mail::set_site_catch(&s.docroot, on);
+    }
+    for m in runtime::PHP_MINORS {
+        if state.app.sup.is_running(&php::pool_name(m)) {
+            let _ = php::stop_pool(&state.app.sup, m);
+            let _ = php::start_pool(&state.app.sup, m);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn mail_set_catch_all(state: State<'_, AppState>, on: bool) -> Res<String> {
+    state.app.db.set_setting("catch_all", if on { "1" } else { "0" })?;
+    apply_catch_all(&state, on)?;
+    Ok(if on {
+        "Every site's mail now goes to Mailpit.".into()
+    } else {
+        "Mail leaves as each site is configured. Turn this off only to test a live provider on purpose.".to_string()
+    })
+}
+
+// -------------------------------------------------------------- tunnels
+
+#[tauri::command]
+fn tunnel_status(state: State<'_, AppState>) -> Res<serde_json::Value> {
+    Ok(serde_json::json!({
+        "installed": tunnel::is_installed(),
+        "tunnels": state.tunnels.list(),
+    }))
+}
+
+#[tauri::command]
+async fn tunnel_install(app: tauri::AppHandle) -> Res<String> {
+    let handle = app.clone();
+    tunnel::install(move |p| {
+        let _ = handle.emit(
+            "download-progress",
+            serde_json::json!({ "id": "cloudflared", "component": p.component,
+                                "received": p.received, "total": p.total }),
+        );
+    })
+    .await?;
+    Ok("cloudflared installed".into())
+}
+
+#[tauri::command]
+fn tunnel_start(state: State<'_, AppState>, domain: String) -> Res<String> {
+    // A tunnel with no stack behind it publishes a 502 to the internet.
+    if state.edge.lock().unwrap().is_none() {
+        return Err("Start the stack first — a share with nothing behind it publishes an error page.".into());
+    }
+    Ok(state.tunnels.start(&state.app.sup, &domain)?)
+}
+
+#[tauri::command]
+fn tunnel_stop(state: State<'_, AppState>, domain: String) -> Res<bool> {
+    Ok(state.tunnels.stop(&state.app.sup, &domain)?)
+}
+
+// ----------------------------------------------------------------- logs
+
+#[tauri::command]
+fn logs_sources() -> Res<Vec<qlog::LogSource>> {
+    Ok(qlog::sources())
+}
+
+#[tauri::command]
+fn logs_tail(id: String, lines: Option<usize>) -> Res<String> {
+    Ok(qlog::tail(&id, lines.unwrap_or(400))?)
+}
+
+// ------------------------------------------------------------- terminal
+
+/// Run a command in the site's docroot, streaming output as `exec-line`.
+#[tauri::command]
+async fn site_exec(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    domain: String,
+    command: String,
+) -> Res<i32> {
+    let site = site_by_domain(&state, &domain)?;
+    let handle = app.clone();
+    let id = domain.clone();
+    let code = exec::run_streaming(&site, &command, move |line| {
+        let _ = handle.emit(
+            "exec-line",
+            serde_json::json!({ "domain": id, "stream": line.stream, "text": line.text }),
+        );
+    })?;
+    Ok(code)
+}
+
+/// Open Terminal.app in the docroot, for anything interactive the runner
+/// cannot host.
+#[tauri::command]
+fn site_terminal(state: State<'_, AppState>, domain: String) -> Res<()> {
+    let site = site_by_domain(&state, &domain)?;
+    Ok(exec::open_terminal(&site)?)
+}
+
+// -------------------------------------------------- migration stages 2/3
+
+#[tauri::command]
+fn migrate_copy_database(state: State<'_, AppState>, domain: String) -> Res<migrate::DbCopyResult> {
+    let site = site_by_domain(&state, &domain)?;
+    let series = default_db_series(&state);
+    if !database::is_installed(&series) {
+        return Err(format!("MySQL {series} is not installed. Install it in Services first."));
+    }
+    database::start(&state.app.sup, &series)?;
+    Ok(migrate::copy_database(&series, &site)?)
+}
+
+/// What the rewrite WOULD change. Writes nothing.
+#[tauri::command]
+fn migrate_preview_config(state: State<'_, AppState>, domain: String) -> Res<migrate::ConfigDiff> {
+    let site = site_by_domain(&state, &domain)?;
+    let target = site
+        .db_name
+        .clone()
+        .ok_or("Copy the database first — there is nothing to point the config at.")?;
+    Ok(migrate::preview_config_rewrite(&site, &target)?)
+}
+
+#[tauri::command]
+fn migrate_apply_config(state: State<'_, AppState>, domain: String) -> Res<String> {
+    let site = site_by_domain(&state, &domain)?;
+    let target = site
+        .db_name
+        .clone()
+        .ok_or("Copy the database first — there is nothing to point the config at.")?;
+    Ok(migrate::apply_config_rewrite(&site, &target)?)
+}
+
 // ------------------------------------------------------------- settings
 
 #[tauri::command]
@@ -654,6 +854,7 @@ pub fn run() {
         .manage(AppState {
             app,
             edge: Mutex::new(None),
+            tunnels: tunnel::Tunnels::new(),
         })
         .invoke_handler(tauri::generate_handler![
             stack_status,
@@ -701,6 +902,23 @@ pub fn run() {
             wp_search_replace,
             migrate_scan,
             migrate_import,
+            migrate_copy_database,
+            migrate_preview_config,
+            migrate_apply_config,
+            mail_status,
+            mail_install,
+            mail_start,
+            mail_stop,
+            mail_open,
+            mail_set_catch_all,
+            tunnel_status,
+            tunnel_install,
+            tunnel_start,
+            tunnel_stop,
+            logs_sources,
+            logs_tail,
+            site_exec,
+            site_terminal,
             settings_get,
             settings_set,
         ])
@@ -713,6 +931,10 @@ pub fn run() {
                     if let Some(e) = state.edge.lock().unwrap().take() {
                         e.stop();
                     }
+                    // A public URL still up because you forgot about it is not
+                    // a convenience: a share you have forgotten is a share you
+                    // did not consent to. Tunnels close first.
+                    state.tunnels.stop_all(&state.app.sup);
                     state.app.stop_dns();
                     state.app.sup.stop_all();
                 }

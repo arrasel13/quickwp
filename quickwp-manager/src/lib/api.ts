@@ -129,6 +129,53 @@ export interface Finding {
   detail: string;
 }
 
+export interface MailStatus {
+  installed: boolean;
+  running: boolean;
+  smtp_port: number;
+  ui_port: number;
+  ui_url: string;
+  catch_all: boolean;
+}
+
+export interface Tunnel {
+  domain: string;
+  public_url: string;
+}
+
+export interface LogSource {
+  id: string;
+  label: string;
+  path: string;
+  bytes: number;
+  is_app: boolean;
+}
+
+export interface DiffLine {
+  line_number: number;
+  before: string;
+  after: string;
+}
+
+export interface ConfigDiff {
+  file: string;
+  changes: DiffLine[];
+}
+
+export interface DbCopyResult {
+  site: string;
+  source_db: string;
+  target_db: string;
+  tables: number;
+  message: string;
+}
+
+export interface ExecLine {
+  domain: string;
+  stream: "stdout" | "stderr";
+  text: string;
+}
+
 export interface Settings {
   tld: string;
   default_php: string;
@@ -252,6 +299,33 @@ export const api = {
     }[],
   ) => call<string[]>("migrate_import", { requests }),
 
+  // mail
+  mailStatus: () => call<MailStatus>("mail_status"),
+  mailInstall: () => call<string>("mail_install"),
+  mailStart: () => call<number>("mail_start"),
+  mailStop: () => call<boolean>("mail_stop"),
+  mailOpen: () => call<void>("mail_open"),
+  mailSetCatchAll: (on: boolean) => call<string>("mail_set_catch_all", { on }),
+
+  // tunnels
+  tunnelStatus: () => call<{ installed: boolean; tunnels: Tunnel[] }>("tunnel_status"),
+  tunnelInstall: () => call<string>("tunnel_install"),
+  tunnelStart: (domain: string) => call<string>("tunnel_start", { domain }),
+  tunnelStop: (domain: string) => call<boolean>("tunnel_stop", { domain }),
+
+  // logs
+  logsSources: () => call<LogSource[]>("logs_sources"),
+  logsTail: (id: string, lines?: number) => call<string>("logs_tail", { id, lines }),
+
+  // terminal
+  siteExec: (domain: string, command: string) => call<number>("site_exec", { domain, command }),
+  siteTerminal: (domain: string) => call<void>("site_terminal", { domain }),
+
+  // migration stages 2 and 3
+  migrateCopyDatabase: (domain: string) => call<DbCopyResult>("migrate_copy_database", { domain }),
+  migratePreviewConfig: (domain: string) => call<ConfigDiff>("migrate_preview_config", { domain }),
+  migrateApplyConfig: (domain: string) => call<string>("migrate_apply_config", { domain }),
+
   // settings
   settingsGet: () => call<Settings>("settings_get"),
   settingsSet: (key: string, value: string) => call<void>("settings_set", { key, value }),
@@ -264,6 +338,11 @@ export const api = {
   onDownloadProgress: (cb: (p: InstallProgress & { id: string }) => void) => {
     if (!hasBackend) return Promise.resolve(() => {});
     return listen<InstallProgress & { id: string }>("download-progress", (e) => cb(e.payload));
+  },
+
+  onExecLine: (cb: (l: ExecLine) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<ExecLine>("exec-line", (e) => cb(e.payload));
   },
 };
 
