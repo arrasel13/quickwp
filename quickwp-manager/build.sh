@@ -5,9 +5,13 @@
 
 set -e
 
-# The privileged edge must be built before the app bundle
-# so `tauri build` can copy it into the .app.
-cargo build --release -p quickwp-edge --manifest-path src-tauri/Cargo.toml
+# The privileged edge and the CLI must be built and staged before the app
+# bundle, so `tauri build` can copy them into the .app. The daemon install and
+# the tunnel guard both resolve them from Contents/Resources.
+cargo build --release -p quickwp-edge -p quickwp-cli --manifest-path src-tauri/Cargo.toml
+mkdir -p src-tauri/bundled
+cp src-tauri/target/release/quickwp-edge src-tauri/bundled/quickwp-edge
+cp src-tauri/target/release/quickwp      src-tauri/bundled/quickwp
 
 echo "🚀 QuickWP Manager Build Script"
 echo "================================"

@@ -974,6 +974,18 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // One instance only. Two copies would share one SQLite database and
+        // race for the same ports, and the second would half-start: its edge
+        // cannot bind, its DNS cannot bind, but its pools would still spawn.
+        // Focus the window that already exists instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             app,

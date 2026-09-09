@@ -53,6 +53,10 @@
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
+    },
+    "resources": {
+      "bundled/quickwp-edge": "quickwp-edge",
+      "bundled/quickwp": "quickwp"
     }
   }
 }
