@@ -136,12 +136,12 @@ export default function SitesTab() {
   // Real sites, from the Rust backend. There is no mock data here any more:
   // an empty list means you have not created a site yet, and says so.
   // Whether the stack can serve a real name yet decides which URL is honest.
-  const { data: stack } = useAsync(() => api.stackStatus(), []);
+  const { data: stack } = useAsync(() => api.stackStatus(), [], "stack-status");
   const httpsReady = stack?.https_ready ?? false;
 
   // What Node this machine already has. QuickWP installs none of its own, so
   // the list is whatever nvm/fnm/Volta/Homebrew/asdf put there — newest first.
-  const { data: nodeInstalls } = useAsync(() => api.nodeList(), []);
+  const { data: nodeInstalls } = useAsync(() => api.nodeList(), [], "node-list");
   const nodeVersions = useMemo(
     () => (nodeInstalls ?? []).map((n) => n.version),
     [nodeInstalls],
@@ -271,8 +271,17 @@ export default function SitesTab() {
   // Controlled rather than defaultIndex, so switching sites can put the
   // selection back on Overview instead of wherever the last site was left.
   const [siteTab, setSiteTab] = useState(DEFAULT_SITE_TAB);
+  // Tabs opened for this site stay mounted when you move between them, so
+  // going back is instant: nothing refetches, and the terminal and Adminer
+  // keep their state. Tabs never opened load nothing. A new site starts over.
+  const [visited, setVisited] = useState<Set<number>>(() => new Set([DEFAULT_SITE_TAB]));
+  const openSiteTab = (i: number) => {
+    setSiteTab(i);
+    setVisited((v) => (v.has(i) ? v : new Set(v).add(i)));
+  };
   useEffect(() => {
     setSiteTab(DEFAULT_SITE_TAB);
+    setVisited(new Set([DEFAULT_SITE_TAB]));
   }, [selectedId]);
 
   // Fetched lazily: opening the dialog is the first moment the list matters,
@@ -592,7 +601,7 @@ export default function SitesTab() {
             as="div"
             className="flex flex-col flex-1 min-h-0"
             selectedIndex={siteTab}
-            onChange={setSiteTab}
+            onChange={openSiteTab}
           >
             <Tab.List className="flex flex-shrink-0 gap-1 border-b border-gray-200 bg-white px-4">
               {siteDetailTabs.map((tab) => (
@@ -621,14 +630,14 @@ export default function SitesTab() {
 
             <Tab.Panels className="flex-1 overflow-hidden min-h-0">
               {/* Overview */}
-              <Tab.Panel className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(0)} className="h-full overflow-y-auto">
                 {selectedBackendSite && (
                   <SiteOverview site={selectedBackendSite} />
                 )}
-              </Tab.Panel>
+              </LazyPanel>
 
               {/* WordPress */}
-              <Tab.Panel className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(1)} className="h-full overflow-y-auto">
                 {selectedBackendSite && (
                   <SiteWordPress
                     domain={selectedSite.name}
@@ -637,36 +646,36 @@ export default function SitesTab() {
                     onDeleted={() => void reloadSites()}
                   />
                 )}
-              </Tab.Panel>
+              </LazyPanel>
 
               {/* Database */}
               {/* overflow-hidden, not auto: Adminer fills the pane and scrolls
                   inside its own frame. */}
-              <Tab.Panel className="h-full overflow-hidden">
+              <LazyPanel seen={visited.has(2)} className="h-full overflow-hidden">
                 {selectedBackendSite ? (
                   <SiteDatabase site={selectedBackendSite} />
                 ) : null}
-              </Tab.Panel>
+              </LazyPanel>
 
               {/* Logs */}
-              <Tab.Panel className="h-full overflow-hidden">
+              <LazyPanel seen={visited.has(3)} className="h-full overflow-hidden">
                 <SiteLogs domain={selectedSite.name} />
-              </Tab.Panel>
+              </LazyPanel>
 
               {/* Terminal — the xterm component, pinned to this site instead
                   of offering a picker. */}
-              <Tab.Panel className="h-full overflow-hidden">
+              <LazyPanel seen={visited.has(4)} className="h-full overflow-hidden">
                 <TerminalTab fixedDomain={selectedSite.name} />
-              </Tab.Panel>
+              </LazyPanel>
 
               {/* Mail — one Mailpit catches what every site sends, so this is
                   the same inbox from whichever site you open it. */}
-              <Tab.Panel className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(5)} className="h-full overflow-y-auto">
                 <MailTab />
-              </Tab.Panel>
+              </LazyPanel>
 
               {/* Settings */}
-              <Tab.Panel className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(6)} className="h-full overflow-y-auto">
                 {selectedBackendSite ? (
                   <SiteSettings
                     site={selectedBackendSite}
@@ -683,7 +692,7 @@ export default function SitesTab() {
                     }}
                   />
                 ) : null}
-              </Tab.Panel>
+              </LazyPanel>
             </Tab.Panels>
           </Tab.Group>
         </div>
@@ -1164,5 +1173,25 @@ export default function SitesTab() {
         </Dialog>
       </Transition>
     </div>
+  );
+}
+
+/**
+ * A site tab that renders nothing until it is first opened, then stays
+ * mounted -- hidden -- so returning to it does not rebuild it.
+ */
+function LazyPanel({
+  seen,
+  className,
+  children,
+}: {
+  seen: boolean;
+  className: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Tab.Panel unmount={false} className={className}>
+      {seen ? children : null}
+    </Tab.Panel>
   );
 }

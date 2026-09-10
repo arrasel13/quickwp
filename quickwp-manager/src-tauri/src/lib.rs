@@ -41,7 +41,7 @@ struct StackStatus {
     system: privileged::SystemState,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stack_status(state: State<'_, AppState>) -> Res<StackStatus> {
     let pools = runtime::PHP_MINORS
         .iter()
@@ -89,13 +89,13 @@ fn start_stack(app: &Quickwp, edge: &Mutex<Option<server::Edge>>) -> core::Resul
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stack_start(state: State<'_, AppState>) -> Res<String> {
     start_stack(&state.app, &state.edge)?;
     Ok(format!("Serving on port {}", ports::NGINX))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stack_stop(state: State<'_, AppState>) -> Res<()> {
     if let Some(e) = state.edge.lock().unwrap().take() {
         e.stop();
@@ -105,7 +105,7 @@ fn stack_stop(state: State<'_, AppState>) -> Res<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn doctor(state: State<'_, AppState>) -> Res<Vec<Finding>> {
     Ok(state.app.doctor())
 }
@@ -114,12 +114,12 @@ fn doctor(state: State<'_, AppState>) -> Res<Vec<Finding>> {
 
 /// Node versions already on this machine. QuickWP installs none of its own:
 /// a second copy would be the one thing the user's npm scripts do not use.
-#[tauri::command]
+#[tauri::command(async)]
 fn node_list() -> Res<Vec<core::node::NodeVersion>> {
     Ok(core::node::list())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn php_list(state: State<'_, AppState>) -> Res<Vec<php::PhpVersion>> {
     let default = state.app.db.default_php()?;
     Ok(php::list(&state.app.sup, &default))
@@ -148,7 +148,7 @@ async fn php_install(app: tauri::AppHandle, minor: String) -> Res<String> {
     Ok(format!("PHP {minor} installed"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn php_uninstall(minor: String) -> Res<()> {
     for kind in ["fpm", "cli"] {
         if let Ok(d) = runtime::php_dir(&minor, kind) {
@@ -158,24 +158,24 @@ fn php_uninstall(minor: String) -> Res<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn php_start(state: State<'_, AppState>, minor: String) -> Res<u16> {
     Ok(php::start_pool(&state.app.sup, &minor)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn php_stop(state: State<'_, AppState>, minor: String) -> Res<bool> {
     Ok(php::stop_pool(&state.app.sup, &minor)?)
 }
 
 /// The honest health check: ask the pool to execute PHP and report what it says.
 /// "Running" and "serving" are different facts.
-#[tauri::command]
+#[tauri::command(async)]
 fn php_health(minor: String) -> Res<String> {
     Ok(php::health(&minor)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn php_set_default(state: State<'_, AppState>, minor: String) -> Res<()> {
     if !runtime::PHP_MINORS.contains(&minor.as_str()) {
         return Err(format!("unknown PHP version {minor}"));
@@ -184,14 +184,14 @@ fn php_set_default(state: State<'_, AppState>, minor: String) -> Res<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn php_ini_get(minor: String) -> Res<Vec<(String, String)>> {
     Ok(php::ini_settings(&minor))
 }
 
 /// Set a whitelisted directive, then restart that version's pool so it takes
 /// effect. Every site on that version restarts with it.
-#[tauri::command]
+#[tauri::command(async)]
 fn php_ini_set(state: State<'_, AppState>, minor: String, key: String, value: String) -> Res<String> {
     php::set_ini(&minor, &key, &value)?;
     let was_running = state.app.sup.is_running(&php::pool_name(&minor));
@@ -248,26 +248,26 @@ fn edge_binary() -> std::path::PathBuf {
 /// resolver and load the edge daemon (admin password). Cancelling any step
 /// leaves the ones before it intact and nothing half-applied.
 /// Everything checked before a password is asked for.
-#[tauri::command]
+#[tauri::command(async)]
 fn https_preflight(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Vec<privileged::Check>> {
     let tld = state.app.db.tld()?;
     Ok(privileged::preflight(&tld, &edge_binary(), takeover.unwrap_or(false)))
 }
 
 /// Would claiming the current TLD take it from another tool?
-#[tauri::command]
+#[tauri::command(async)]
 fn https_tld_is_foreign(state: State<'_, AppState>) -> Res<bool> {
     Ok(privileged::tld_is_foreign(&state.app.db.tld()?))
 }
 
 /// Measured facts about the installed system state, after the fact.
-#[tauri::command]
+#[tauri::command(async)]
 fn https_verify(state: State<'_, AppState>) -> Res<privileged::VerifyReport> {
     let tld = state.app.db.tld()?;
     Ok(privileged::verify(&tld))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<String> {
     let takeover = takeover.unwrap_or(false);
     let tld = state.app.db.tld()?;
@@ -351,7 +351,7 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
 }
 
 /// Trust (or re-trust) the CA. Login password, no admin.
-#[tauri::command]
+#[tauri::command(async)]
 fn https_trust_ca() -> Res<String> {
     ca::ensure_ca()?;
     ca::trust()?;
@@ -359,7 +359,7 @@ fn https_trust_ca() -> Res<String> {
 }
 
 /// Re-issue every site certificate, whatever the cache thinks.
-#[tauri::command]
+#[tauri::command(async)]
 fn https_regenerate_certs(state: State<'_, AppState>) -> Res<String> {
     let sites = site::list(&state.app.db)?;
     for s in &sites {
@@ -371,7 +371,7 @@ fn https_regenerate_certs(state: State<'_, AppState>) -> Res<String> {
 }
 
 /// Undo every system-level change. Sites and databases are untouched.
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_system_changes(state: State<'_, AppState>) -> Res<String> {
     let tlds = state.app.tlds()?;
     privileged::remove_system_changes(&tlds)?;
@@ -398,12 +398,12 @@ fn remove_system_changes(state: State<'_, AppState>) -> Res<String> {
         .into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn dns_start(state: State<'_, AppState>) -> Res<u16> {
     Ok(state.app.start_dns()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn dns_stop(state: State<'_, AppState>) -> Res<()> {
     state.app.stop_dns();
     Ok(())
@@ -411,12 +411,12 @@ fn dns_stop(state: State<'_, AppState>) -> Res<()> {
 
 // ---------------------------------------------------------------- sites
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_list(state: State<'_, AppState>) -> Res<Vec<site::Site>> {
     Ok(site::list(&state.app.db)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_create(state: State<'_, AppState>, new: site::NewSite) -> Res<site::Site> {
     let mut new = new;
     if new.php_minor.is_empty() {
@@ -439,17 +439,17 @@ fn site_create(state: State<'_, AppState>, new: site::NewSite) -> Res<site::Site
     Ok(s)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_delete(state: State<'_, AppState>, domain: String) -> Res<Vec<String>> {
     Ok(state.app.delete_site(&domain)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_set_enabled(state: State<'_, AppState>, domain: String, enabled: bool) -> Res<()> {
     Ok(site::set_enabled(&state.app.db, &domain, enabled)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_set_php(state: State<'_, AppState>, domain: String, minor: String) -> Res<()> {
     site::set_php(&state.app.db, &domain, &minor)?;
     if runtime::is_installed(&minor, "fpm") {
@@ -458,7 +458,7 @@ fn site_set_php(state: State<'_, AppState>, domain: String, minor: String) -> Re
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_add_domain(state: State<'_, AppState>, domain: String, alias: String) -> Res<()> {
     site::add_domain(&state.app.db, &domain, &alias)?;
     // Every path that changes the name set re-issues. Forgetting one leaves a
@@ -470,7 +470,7 @@ fn site_add_domain(state: State<'_, AppState>, domain: String, alias: String) ->
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_logs(state: State<'_, AppState>, domain: String) -> Res<Vec<qlog::SiteLog>> {
     let s = site_by_domain(&state, &domain)?;
     // Only asked for a WordPress site: `wp config get` on a plain PHP folder
@@ -486,7 +486,7 @@ fn site_logs(state: State<'_, AppState>, domain: String) -> Res<Vec<qlog::SiteLo
     Ok(qlog::for_site(&s, wp_logging))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_log_tail(
     state: State<'_, AppState>,
     domain: String,
@@ -502,7 +502,7 @@ fn site_log_tail(
     Ok(qlog::tail_path(&path, lines.unwrap_or(500))?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_log_clear(state: State<'_, AppState>, domain: String, id: String) -> Res<String> {
     let s = site_by_domain(&state, &domain)?;
     let path = qlog::site_log_path(&s, &id)
@@ -512,7 +512,7 @@ fn site_log_clear(state: State<'_, AppState>, domain: String, id: String) -> Res
 }
 
 /// Copy a log to ~/Downloads, stamped so repeated saves do not overwrite.
-#[tauri::command]
+#[tauri::command(async)]
 fn site_log_download(state: State<'_, AppState>, domain: String, id: String) -> Res<String> {
     let s = site_by_domain(&state, &domain)?;
     let path = qlog::site_log_path(&s, &id)
@@ -540,7 +540,7 @@ struct SiteInfo {
 }
 
 /// The read-only facts panel: what this site is and what it sits on.
-#[tauri::command]
+#[tauri::command(async)]
 fn site_info(state: State<'_, AppState>, domain: String) -> Res<SiteInfo> {
     let s = site_by_domain(&state, &domain)?;
     let db_host = s.db_engine.as_ref().and_then(|e| {
@@ -573,7 +573,7 @@ struct CertInfo {
     exists: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_cert_info(state: State<'_, AppState>, domain: String) -> Res<CertInfo> {
     let s = site_by_domain(&state, &domain)?;
     let dates = state.app.db.cert_dates(s.id)?;
@@ -592,7 +592,7 @@ fn site_cert_info(state: State<'_, AppState>, domain: String) -> Res<CertInfo> {
 }
 
 /// Re-issue from the local CA and reload the edge so it picks the new file up.
-#[tauri::command]
+#[tauri::command(async)]
 fn site_regenerate_cert(state: State<'_, AppState>, domain: String) -> Res<String> {
     let s = site_by_domain(&state, &domain)?;
     state.app.ensure_cert(&s)?;
@@ -600,13 +600,13 @@ fn site_regenerate_cert(state: State<'_, AppState>, domain: String) -> Res<Strin
     Ok(format!("Certificate re-issued for {}.", s.domain))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_set_name(state: State<'_, AppState>, domain: String, name: String) -> Res<String> {
     site::set_name(&state.app.db, &domain, &name)?;
     Ok(format!("Renamed to {}.", name.trim()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_set_xdebug(state: State<'_, AppState>, domain: String, on: bool) -> Res<String> {
     let s = site_by_domain(&state, &domain)?;
     if on && !php::xdebug_supported(&s.php_minor) {
@@ -623,7 +623,7 @@ fn site_set_xdebug(state: State<'_, AppState>, domain: String, on: bool) -> Res<
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_remove_domain(state: State<'_, AppState>, domain: String, alias: String) -> Res<String> {
     site::remove_domain(&state.app.db, &domain, &alias)?;
     if let Some(s) = site::find(&state.app.db, &domain)? {
@@ -633,13 +633,13 @@ fn site_remove_domain(state: State<'_, AppState>, domain: String, alias: String)
     Ok(format!("{alias} removed."))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_env_get(state: State<'_, AppState>, domain: String) -> Res<Vec<(String, String)>> {
     let s = site_by_domain(&state, &domain)?;
     Ok(state.app.db.site_env(s.id)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_env_set(
     state: State<'_, AppState>,
     domain: String,
@@ -655,7 +655,7 @@ fn site_env_set(
 /// The order matters: back up before touching anything, rewrite the database
 /// while the old name is still what is inside it, then rename and re-issue.
 /// A failure part-way leaves the steps before it done and nothing half-applied.
-#[tauri::command]
+#[tauri::command(async)]
 fn site_change_domain(
     state: State<'_, AppState>,
     domain: String,
@@ -698,7 +698,7 @@ fn site_change_domain(
 }
 
 /// Move the site's files. The domain, database and certificate do not change.
-#[tauri::command]
+#[tauri::command(async)]
 fn site_move(state: State<'_, AppState>, domain: String, new_path: String) -> Res<String> {
     let s = site_by_domain(&state, &domain)?;
     let target = std::path::PathBuf::from(new_path.trim());
@@ -740,7 +740,7 @@ async fn site_adminer_url(state: State<'_, AppState>, domain: String) -> Res<Str
     Ok(app.adminer_url(&domain).await?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_url(state: State<'_, AppState>, _domain: String) -> Res<String> {
     Ok(format!("{}/", canonical_url(&state, &_domain)?))
 }
@@ -764,7 +764,7 @@ fn canonical_url(state: &State<'_, AppState>, domain: &str) -> Res<String> {
 
 /// Reveal a path in Finder. Takes the path rather than a domain so it serves
 /// a docroot, a wp-config.php or a log file equally.
-#[tauri::command]
+#[tauri::command(async)]
 fn path_open(path: String) -> Res<()> {
     let p = std::path::Path::new(&path);
     if !p.exists() {
@@ -820,7 +820,7 @@ fn open_url(state: &AppState, url: &str) -> Res<()> {
 }
 
 /// Open a path in the preferred editor.
-#[tauri::command]
+#[tauri::command(async)]
 fn path_open_in_editor(state: State<'_, AppState>, path: String) -> Res<()> {
     if !std::path::Path::new(&path).exists() {
         return Err(format!("{path} is not there any more."));
@@ -842,7 +842,7 @@ async fn site_adminer_open(state: State<'_, AppState>, domain: String) -> Res<()
     open_url(&state, &url)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn site_open(state: State<'_, AppState>, domain: String) -> Res<()> {
     // Read before `site_url`, which takes the state by value.
     let browser = preferred_browser(&state.app.db);
@@ -853,7 +853,7 @@ fn site_open(state: State<'_, AppState>, domain: String) -> Res<()> {
 
 // ------------------------------------------------------------ databases
 
-#[tauri::command]
+#[tauri::command(async)]
 fn db_list(state: State<'_, AppState>) -> Res<Vec<database::EngineStatus>> {
     Ok(database::list(&state.app.sup))
 }
@@ -877,42 +877,42 @@ async fn db_install(app: tauri::AppHandle, series: String) -> Res<String> {
     Ok(format!("MySQL {series} installed"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn db_start(state: State<'_, AppState>, series: String) -> Res<u16> {
     Ok(database::start(&state.app.sup, &series)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn db_stop(state: State<'_, AppState>, series: String) -> Res<bool> {
     Ok(database::stop(&state.app.sup, &series)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn db_databases(series: String) -> Res<Vec<String>> {
     Ok(database::databases(&series)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn db_export(series: String, db_name: String) -> Res<String> {
     Ok(database::export(&series, &db_name)?.to_string_lossy().into())
 }
 
 /// Import OVERWRITES the target's tables, so the caller confirms first.
-#[tauri::command]
+#[tauri::command(async)]
 fn db_import(series: String, db_name: String, file: String) -> Res<String> {
     database::import(&series, &db_name, std::path::Path::new(&file))?;
     Ok(format!("Imported into `{db_name}`."))
 }
 
 /// Bytes under a site's docroot, for the size readout on Overview.
-#[tauri::command]
+#[tauri::command(async)]
 fn site_disk_usage(state: State<'_, AppState>, domain: String) -> Res<u64> {
     let site = site_by_domain(&state, &domain)?;
     Ok(site::disk_usage(&site.docroot))
 }
 
 /// Files and database in one archive in ~/Downloads. Returns where it landed.
-#[tauri::command]
+#[tauri::command(async)]
 fn site_export_all(state: State<'_, AppState>, domain: String) -> Res<String> {
     Ok(state
         .app
@@ -926,7 +926,7 @@ fn site_export_all(state: State<'_, AppState>, domain: String) -> Res<String> {
 /// `adminPath` is relative to wp-admin -- "site-editor.php", "edit.php" -- and
 /// the mu-plugin that consumes the token keeps the redirect inside this site's
 /// admin, so a path from the UI cannot be turned into an open redirect.
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_open_admin(
     state: State<'_, AppState>,
     domain: String,
@@ -973,7 +973,7 @@ struct SetupStatus {
 /// Recomputed rather than remembered: someone can install PHP from the PHP tab
 /// and then open onboarding, and a wizard that offers to download it again is
 /// a wizard that has stopped telling the truth.
-#[tauri::command]
+#[tauri::command(async)]
 fn setup_status(state: State<'_, AppState>) -> Res<SetupStatus> {
     let default_php = state.app.db.default_php()?;
     let default_mysql = runtime::MYSQL_SERIES
@@ -1066,7 +1066,7 @@ async fn setup_install_adminer(app: tauri::AppHandle) -> Res<String> {
 }
 
 /// Remember that the first run happened, so it does not greet them again.
-#[tauri::command]
+#[tauri::command(async)]
 fn setup_finish(state: State<'_, AppState>, done: bool) -> Res<()> {
     state
         .app
@@ -1106,7 +1106,7 @@ struct WpStatus {
     version: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_status(state: State<'_, AppState>, domain: String) -> Res<WpStatus> {
     let site = site_by_domain(&state, &domain)?;
     let is_wordpress = wordpress::is_wordpress(&site);
@@ -1121,7 +1121,7 @@ fn wp_status(state: State<'_, AppState>, domain: String) -> Res<WpStatus> {
 }
 
 /// Install WordPress into an existing site: database, config, core, admin.
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_install(
     state: State<'_, AppState>,
     domain: String,
@@ -1157,7 +1157,7 @@ fn default_db_series(state: &State<'_, AppState>) -> String {
         .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_magic_login(state: State<'_, AppState>, domain: String, user: String) -> Res<String> {
     let site = site_by_domain(&state, &domain)?;
     let url = canonical_url(&state, &site.domain)?;
@@ -1171,7 +1171,7 @@ fn wp_magic_login(state: State<'_, AppState>, domain: String, user: String) -> R
 /// Not WP-CLI's job: `plugin install` takes a zip, not a working tree. A clone
 /// is what you want for something you are developing -- the folder stays a git
 /// checkout you can pull and commit from.
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_install_from_git(
     state: State<'_, AppState>,
     domain: String,
@@ -1234,13 +1234,13 @@ fn wp_install_from_git(
     Ok(format!("Cloned {clone_url} into wp-content/{kind}s/{folder}."))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_roles(state: State<'_, AppState>, domain: String) -> Res<Vec<String>> {
     let site = site_by_domain(&state, &domain)?;
     Ok(wordpress::roles(&site)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_create_user(
     state: State<'_, AppState>,
     domain: String,
@@ -1253,7 +1253,7 @@ fn wp_create_user(
     Ok(wordpress::create_user(&site, &login, &email, &password, &role)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_set_user_role(
     state: State<'_, AppState>,
     domain: String,
@@ -1264,7 +1264,7 @@ fn wp_set_user_role(
     Ok(wordpress::set_user_role(&site, &login, &role)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_set_user_password(
     state: State<'_, AppState>,
     domain: String,
@@ -1275,7 +1275,7 @@ fn wp_set_user_password(
     Ok(wordpress::set_user_password(&site, &login, &password)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_delete_user(
     state: State<'_, AppState>,
     domain: String,
@@ -1319,14 +1319,14 @@ site_cmd!(wp_import_database, String, |site, file: String| wptools::import_datab
 site_cmd!(wp_export_content, String, |site| wptools::export_content(&site));
 
 /// Core version currently on disk.
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_core_version(state: State<'_, AppState>, domain: String) -> Res<String> {
     let site = site_by_domain(&state, &domain)?;
     Ok(wordpress::core_version(&site)?)
 }
 
 /// Update core, optionally to a named version (which may be a downgrade).
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_core_update(
     state: State<'_, AppState>,
     domain: String,
@@ -1337,14 +1337,14 @@ fn wp_core_update(
 }
 
 /// Run one cron hook, or everything due when `hook` is absent.
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_cron_run(state: State<'_, AppState>, domain: String, hook: Option<String>) -> Res<String> {
     let site = site_by_domain(&state, &domain)?;
     Ok(wptools::cron_run(&site, hook.as_deref())?)
 }
 
 /// A theme or plugin's screenshot, as a data URI. `null` when it has none.
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_item_screenshot(
     state: State<'_, AppState>,
     domain: String,
@@ -1356,7 +1356,7 @@ fn wp_item_screenshot(
 }
 
 /// Update one plugin or theme in place.
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_update_item(
     state: State<'_, AppState>,
     domain: String,
@@ -1371,7 +1371,7 @@ fn wp_update_item(
 ///
 /// The path is checked to be inside the docroot: this opens a terminal, so an
 /// arbitrary path arriving from the UI is worth refusing rather than trusting.
-#[tauri::command]
+#[tauri::command(async)]
 fn site_terminal_at(state: State<'_, AppState>, domain: String, path: String) -> Res<()> {
     let site = site_by_domain(&state, &domain)?;
     let root = std::fs::canonicalize(&site.docroot).map_err(|e| e.to_string())?;
@@ -1382,22 +1382,27 @@ fn site_terminal_at(state: State<'_, AppState>, domain: String, path: String) ->
     Ok(exec::open_terminal_in(&site, &target, &preferred_terminal(&state.app.db))?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_users(state: State<'_, AppState>, domain: String) -> Res<Vec<wordpress::WpUser>> {
     let site = site_by_domain(&state, &domain)?;
     Ok(wordpress::users(&site)?)
 }
 
-#[tauri::command]
-fn wp_items(state: State<'_, AppState>, domain: String, kind: String) -> Res<Vec<wordpress::WpItem>> {
+#[tauri::command(async)]
+fn wp_items(
+    state: State<'_, AppState>,
+    domain: String,
+    kind: String,
+    // false skips the wordpress.org round trip so the list can show at once;
+    // the UI asks again with it for the update badges. Absent means true.
+    updates: Option<bool>,
+) -> Res<Vec<wordpress::WpItem>> {
     let site = site_by_domain(&state, &domain)?;
-    Ok(match kind.as_str() {
-        "theme" => wordpress::themes(&site)?,
-        _ => wordpress::plugins(&site)?,
-    })
+    let kind = if kind == "theme" { "theme" } else { "plugin" };
+    Ok(wordpress::items(&site, kind, updates.unwrap_or(true))?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_install_item(
     state: State<'_, AppState>,
     domain: String,
@@ -1410,7 +1415,7 @@ fn wp_install_item(
     Ok(wordpress::install_item(&site, &kind, &source, activate, force)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_set_item_state(
     state: State<'_, AppState>,
     domain: String,
@@ -1422,7 +1427,7 @@ fn wp_set_item_state(
     Ok(wordpress::set_item_state(&site, &kind, &name, activate)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_delete_item(
     state: State<'_, AppState>,
     domain: String,
@@ -1435,7 +1440,7 @@ fn wp_delete_item(
 
 /// Defaults to a dry run: the operation most likely to be right in intent and
 /// wrong in scope.
-#[tauri::command]
+#[tauri::command(async)]
 fn wp_search_replace(
     state: State<'_, AppState>,
     domain: String,
@@ -1449,13 +1454,13 @@ fn wp_search_replace(
 
 // ----------------------------------------------------------- migration
 
-#[tauri::command]
+#[tauri::command(async)]
 fn migrate_scan(state: State<'_, AppState>) -> Res<migrate::ScanResult> {
     Ok(migrate::scan(&state.app.db)?)
 }
 
 /// Import found sites. The source installation is never written to.
-#[tauri::command]
+#[tauri::command(async)]
 fn migrate_import(
     state: State<'_, AppState>,
     requests: Vec<migrate::ImportRequest>,
@@ -1492,7 +1497,7 @@ fn catch_all_on(state: &State<'_, AppState>) -> bool {
         .unwrap_or(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn mail_status(state: State<'_, AppState>) -> Res<mail::MailStatus> {
     Ok(mail::status(&state.app.sup, catch_all_on(&state)))
 }
@@ -1511,19 +1516,19 @@ async fn mail_install(app: tauri::AppHandle) -> Res<String> {
     Ok("Mailpit installed".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn mail_start(state: State<'_, AppState>) -> Res<u16> {
     let port = mail::start(&state.app.sup)?;
     apply_catch_all(&state, catch_all_on(&state))?;
     Ok(port)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn mail_stop(state: State<'_, AppState>) -> Res<bool> {
     Ok(mail::stop(&state.app.sup)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn mail_open(state: State<'_, AppState>) -> Res<()> {
     let st = mail::status(&state.app.sup, catch_all_on(&state));
     open_url(&state, &st.ui_url)
@@ -1545,7 +1550,7 @@ fn apply_catch_all(state: &State<'_, AppState>, on: bool) -> Res<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn mail_set_catch_all(state: State<'_, AppState>, on: bool) -> Res<String> {
     state.app.db.set_setting("catch_all", if on { "1" } else { "0" })?;
     apply_catch_all(&state, on)?;
@@ -1558,7 +1563,7 @@ fn mail_set_catch_all(state: State<'_, AppState>, on: bool) -> Res<String> {
 
 // -------------------------------------------------------------- tunnels
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tunnel_status(state: State<'_, AppState>) -> Res<serde_json::Value> {
     // Sweeping on read is what makes a forgotten share findable: a row whose
     // process is gone, or one past its deadline, is reconciled here.
@@ -1583,7 +1588,7 @@ async fn tunnel_install(app: tauri::AppHandle) -> Res<String> {
     Ok("cloudflared installed".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tunnel_start(state: State<'_, AppState>, domain: String) -> Res<String> {
     // A tunnel with no stack behind it publishes a 502 to the internet.
     if state.edge.lock().unwrap().is_none() {
@@ -1599,19 +1604,19 @@ fn tunnel_start(state: State<'_, AppState>, domain: String) -> Res<String> {
     )?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tunnel_stop(state: State<'_, AppState>, domain: String) -> Res<bool> {
     Ok(tunnel::stop(&state.app.db, &state.app.sup, &domain)?)
 }
 
 // ----------------------------------------------------------------- logs
 
-#[tauri::command]
+#[tauri::command(async)]
 fn logs_sources() -> Res<Vec<qlog::LogSource>> {
     Ok(qlog::sources())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn logs_tail(id: String, lines: Option<usize>) -> Res<String> {
     Ok(qlog::tail(&id, lines.unwrap_or(400))?)
 }
@@ -1640,7 +1645,7 @@ async fn site_exec(
 
 /// Open the preferred terminal in the docroot, for anything interactive the
 /// runner cannot host.
-#[tauri::command]
+#[tauri::command(async)]
 fn site_terminal(state: State<'_, AppState>, domain: String) -> Res<()> {
     let site = site_by_domain(&state, &domain)?;
     Ok(exec::open_terminal(&site, &preferred_terminal(&state.app.db))?)
@@ -1703,7 +1708,7 @@ fn pty_close(state: State<'_, AppState>, id: String) -> Res<bool> {
 
 // -------------------------------------------------- migration stages 2/3
 
-#[tauri::command]
+#[tauri::command(async)]
 fn migrate_copy_database(state: State<'_, AppState>, domain: String) -> Res<migrate::DbCopyResult> {
     let site = site_by_domain(&state, &domain)?;
     let series = default_db_series(&state);
@@ -1715,7 +1720,7 @@ fn migrate_copy_database(state: State<'_, AppState>, domain: String) -> Res<migr
 }
 
 /// What the rewrite WOULD change. Writes nothing.
-#[tauri::command]
+#[tauri::command(async)]
 fn migrate_preview_config(state: State<'_, AppState>, domain: String) -> Res<migrate::ConfigDiff> {
     let site = site_by_domain(&state, &domain)?;
     let target = site
@@ -1725,7 +1730,7 @@ fn migrate_preview_config(state: State<'_, AppState>, domain: String) -> Res<mig
     Ok(migrate::preview_config_rewrite(&site, &target)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn migrate_apply_config(state: State<'_, AppState>, domain: String) -> Res<String> {
     let site = site_by_domain(&state, &domain)?;
     let target = site
@@ -1737,7 +1742,7 @@ fn migrate_apply_config(state: State<'_, AppState>, domain: String) -> Res<Strin
 
 // ------------------------------------------------------------- settings
 
-#[tauri::command]
+#[tauri::command(async)]
 fn settings_get(state: State<'_, AppState>) -> Res<serde_json::Value> {
     Ok(serde_json::json!({
         "tld": state.app.db.tld()?,
@@ -1757,7 +1762,7 @@ fn settings_get(state: State<'_, AppState>) -> Res<serde_json::Value> {
     }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn settings_set(state: State<'_, AppState>, key: String, value: String) -> Res<String> {
     if key == "tld" {
         if value.contains('.') || value.trim().is_empty() {
@@ -1945,6 +1950,18 @@ fn app_quit(app: AppHandle, state: State<'_, AppState>, mode: String, remember: 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Commands run on this runtime's workers (`#[tauri::command(async)]`) --
+    // not the main thread, which would freeze the window and run them one at
+    // a time. One can sit on a WP-CLI process for a second or more and a
+    // single screen fires a dozen, so there are enough workers that they
+    // never queue behind each other or starve the async commands.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(32)
+        .enable_all()
+        .build()
+        .expect("QuickWP could not start its async runtime");
+    tauri::async_runtime::set(runtime.handle().clone());
+
     let app = Quickwp::new().expect("QuickWP could not open its data directory");
 
     // Reconcile shares before the window opens. A tunnel left running by a

@@ -15,8 +15,26 @@ import {
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend, Site } from "../../lib/api";
+import { peekCache, putCache } from "../../lib/useAsync";
+import { withKnownUpdates } from "./SiteWordPress";
 import { usePreferredApps } from "../../lib/usePreferredApps";
 import ConfirmDialog from "../ui/ConfirmDialog";
+
+type WpStatus = Awaited<ReturnType<typeof api.wpStatus>>;
+type WpItems = Awaited<ReturnType<typeof api.wpItems>>;
+type WpUsers = Awaited<ReturnType<typeof api.wpUsers>>;
+
+/** The administrator to show: the first with that role, else the first user. */
+function pickAdmin(users: WpUsers) {
+  const owner =
+    users.find((u) => u.roles.split(",").some((r) => r.trim() === "administrator")) ?? users[0];
+  return owner ? { login: owner.login, email: owner.email } : null;
+}
+
+function activeTheme(list: WpItems) {
+  const active = list.find((t) => t.status === "active");
+  return active ? { title: active.title || active.name, name: active.name } : null;
+}
 
 /**
  * The at-a-glance panel: what this site is, who you log in as, and the handful
@@ -48,48 +66,71 @@ export default function SiteOverview({ site }: { site: Site }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  // Loaded one at a time and each tolerated failing: a site whose WP-CLI cannot
-  // run should still show its size and its shortcuts, not an empty tab.
+  // All requested at once -- the backend runs them in parallel -- and each
+  // tolerated failing: a site whose WP-CLI cannot run should still show its
+  // size and its shortcuts, not an empty tab.
   useEffect(() => {
     let live = true;
+    const d = site.domain;
     // A password set for the last site is not this site's password.
     setPassword(null);
-    if (!hasBackend) return;
 
-    void api
-      .siteDiskUsage(site.domain)
-      .then((b) => live && setDisk(b))
-      .catch(() => {});
+    // Paint what is already known -- from an earlier visit, or from the
+    // WordPress tab, which shares these keys -- then refresh underneath.
+    // Unknown values are cleared rather than left showing the last site's.
+    const themes = peekCache<WpItems>(`wp-items:theme:${d}`);
+    const theme = themes ? activeTheme(themes) : null;
+    const users = peekCache<WpUsers>(`wp-users:${d}`);
+    setDisk(peekCache<number>(`disk:${d}`) ?? null);
+    setWpVersion(peekCache<WpStatus>(`wp-status:${d}`)?.version ?? null);
+    setTheme(theme);
+    setThumb(theme ? (peekCache<string | null>(`wp-thumb:${d}:${theme.name}`) ?? null) : null);
+    setAdmin(users ? pickAdmin(users) : null);
 
-    if (!isWordPress) return;
+    if (hasBackend) {
+      void api
+        .siteDiskUsage(d)
+        .then((b) => {
+          putCache(`disk:${d}`, b);
+          if (live) setDisk(b);
+        })
+        .catch(() => {});
 
-    void api
-      .wpStatus(site.domain)
-      .then((s) => live && setWpVersion(s.version))
-      .catch(() => {});
+      if (isWordPress) {
+        void api
+          .wpStatus(d)
+          .then((s) => {
+            putCache(`wp-status:${d}`, s);
+            if (live) setWpVersion(s.version);
+          })
+          .catch(() => {});
 
-    void api
-      .wpItems(site.domain, "theme")
-      .then(async (list) => {
-        const active = list.find((t) => t.status === "active");
-        if (!active || !live) return;
-        setTheme({ title: active.title || active.name, name: active.name });
-        const shot = await api
-          .wpItemScreenshot(site.domain, "theme", active.name)
-          .catch(() => null);
-        if (live) setThumb(shot);
-      })
-      .catch(() => {});
+        // Without the update check: this only needs the active theme, and
+        // skipping it is the difference between a third of a second and four.
+        void api
+          .wpItems(d, "theme", false)
+          .then(async (list) => {
+            const key = `wp-items:theme:${d}`;
+            putCache(key, withKnownUpdates(list, peekCache<WpItems>(key)));
+            const active = activeTheme(list);
+            if (!live) return;
+            setTheme(active);
+            if (!active) return;
+            const shot = await api.wpItemScreenshot(d, "theme", active.name).catch(() => null);
+            putCache(`wp-thumb:${d}:${active.name}`, shot);
+            if (live) setThumb(shot);
+          })
+          .catch(() => {});
 
-    void api
-      .wpUsers(site.domain)
-      .then((users) => {
-        const owner =
-          users.find((u) => u.roles.split(",").some((r) => r.trim() === "administrator")) ??
-          users[0];
-        if (owner && live) setAdmin({ login: owner.login, email: owner.email });
-      })
-      .catch(() => {});
+        void api
+          .wpUsers(d)
+          .then((list) => {
+            putCache(`wp-users:${d}`, list);
+            if (live) setAdmin(pickAdmin(list));
+          })
+          .catch(() => {});
+      }
+    }
 
     return () => {
       live = false;

@@ -520,8 +520,10 @@ export const api = {
     call<string>("wp_set_user_password", { domain, login, password }),
   wpDeleteUser: (domain: string, login: string, reassignTo: string | null) =>
     call<string>("wp_delete_user", { domain, login, reassignTo }),
-  wpItems: (domain: string, kind: "plugin" | "theme") =>
-    call<WpItem[]>("wp_items", { domain, kind }),
+  /** `updates: false` answers in a fraction of the time, with every `update`
+   *  "none" -- unknown, not up to date. */
+  wpItems: (domain: string, kind: "plugin" | "theme", updates = true) =>
+    call<WpItem[]>("wp_items", { domain, kind, updates }),
   wpInstallItem: (
     domain: string,
     kind: "plugin" | "theme",

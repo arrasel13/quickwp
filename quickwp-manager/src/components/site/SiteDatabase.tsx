@@ -18,7 +18,7 @@ import { useAsync } from "../../lib/useAsync";
  * you go find a client to do it with.
  */
 export default function SiteDatabase({ site }: { site: Site }) {
-  const { data: engines, loading } = useAsync(() => api.dbList(), []);
+  const { data: engines, loading } = useAsync(() => api.dbList(), [], "db-list");
   const [exporting, setExporting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [url, setUrl] = useState<string | null>(null);

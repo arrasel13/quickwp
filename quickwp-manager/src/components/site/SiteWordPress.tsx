@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowPathIcon,
   ArrowUpTrayIcon,
@@ -17,7 +17,7 @@ import {
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, Site, WpItem } from "../../lib/api";
-import { useAsync } from "../../lib/useAsync";
+import { peekCache, useAsync } from "../../lib/useAsync";
 import { open } from "@tauri-apps/plugin-dialog";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import SiteManage from "./SiteManage";
@@ -71,12 +71,13 @@ export default function SiteWordPress({
   const { data: status, error: statusError, loading } = useAsync(
     () => api.wpStatus(domain),
     [domain],
+    `wp-status:${domain}`,
   );
   const [section, setSection] = useState<Section>("plugins");
 
-  const plugins = useAsync(() => api.wpItems(domain, "plugin"), [domain]);
-  const themes = useAsync(() => api.wpItems(domain, "theme"), [domain]);
-  const users = useAsync(() => api.wpUsers(domain), [domain]);
+  const plugins = useItems(domain, "plugin");
+  const themes = useItems(domain, "theme");
+  const users = useAsync(() => api.wpUsers(domain), [domain], `wp-users:${domain}`);
 
   if (loading) {
     return <p className="p-4 text-xs text-gray-500">Reading the install…</p>;
@@ -157,6 +158,62 @@ export default function SiteWordPress({
       )}
     </div>
   );
+}
+
+/**
+ * Carry update info already known onto a list fetched without it, for items
+ * whose version has not changed -- so badges do not blink off while the
+ * update check reruns.
+ */
+export function withKnownUpdates(fresh: WpItem[], known: WpItem[] | undefined): WpItem[] {
+  if (!known) return fresh;
+  const byName = new Map(known.map((i) => [i.name, i]));
+  return fresh.map((i) => {
+    const k = byName.get(i.name);
+    return k && k.version === i.version && i.update === "none"
+      ? { ...i, update: k.update, update_version: k.update_version }
+      : i;
+  });
+}
+
+/**
+ * A plugin or theme list that shows at once and fills in update badges after.
+ *
+ * Finding updates is a round trip to wordpress.org -- a second for plugins
+ * and more for themes -- so the list comes first without it and a second
+ * request adds it, on first load and on every reload.
+ */
+function useItems(domain: string, kind: Kind) {
+  const key = `wp-items:${kind}:${domain}`;
+  const state = useAsync(
+    async () => withKnownUpdates(await api.wpItems(domain, kind, false), peekCache<WpItem[]>(key)),
+    [domain, kind],
+    key,
+  );
+  const { setData, reload: reloadFast } = state;
+  const [round, setRound] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    void api
+      .wpItems(domain, kind, true)
+      .then((full) => {
+        if (live) setData(full);
+      })
+      .catch(() => {
+        /* the list without update badges is still right */
+      });
+    return () => {
+      live = false;
+    };
+  }, [domain, kind, round, setData]);
+
+  const reload = useCallback(async () => {
+    await reloadFast();
+    setRound((r) => r + 1);
+  }, [reloadFast]);
+
+  return { ...state, reload };
 }
 
 // ---------------------------------------------------------------- plugins
@@ -1197,7 +1254,7 @@ function Users({
   state: AsyncState<import("../../lib/api").WpUser[]>;
 }) {
   const { data, error, loading, reload } = state;
-  const { data: roles } = useAsync(() => api.wpRoles(domain), [domain]);
+  const { data: roles } = useAsync(() => api.wpRoles(domain), [domain], `wp-roles:${domain}`);
 
   const [login, setLogin] = useState("");
   const [email, setEmail] = useState("");

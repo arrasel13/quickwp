@@ -11,7 +11,7 @@ import { api, errorText, hasBackend } from "../../lib/api";
 import { useAsync } from "../../lib/useAsync";
 
 export default function MailTab() {
-  const { data: st, error, loading, reload } = useAsync(() => api.mailStatus(), []);
+  const { data: st, error, loading, reload } = useAsync(() => api.mailStatus(), [], "mail-status");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 

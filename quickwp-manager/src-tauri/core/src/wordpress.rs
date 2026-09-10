@@ -222,9 +222,45 @@ pub fn is_wordpress(site: &Site) -> bool {
 }
 
 pub fn core_version(site: &Site) -> Result<String> {
+    // One line of wp-includes/version.php: reading it takes well under a
+    // millisecond, where booting WP-CLI to print it takes a fifth of a second.
+    // WP-CLI stays as the fallback for an install laid out some other way.
+    if let Some(v) = version_from_file(&PathBuf::from(&site.docroot)) {
+        return Ok(v);
+    }
     let mut c = wp(site)?;
     c.args(["core", "version"]);
     Ok(run(c, "Reading the WordPress version")?.trim().to_string())
+}
+
+/// `$wp_version = '7.1';` out of wp-includes/version.php.
+fn version_from_file(docroot: &std::path::Path) -> Option<String> {
+    let src = std::fs::read_to_string(docroot.join("wp-includes/version.php")).ok()?;
+    src.lines().find_map(|line| {
+        let rest = line.trim_start().strip_prefix("$wp_version")?.trim_start();
+        let value = rest.strip_prefix('=')?.trim();
+        let quote = value.chars().next().filter(|c| *c == '\'' || *c == '"')?;
+        let v = value[1..].split(quote).next()?;
+        (!v.is_empty()).then(|| v.to_string())
+    })
+}
+
+#[cfg(test)]
+mod version_file_tests {
+    use super::version_from_file;
+
+    #[test]
+    fn reads_the_version_line_and_ignores_the_rest() {
+        let dir = std::env::temp_dir().join("quickwp-version-file-test");
+        std::fs::create_dir_all(dir.join("wp-includes")).unwrap();
+        std::fs::write(
+            dir.join("wp-includes/version.php"),
+            "<?php\n/** The WordPress version string. */\n$wp_version = '7.1';\n$wp_db_version = 60717;\n",
+        )
+        .unwrap();
+        assert_eq!(version_from_file(&dir).as_deref(), Some("7.1"));
+        assert_eq!(version_from_file(&dir.join("missing")), None);
+    }
 }
 
 /// A one-click login link for wp-admin.
@@ -348,15 +384,22 @@ pub struct WpItem {
     pub title: String,
 }
 
-fn list_items(site: &Site, kind: &str) -> Result<Vec<WpItem>> {
+fn list_items(site: &Site, kind: &str, check_updates: bool) -> Result<Vec<WpItem>> {
     let mut c = wp(site)?;
-    c.args([
-        kind,
-        "list",
-        "--format=json",
+    c.args([kind, "list", "--format=json"]);
+    if check_updates {
         // `update` is only "none"/"available"; `update_version` is the number.
-        "--fields=name,status,version,update,update_version,title",
-    ]);
+        c.arg("--fields=name,status,version,update,update_version,title");
+    } else {
+        // No round trip to wordpress.org, and nothing loaded that a list does
+        // not need. The missing update fields read as "none" below.
+        c.args([
+            "--fields=name,status,version,title",
+            "--skip-update-check",
+            "--skip-plugins",
+            "--skip-themes",
+        ]);
+    }
     let json = run(c, &format!("Listing {kind}s"))?;
     let parsed: Vec<serde_json::Value> =
         serde_json::from_str(json.trim()).map_err(|e| Error::other(format!("bad {kind} list: {e}")))?;
@@ -429,10 +472,105 @@ pub fn users(site: &Site) -> Result<Vec<WpUser>> {
 }
 
 pub fn plugins(site: &Site) -> Result<Vec<WpItem>> {
-    list_items(site, "plugin")
+    list_items(site, "plugin", true)
 }
 pub fn themes(site: &Site) -> Result<Vec<WpItem>> {
-    list_items(site, "theme")
+    list_items(site, "theme", true)
+}
+
+/// Plugins or themes, optionally without looking for updates.
+///
+/// Finding updates is a round trip to wordpress.org -- about a second for
+/// plugins on a small site, and `wp theme list` takes three even without it --
+/// so the UI shows the fast list at once and asks again with updates after.
+/// Without updates, every `update` is "none": unknown, not "up to date".
+pub fn items(site: &Site, kind: &str, check_updates: bool) -> Result<Vec<WpItem>> {
+    if !check_updates && kind == "theme" {
+        if let Some(themes) = themes_from_disk(site) {
+            return Ok(themes);
+        }
+    }
+    list_items(site, kind, check_updates)
+}
+
+/// Themes from their style.css headers, plus one WP-CLI call for which is
+/// active: a third of a second. None when the themes are not where a standard
+/// install keeps them, and the caller asks WP-CLI instead.
+fn themes_from_disk(site: &Site) -> Option<Vec<WpItem>> {
+    let entries = std::fs::read_dir(PathBuf::from(&site.docroot).join("wp-content/themes")).ok()?;
+    let mut c = wp(site).ok()?;
+    c.args([
+        "eval",
+        "echo json_encode([get_option('stylesheet'), get_option('template')]);",
+        "--skip-plugins",
+        "--skip-themes",
+    ]);
+    let active: Vec<String> =
+        serde_json::from_str(run(c, "Reading the active theme").ok()?.trim()).ok()?;
+    let stylesheet = active.first()?.clone();
+    let template = active.get(1).cloned().unwrap_or_default();
+
+    let mut out: Vec<WpItem> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let head = file_head(&e.path().join("style.css"))?;
+            // WordPress ignores a folder whose style.css names no theme.
+            let title = file_header(&head, "Theme Name")?;
+            let status = if name == stylesheet {
+                "active"
+            } else if name == template {
+                "parent"
+            } else {
+                "inactive"
+            };
+            Some(WpItem {
+                version: file_header(&head, "Version").unwrap_or_default(),
+                status: status.into(),
+                update: "none".into(),
+                update_version: String::new(),
+                title,
+                name,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(out)
+}
+
+/// The first 8 KB of a file: where WordPress itself looks for its headers.
+fn file_head(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let mut buf = Vec::with_capacity(8192);
+    std::fs::File::open(path).ok()?.take(8192).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// A `Name: value` header, read the way WordPress's get_file_data() does.
+fn file_header(text: &str, name: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let line = line.trim_start_matches(|c: char| " \t/*#@".contains(c));
+        let (key, value) = line.split_once(':')?;
+        if !key.trim().eq_ignore_ascii_case(name) {
+            return None;
+        }
+        let value = value.trim().trim_end_matches("*/").trim();
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+#[cfg(test)]
+mod file_header_tests {
+    use super::file_header;
+
+    #[test]
+    fn reads_theme_headers_like_wordpress() {
+        let css = "/*\nTheme Name: Twenty Twenty-Five\nTheme URI: https://wordpress.org/\n * Version: 1.2 */\n";
+        assert_eq!(file_header(css, "Theme Name").as_deref(), Some("Twenty Twenty-Five"));
+        assert_eq!(file_header(css, "theme name").as_deref(), Some("Twenty Twenty-Five"));
+        assert_eq!(file_header(css, "Version").as_deref(), Some("1.2"));
+        assert_eq!(file_header(css, "Author"), None);
+    }
 }
 
 /// Install a plugin or theme from wp.org, a zip path, or a URL.

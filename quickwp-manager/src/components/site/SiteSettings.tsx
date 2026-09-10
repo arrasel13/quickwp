@@ -463,7 +463,7 @@ function FolderPanel({
 // -------------------------------------------------------------- site info
 
 function InfoPanel({ site }: { site: Site }) {
-  const { data } = useAsync(() => api.siteInfo(site.domain), [site.domain]);
+  const { data } = useAsync(() => api.siteInfo(site.domain), [site.domain], `site-info:${site.domain}`);
   const info: SiteInfo | null = data;
 
   return (
@@ -541,6 +541,7 @@ function CertPanel({ site, setNote }: { site: Site; setNote: SetNote }) {
   const { data, reload } = useAsync(
     () => api.siteCertInfo(site.domain),
     [site.domain],
+    `site-cert:${site.domain}`,
   );
   const cert: CertInfo | null = data;
   const [busy, setBusy] = useState(false);

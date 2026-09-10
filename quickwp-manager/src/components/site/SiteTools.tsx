@@ -606,6 +606,7 @@ function Language({
   const { data: languages, reload } = useAsync(
     () => api.wpLanguages(domain),
     [domain],
+    `wp-languages:${domain}`,
   );
 
   const list: WpLanguage[] = languages ?? [];
@@ -656,6 +657,7 @@ function Core({
   const { data: version, reload } = useAsync(
     () => api.wpCoreVersion(domain),
     [domain],
+    `wp-core-version:${domain}`,
   );
   const [target, setTarget] = useState("");
   const [confirmSwitch, setConfirmSwitch] = useState(false);
@@ -1105,6 +1107,7 @@ function Cron({ domain }: { domain: string }) {
   const { data, error, loading, reload } = useAsync(
     () => api.wpCronEvents(domain),
     [domain],
+    `wp-cron:${domain}`,
   );
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
