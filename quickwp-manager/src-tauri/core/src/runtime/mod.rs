@@ -354,7 +354,7 @@ pub async fn install_mysql(
     Ok(dest)
 }
 
-pub use pins::{ToolPin, CLOUDFLARED_PINS, MAILPIT_PINS};
+pub use pins::{AdminerPin, ToolPin, ADMINER_PIN, CLOUDFLARED_PINS, MAILPIT_PINS};
 
 fn tool_pin(pins: &'static [ToolPin], name: &str) -> Result<&'static ToolPin> {
     let a = arch();

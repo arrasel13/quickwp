@@ -136,22 +136,22 @@ pub fn terminal_command(site: &Site) -> Result<String> {
     ))
 }
 
-/// Open Terminal.app in the site's docroot with its PHP and `wp` on PATH.
-pub fn open_terminal(site: &Site) -> Result<()> {
-    let script = terminal_command(site)?;
-    let osa = format!(
-        "tell application \"Terminal\"\n activate\n do script \"{}\"\nend tell",
-        script.replace('\\', "\\\\").replace('"', "\\\"")
-    );
-    std::process::Command::new("/usr/bin/osascript")
-        .arg("-e")
-        .arg(osa)
-        .spawn()
-        .map_err(|e| Error::Io {
-            path: "/usr/bin/osascript".into(),
-            source: e,
-        })?;
-    Ok(())
+/// Open `terminal` (an app bundle) in the site's docroot with its PHP and `wp`
+/// on PATH -- where that terminal can be handed a command at all.
+pub fn open_terminal(site: &Site, terminal: &std::path::Path) -> Result<()> {
+    crate::apps::run_in_terminal(terminal, &terminal_command(site)?, std::path::Path::new(&site.docroot))
+}
+
+/// The same shell, but starting somewhere inside the site -- a plugin folder,
+/// say. `wp` and the site's PHP stay on PATH, which is the whole point of
+/// opening it from here rather than from a terminal yourself.
+pub fn open_terminal_in(site: &Site, dir: &std::path::Path, terminal: &std::path::Path) -> Result<()> {
+    if !dir.exists() {
+        return Err(Error::other(format!("{} is not there.", dir.display())));
+    }
+    // Same PATH as the docroot shell, then cd on top of it.
+    let base = terminal_command(site)?;
+    crate::apps::run_in_terminal(terminal, &format!("{base} && cd {:?}", dir.display().to_string()), dir)
 }
 
 #[cfg(test)]

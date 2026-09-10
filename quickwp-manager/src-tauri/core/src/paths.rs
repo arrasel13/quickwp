@@ -25,6 +25,14 @@ pub fn runtime_dir(component: &str, version: &str) -> PathBuf {
     runtimes().join(component).join(version)
 }
 
+/// The user's Downloads folder: where exports and saved logs land, because it
+/// is somewhere they can actually find them.
+pub fn downloads() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Downloads")
+}
+
 pub fn downloads_cache() -> PathBuf {
     root().join("cache")
 }

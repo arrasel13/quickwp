@@ -10,11 +10,19 @@
 //! whichever site happens to be first. Falling through is how a stopped site
 //! ends up serving a neighbour's content.
 
-use crate::{db::Db, fastcgi, ports, site, Result};
+use crate::{adminer, db::Db, fastcgi, ports, site, Result};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// What a request resolves to: a docroot, a pool, and -- for a real site --
+/// the row whose environment variables belong on the request.
+struct Target {
+    docroot: std::path::PathBuf,
+    php_minor: String,
+    site_id: Option<i64>,
+}
 
 pub struct Edge {
     pub port: u16,
@@ -103,23 +111,53 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
         None => (target.clone(), String::new()),
     };
 
-    let Some(site) = site::find(&db, &host).ok().flatten() else {
-        return respond(&mut stream, 404, "text/html; charset=utf-8", &unknown_host(&host));
+    // Adminer answers on its own hostname, resolved ahead of the site lookup.
+    // It is not a site: it has no record, no docroot under the sites directory
+    // and no place in the sites list -- so it cannot be found by `site::find`,
+    // and must not be shadowed by a site that happens to share the name.
+    let adminer_host = db.tld().map(|t| adminer::host(&t)).unwrap_or_default();
+    let route = if !adminer_host.is_empty() && host.eq_ignore_ascii_case(&adminer_host) {
+        match adminer::target(&db) {
+            Ok(t) => Target {
+                docroot: t.docroot,
+                php_minor: t.php_minor,
+                site_id: None,
+            },
+            Err(_) => {
+                return respond(
+                    &mut stream,
+                    503,
+                    "text/html; charset=utf-8",
+                    "<h1>503</h1><p>The database browser is not installed yet. \
+                     Open a site's Database tab once and QuickWP will fetch it.</p>",
+                )
+            }
+        }
+    } else {
+        let Some(site) = site::find(&db, &host).ok().flatten() else {
+            return respond(&mut stream, 404, "text/html; charset=utf-8", &unknown_host(&host));
+        };
+
+        if !site.enabled {
+            // The site names itself, never the address the request arrived on, so a
+            // stopped site reached through a tunnel does not offer a command that
+            // only works locally.
+            return respond(&mut stream, 503, "text/html; charset=utf-8", &stopped_page(&site));
+        }
+
+        Target {
+            docroot: std::path::PathBuf::from(&site.docroot),
+            php_minor: site.php_minor,
+            site_id: Some(site.id),
+        }
     };
 
-    if !site.enabled {
-        // The site names itself, never the address the request arrived on, so a
-        // stopped site reached through a tunnel does not offer a command that
-        // only works locally.
-        return respond(&mut stream, 503, "text/html; charset=utf-8", &stopped_page(&site));
-    }
-
-    let Ok(pool_port) = ports::fpm_port(&site.php_minor) else {
+    let Ok(pool_port) = ports::fpm_port(&route.php_minor) else {
         return respond(&mut stream, 500, "text/plain", "bad PHP version on this site");
     };
 
     // Static files are served directly; everything else goes to PHP.
-    let docroot = std::path::PathBuf::from(&site.docroot);
+    let docroot = route.docroot.clone();
     let rel = path.trim_start_matches('/');
     let candidate = docroot.join(rel);
     if !rel.is_empty() && candidate.is_file() && candidate.extension().map(|e| e != "php").unwrap_or(true) {
@@ -141,7 +179,7 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
             "text/html; charset=utf-8",
             &format!(
                 "<h1>404</h1><p>No <code>index.php</code> in <code>{}</code>.</p>",
-                site.docroot
+                docroot.display()
             ),
         );
     }
@@ -161,7 +199,7 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
     };
 
     let script_s = script.to_string_lossy().to_string();
-    let docroot_s = site.docroot.clone();
+    let docroot_s = docroot.to_string_lossy().to_string();
     let cl = content_length.to_string();
     let mut params: Vec<(&str, &str)> = vec![
         ("GATEWAY_INTERFACE", "FastCGI/1.0"),
@@ -188,6 +226,20 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
     }
     if !content_type.is_empty() {
         params.push(("CONTENT_TYPE", &content_type));
+    }
+
+    // Per-site environment variables.
+    //
+    // Sent as FastCGI params rather than set on the pool: the pools are shared
+    // between sites, so a variable set on one would leak into every other. As
+    // params they reach PHP through $_SERVER and getenv() for this request
+    // only, and the pool stays untouched.
+    let site_env = match route.site_id {
+        Some(id) => db.site_env(id).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    for (k, v) in &site_env {
+        params.push((k.as_str(), v.as_str()));
     }
     // Forward request headers as HTTP_* so WordPress sees them.
     let forwarded: Vec<(String, String)> = headers
@@ -216,7 +268,7 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
             &format!(
                 "<h1>502</h1><p>The PHP {} pool did not answer.</p><pre>{}</pre>\
                  <p>Start it from the PHP tab.</p>",
-                site.php_minor, e
+                route.php_minor, e
             ),
         ),
     }

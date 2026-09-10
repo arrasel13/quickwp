@@ -215,6 +215,52 @@ CREATE TABLE IF NOT EXISTS settings (
 
     /// The default TLD for new sites. `.test` is reserved by RFC 6761 for
     /// exactly this, which is why it is the default rather than a brand.
+    /// Per-site environment variables, in a stable order.
+    pub fn site_env(&self, site_id: i64) -> Result<Vec<(String, String)>> {
+        self.with(|c| {
+            let mut q = c.prepare(
+                "SELECT key, value FROM site_env WHERE site_id = ?1 ORDER BY key",
+            )?;
+            let rows = q
+                .query_map(params![site_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// Replace the whole set for one site. Whole-set rather than per-key so
+    /// removing a variable is expressible at all.
+    pub fn set_site_env(&self, site_id: i64, entries: &[(String, String)]) -> Result<()> {
+        self.with(|c| {
+            c.execute("DELETE FROM site_env WHERE site_id = ?1", params![site_id])?;
+            for (k, v) in entries {
+                let k = k.trim();
+                if k.is_empty() {
+                    continue;
+                }
+                c.execute(
+                    "INSERT INTO site_env (site_id, key, value) VALUES (?1, ?2, ?3)",
+                    params![site_id, k, v],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// When this site's certificate was issued and when it runs out.
+    pub fn cert_dates(&self, site_id: i64) -> Result<Option<(String, String)>> {
+        self.with(|c| {
+            let mut q = c.prepare(
+                "SELECT issued_at, expires_at FROM certs WHERE site_id = ?1",
+            )?;
+            let mut rows = q.query_map(params![site_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok(match rows.next() {
+                Some(r) => Some(r?),
+                None => None,
+            })
+        })
+    }
+
     pub fn tld(&self) -> Result<String> {
         Ok(self.setting("tld")?.unwrap_or_else(|| "test".into()))
     }

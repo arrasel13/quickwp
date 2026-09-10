@@ -18,6 +18,17 @@ export interface PhpVersion {
   xdebug_capable: boolean;
 }
 
+/** A Node install already on the machine. QuickWP installs none of its own. */
+export interface NodeVersion {
+  /** Full version, no leading v: "22.19.0". */
+  version: string;
+  /** Major on its own: "22". */
+  major: string;
+  path: string;
+  /** nvm, fnm, Volta, asdf, nodenv, n, Homebrew or system. */
+  source: string;
+}
+
 export interface EngineStatus {
   engine: string;
   series: string;
@@ -40,8 +51,35 @@ export interface WpItem {
   name: string;
   status: string;
   version: string;
+  /** "none" or "available" — WP-CLI's flag, not a version number. */
   update: string;
+  /** The version an update would move to; empty when there is none. */
+  update_version: string;
   title: string;
+}
+
+export interface WpLanguage {
+  language: string;
+  english_name: string;
+  native_name: string;
+  /** "active", "installed" or "available". */
+  status: string;
+}
+
+export interface CronEvent {
+  hook: string;
+  args: string;
+  next_run_relative: string;
+  recurrence: string;
+}
+
+export interface WpUser {
+  id: string;
+  login: string;
+  display_name: string;
+  email: string;
+  /** Comma-separated, as WP-CLI reports them. */
+  roles: string;
 }
 
 export interface WpInstallResult {
@@ -84,6 +122,42 @@ export interface Site {
   db_engine: string | null;
   db_name: string | null;
   aliases: string[];
+}
+
+export interface SetupComponent {
+  id: string;
+  name: string;
+  detail: string;
+  version: string;
+  /** The download, not the installed size: it is the number that costs time. */
+  size_mb: number;
+  installed: boolean;
+}
+
+export interface SetupStatus {
+  done: boolean;
+  default_php: string;
+  default_mysql: string;
+  tld: string;
+  components: SetupComponent[];
+  https_ready: boolean;
+}
+
+export interface SiteInfo {
+  kind: string;
+  db_name: string | null;
+  db_engine: string | null;
+  db_host: string | null;
+  multisite: boolean;
+}
+
+export interface CertInfo {
+  issued_at: string | null;
+  expires_at: string | null;
+  /** Every name the certificate covers, wildcard included. */
+  names: string[];
+  path: string;
+  exists: boolean;
 }
 
 export interface NewSite {
@@ -169,6 +243,17 @@ export interface Tunnel {
   pid: number;
 }
 
+/** One of the four log streams that can explain a single site. */
+export interface SiteLog {
+  id: string;
+  label: string;
+  path: string;
+  exists: boolean;
+  bytes: number;
+  /** Only for the WordPress debug log: whether WP is writing to it. */
+  logging: boolean | null;
+}
+
 export interface LogSource {
   id: string;
   label: string;
@@ -202,6 +287,8 @@ export interface ExecLine {
   text: string;
 }
 
+export type QuitBehavior = "ask" | "keep" | "restart" | "stop";
+
 export interface Settings {
   tld: string;
   default_php: string;
@@ -209,7 +296,41 @@ export interface Settings {
   sites_dir: string;
   default_sites_dir: string;
   logs_dir: string;
+  /** App bundle path. null when no editor QuickWP knows is installed. */
+  editor: string | null;
+  /** App bundle path; Terminal.app when nothing was chosen. */
+  terminal: string;
+  /** App bundle path: the one chosen, else the system default browser. */
+  browser: string | null;
+  quit_behavior: QuitBehavior;
+  language: string;
 }
+
+export interface InstalledApp {
+  name: string;
+  path: string;
+  /** Terminals: whether it can be handed a command (site PHP + wp on PATH). */
+  commands: boolean;
+  /** The one macOS uses by default: Terminal.app, the default browser. */
+  default: boolean;
+}
+
+/** A PHP installed outside QuickWP. Reported, never used by sites. */
+export interface SystemPhp {
+  version: string;
+  minor: string;
+  source: string;
+  path: string;
+}
+
+// Settings live in the backend, but several screens show what they say (the
+// preferred editor's name, say). Saving announces it so they can re-read.
+const SETTINGS_EVENT = "quickwp:settings-changed";
+export const notifySettingsChanged = () => window.dispatchEvent(new Event(SETTINGS_EVENT));
+export const onSettingsChanged = (cb: () => void) => {
+  window.addEventListener(SETTINGS_EVENT, cb);
+  return () => window.removeEventListener(SETTINGS_EVENT, cb);
+};
 
 export interface InstallProgress {
   minor: string;
@@ -264,6 +385,8 @@ export const api = {
     call<string>("php_ini_set", { minor, key, value }),
 
   // sites
+  /** Newest first; empty when no Node is installed. */
+  nodeList: () => call<NodeVersion[]>("node_list"),
   siteList: () => call<Site[]>("site_list"),
   siteCreate: (n: NewSite) => call<Site>("site_create", { new: n }),
   siteDelete: (domain: string) => call<void>("site_delete", { domain }),
@@ -272,8 +395,45 @@ export const api = {
   siteSetPhp: (domain: string, minor: string) => call<void>("site_set_php", { domain, minor }),
   siteAddDomain: (domain: string, alias: string) =>
     call<void>("site_add_domain", { domain, alias }),
+  siteInfo: (domain: string) => call<SiteInfo>("site_info", { domain }),
+  siteCertInfo: (domain: string) => call<CertInfo>("site_cert_info", { domain }),
+  siteRegenerateCert: (domain: string) =>
+    call<string>("site_regenerate_cert", { domain }),
+  siteSetName: (domain: string, name: string) =>
+    call<string>("site_set_name", { domain, name }),
+  siteSetXdebug: (domain: string, on: boolean) =>
+    call<string>("site_set_xdebug", { domain, on }),
+  siteRemoveDomain: (domain: string, alias: string) =>
+    call<string>("site_remove_domain", { domain, alias }),
+  siteEnvGet: (domain: string) =>
+    call<[string, string][]>("site_env_get", { domain }),
+  siteEnvSet: (domain: string, entries: [string, string][]) =>
+    call<string>("site_env_set", { domain, entries }),
+  /** Rewrites URLs in the database, renames, re-issues the certificate. */
+  siteChangeDomain: (domain: string, newDomain: string) =>
+    call<string>("site_change_domain", { domain, newDomain }),
+  siteMove: (domain: string, newPath: string) =>
+    call<string>("site_move", { domain, newPath }),
   siteUrl: (domain: string) => call<string>("site_url", { domain }),
   siteOpen: (domain: string) => call<void>("site_open", { domain }),
+  /** Adminer, already logged in to this site's database. Fetches it on first use. */
+  siteAdminerUrl: (domain: string) => call<string>("site_adminer_url", { domain }),
+  siteAdminerOpen: (domain: string) => call<void>("site_adminer_open", { domain }),
+  /** Bytes under the docroot. Walked, so it is a measurement, not an estimate. */
+  siteDiskUsage: (domain: string) => call<number>("site_disk_usage", { domain }),
+  /** Files + database in one zip in ~/Downloads. Returns where it landed. */
+  siteExportAll: (domain: string) => call<string>("site_export_all", { domain }),
+  /** Open wp-admin logged in. `adminPath` is relative to wp-admin. */
+  wpOpenAdmin: (domain: string, adminPath?: string) =>
+    call<string>("wp_open_admin", { domain, adminPath: adminPath ?? null }),
+
+  // ---- first run ----
+  setupStatus: () => call<SetupStatus>("setup_status"),
+  setupInstallAdminer: () => call<string>("setup_install_adminer"),
+  setupFinish: (done: boolean) => call<void>("setup_finish", { done }),
+  /** Reveal a path in Finder — a folder opens, a file is revealed selected. */
+  pathOpen: (path: string) => call<void>("path_open", { path }),
+  pathOpenInEditor: (path: string) => call<void>("path_open_in_editor", { path }),
 
   // databases
   dbList: () => call<EngineStatus[]>("db_list"),
@@ -302,6 +462,64 @@ export const api = {
   ) => call<WpInstallResult>("wp_install", { domain, req }),
   wpMagicLogin: (domain: string, user: string) =>
     call<string>("wp_magic_login", { domain, user }),
+  wpUsers: (domain: string) => call<WpUser[]>("wp_users", { domain }),
+  /** The roles this install actually has, custom ones included. */
+  wpRoles: (domain: string) => call<string[]>("wp_roles", { domain }),
+
+  // wordpress tools — each maps to one WP-CLI subcommand
+  /** null when the constant is not defined at all. */
+  wpConfigGet: (domain: string, key: string) =>
+    call<string | null>("wp_config_get", { domain, key }),
+  wpConfigSetBool: (domain: string, key: string, on: boolean) =>
+    call<string>("wp_config_set_bool", { domain, key, on }),
+  wpOptionGet: (domain: string, key: string) =>
+    call<string>("wp_option_get", { domain, key }),
+  wpOptionSet: (domain: string, key: string, value: string) =>
+    call<string>("wp_option_set", { domain, key, value }),
+  wpSetPermalinks: (domain: string, structure: string) =>
+    call<string>("wp_set_permalinks", { domain, structure }),
+  wpFlushRewrites: (domain: string) => call<string>("wp_flush_rewrites", { domain }),
+  wpMaintenanceStatus: (domain: string) =>
+    call<boolean>("wp_maintenance_status", { domain }),
+  wpSetMaintenance: (domain: string, on: boolean) =>
+    call<string>("wp_set_maintenance", { domain, on }),
+  wpFlushCache: (domain: string) => call<string>("wp_flush_cache", { domain }),
+  wpDeleteTransients: (domain: string) =>
+    call<string>("wp_delete_transients", { domain }),
+  /** Drops every table. Ask twice before calling this. */
+  wpResetSite: (domain: string) => call<string>("wp_reset_site", { domain }),
+  wpCoreVersion: (domain: string) => call<string>("wp_core_version", { domain }),
+  wpCoreUpdate: (domain: string, version: string | null) =>
+    call<string>("wp_core_update", { domain, version }),
+  wpCoreReinstall: (domain: string) => call<string>("wp_core_reinstall", { domain }),
+  wpVerifyChecksums: (domain: string) =>
+    call<string>("wp_verify_checksums", { domain }),
+  wpLanguages: (domain: string) => call<WpLanguage[]>("wp_languages", { domain }),
+  wpSetLanguage: (domain: string, locale: string) =>
+    call<string>("wp_set_language", { domain, locale }),
+  wpCronEvents: (domain: string) => call<CronEvent[]>("wp_cron_events", { domain }),
+  /** Omit the hook to run everything that is due. */
+  wpCronRun: (domain: string, hook: string | null) =>
+    call<string>("wp_cron_run", { domain, hook }),
+  wpExportDatabase: (domain: string) => call<string>("wp_export_database", { domain }),
+  wpImportDatabase: (domain: string, file: string) =>
+    call<string>("wp_import_database", { domain, file }),
+  wpExportContent: (domain: string) => call<string>("wp_export_content", { domain }),
+  /** The password travels on stdin, never on a command line. */
+  wpCreateUser: (
+    domain: string,
+    login: string,
+    email: string,
+    password: string,
+    role: string,
+  ) => call<string>("wp_create_user", { domain, login, email, password, role }),
+  /** Replaces the user's roles with this one. */
+  wpSetUserRole: (domain: string, login: string, role: string) =>
+    call<string>("wp_set_user_role", { domain, login, role }),
+  wpSetUserPassword: (domain: string, login: string, password: string) =>
+    call<string>("wp_set_user_password", { domain, login, password }),
+  wpDeleteUser: (domain: string, login: string, reassignTo: string | null) =>
+    call<string>("wp_delete_user", { domain, login, reassignTo }),
   wpItems: (domain: string, kind: "plugin" | "theme") =>
     call<WpItem[]>("wp_items", { domain, kind }),
   wpInstallItem: (
@@ -311,8 +529,16 @@ export const api = {
     activate: boolean,
     force: boolean,
   ) => call<string>("wp_install_item", { domain, kind, source, activate, force }),
+  /** Clone a repo into wp-content. `owner/repo` means github.com. */
+  wpInstallFromGit: (domain: string, kind: string, url: string) =>
+    call<string>("wp_install_from_git", { domain, kind, url }),
   wpSetItemState: (domain: string, kind: string, name: string, activate: boolean) =>
     call<string>("wp_set_item_state", { domain, kind, name, activate }),
+  /** A theme/plugin screenshot as a data URI, or null when it has none. */
+  wpItemScreenshot: (domain: string, kind: string, name: string) =>
+    call<string | null>("wp_item_screenshot", { domain, kind, name }),
+  wpUpdateItem: (domain: string, kind: string, name: string) =>
+    call<string>("wp_update_item", { domain, kind, name }),
   wpDeleteItem: (domain: string, kind: string, name: string) =>
     call<string>("wp_delete_item", { domain, kind, name }),
   wpSearchReplace: (domain: string, from: string, to: string, dryRun: boolean) =>
@@ -345,6 +571,14 @@ export const api = {
   tunnelStop: (domain: string) => call<boolean>("tunnel_stop", { domain }),
 
   // logs
+  siteLogs: (domain: string) => call<SiteLog[]>("site_logs", { domain }),
+  siteLogTail: (domain: string, id: string, lines?: number) =>
+    call<string>("site_log_tail", { domain, id, lines }),
+  /** Truncates rather than deletes — the writer holds the file open. */
+  siteLogClear: (domain: string, id: string) =>
+    call<string>("site_log_clear", { domain, id }),
+  siteLogDownload: (domain: string, id: string) =>
+    call<string>("site_log_download", { domain, id }),
   logsSources: () => call<LogSource[]>("logs_sources"),
   logsTail: (id: string, lines?: number) => call<string>("logs_tail", { id, lines }),
 
@@ -356,6 +590,9 @@ export const api = {
     call<void>("pty_resize", { id, cols, rows }),
   ptyClose: (id: string) => call<boolean>("pty_close", { id }),
   siteTerminal: (domain: string) => call<void>("site_terminal", { domain }),
+  /** A shell in one folder inside the site; refused if it is outside. */
+  siteTerminalAt: (domain: string, path: string) =>
+    call<void>("site_terminal_at", { domain, path }),
 
   // migration stages 2 and 3
   migrateCopyDatabase: (domain: string) => call<DbCopyResult>("migrate_copy_database", { domain }),
@@ -365,6 +602,19 @@ export const api = {
   // settings
   settingsGet: () => call<Settings>("settings_get"),
   settingsSet: (key: string, value: string) => call<string>("settings_set", { key, value }),
+  appsInstalled: () =>
+    call<{ editors: InstalledApp[]; terminals: InstalledApp[]; browsers: InstalledApp[] }>(
+      "apps_installed",
+    ),
+  phpSystemList: () => call<SystemPhp[]>("php_system_list"),
+  /** Answer the quit prompt. The app exits; the promise may never settle. */
+  appQuit: (mode: Exclude<QuitBehavior, "ask">, remember: boolean) =>
+    call<void>("app_quit", { mode, remember }),
+
+  onQuitRequested: (cb: () => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen("quit-requested", () => cb());
+  },
 
   onInstallProgress: (cb: (p: InstallProgress) => void) => {
     if (!hasBackend) return Promise.resolve(() => {});

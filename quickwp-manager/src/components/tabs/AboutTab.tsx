@@ -1,158 +1,136 @@
-export default function AboutTab() {
+import { useEffect, useState, type ReactNode } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { hasBackend } from "../../lib/api";
+
+const FEATURES = [
+  "WordPress site creation and management",
+  "PHP version management",
+  "Node.js environment control",
+  "Laravel Herd integration",
+  "Development tools integration",
+];
+
+const BUILT_WITH = [
+  "Tauri (Rust + Web Technologies)",
+  "React with TypeScript",
+  "Tailwind CSS",
+  "Headless UI",
+  "Vite Build System",
+];
+
+const REQUIREMENTS: [string, string][] = [
+  ["Operating System", "macOS 10.15+, Windows 10+, Linux"],
+  ["Memory", "4GB RAM minimum, 8GB recommended"],
+  ["Storage", "500MB free space"],
+];
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="space-y-8">
-        {/* App Header */}
-        <div className="text-center">
-          <div className="w-20 h-20 bg-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg">
-            <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+    <section className="rounded-md border border-gray-200 bg-gray-50 px-6 py-5">
+      <h2 className="text-[15px] font-semibold text-gray-900">{title}</h2>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+}
+
+function List({ items, dot }: { items: string[]; dot: string }) {
+  return (
+    <ul className="space-y-1.5 text-[13px] text-gray-600">
+      {items.map((i) => (
+        <li key={i} className="flex items-center gap-2.5">
+          <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${dot}`} />
+          {i}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Shown as a tab of App settings. */
+export default function AboutTab() {
+  // The version the binary was built as -- not a number typed into the page.
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    if (hasBackend) void getVersion().then(setVersion).catch(() => {});
+  }, []);
+
+  return (
+    <div className="space-y-5">
+      <section className="flex items-center gap-4 rounded-md border border-gray-200 bg-gray-50 px-6 py-5">
+        <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-xl bg-wp-blue">
+          <svg className="h-8 w-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+        </div>
+        <div className="min-w-0 flex-1">
+          <h1 className="text-[17px] font-semibold text-gray-900">QuickWP Manager</h1>
+          <p className="text-[13px] text-gray-600">WordPress Development Environment Manager</p>
+        </div>
+        {version && (
+          <span className="flex-shrink-0 rounded-full bg-wp-blue px-3 py-1 text-[11px] font-medium text-white tabular-nums">
+            Version {version}
+          </span>
+        )}
+      </section>
+
+      <Section title="About This Application">
+        <p className="text-[13px] leading-relaxed text-gray-600">
+          QuickWP Manager is a powerful desktop application designed to streamline WordPress
+          development workflows. Built with modern technologies, it provides an intuitive interface
+          for managing WordPress sites, PHP versions, Node.js environments, and development tools
+          all in one place.
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2">
+          <div>
+            <h3 className="mb-2 text-[13px] font-semibold text-gray-900">Key Features</h3>
+            <List items={FEATURES} dot="bg-wp-blue" />
+          </div>
+          <div>
+            <h3 className="mb-2 text-[13px] font-semibold text-gray-900">Built With</h3>
+            <List items={BUILT_WITH} dot="bg-green-500" />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Developer">
+        <div className="flex items-center gap-4">
+          <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-gray-900">
+            <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
           </div>
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">QuickWP Manager</h1>
-          <p className="text-xl text-gray-600 mb-4">WordPress Development Environment Manager</p>
-          <div className="inline-flex items-center px-4 py-2 bg-blue-100 text-blue-800 rounded-full text-sm font-semibold">
-            Version 1.0.0
+          <div>
+            <div className="text-[13px] font-semibold text-gray-900">AR Rasel</div>
+            <div className="text-xs text-gray-500">Lead Developer & Designer</div>
           </div>
         </div>
+        <p className="mt-3 text-[13px] leading-relaxed text-gray-600">
+          Passionate full-stack developer with expertise in modern web technologies and desktop
+          application development.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {["Frontend Specialist", "UI/UX Designer", "WordPress Expert"].map((r) => (
+            <span key={r} className="rounded-sm border border-gray-300 bg-white px-3 py-1 text-xs font-medium text-gray-700">
+              {r}
+            </span>
+          ))}
+        </div>
+      </Section>
 
-        {/* App Description */}
-        <div className="bg-white rounded-xl border border-gray-200 p-8 shadow-sm">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-4">About This Application</h2>
-          <p className="text-gray-600 leading-relaxed mb-6">
-            QuickWP Manager is a powerful desktop application designed to streamline WordPress development workflows. 
-            Built with modern technologies, it provides an intuitive interface for managing WordPress sites, 
-            PHP versions, Node.js environments, and development tools all in one place.
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-3">Key Features</h3>
-              <ul className="space-y-2 text-gray-600">
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
-                  WordPress site creation and management
-                </li>
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
-                  PHP version management
-                </li>
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
-                  Node.js environment control
-                </li>
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
-                  Laravel Herd integration
-                </li>
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
-                  Development tools integration
-                </li>
-              </ul>
+      <Section title="System Requirements">
+        <dl className="divide-y divide-gray-200">
+          {REQUIREMENTS.map(([k, v]) => (
+            <div key={k} className="flex items-center justify-between gap-6 py-2.5 text-[13px]">
+              <dt className="text-gray-900">{k}</dt>
+              <dd className="text-right text-gray-600">{v}</dd>
             </div>
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-3">Built With</h3>
-              <ul className="space-y-2 text-gray-600">
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mr-3"></div>
-                  Tauri (Rust + Web Technologies)
-                </li>
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mr-3"></div>
-                  React with TypeScript
-                </li>
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mr-3"></div>
-                  Tailwind CSS
-                </li>
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mr-3"></div>
-                  Headless UI
-                </li>
-                <li className="flex items-center">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mr-3"></div>
-                  Vite Build System
-                </li>
-              </ul>
-            </div>
-          </div>
-        </div>
+          ))}
+        </dl>
+      </Section>
 
-        {/* Developer Info */}
-        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200 p-8 shadow-sm">
-          <div className="flex items-center justify-center mb-6">
-            <div className="w-16 h-16 bg-blue-500 rounded-full flex items-center justify-center mr-4">
-              <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-              </svg>
-            </div>
-            <div className="text-center">
-              <h3 className="text-2xl font-bold text-gray-900">AR Rasel</h3>
-              <p className="text-blue-600 font-semibold">Lead Developer & Designer</p>
-            </div>
-          </div>
-          <div className="text-center">
-            <p className="text-gray-700 mb-4">
-              Passionate full-stack developer with expertise in modern web technologies and desktop application development.
-            </p>
-            <div className="flex justify-center space-x-4">
-              <div className="bg-white px-4 py-2 rounded-lg shadow-sm">
-                <span className="text-sm font-semibold text-gray-700">Frontend Specialist</span>
-              </div>
-              <div className="bg-white px-4 py-2 rounded-lg shadow-sm">
-                <span className="text-sm font-semibold text-gray-700">UI/UX Designer</span>
-              </div>
-              <div className="bg-white px-4 py-2 rounded-lg shadow-sm">
-                <span className="text-sm font-semibold text-gray-700">WordPress Expert</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* System Requirements */}
-        <div className="bg-white rounded-xl border border-gray-200 p-8 shadow-sm">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-6">System Requirements</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="text-center">
-              <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center mx-auto mb-3">
-                <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-              </div>
-              <h3 className="font-semibold text-gray-900 mb-2">Operating System</h3>
-              <p className="text-sm text-gray-600">macOS 10.15+, Windows 10+, Linux</p>
-            </div>
-            <div className="text-center">
-              <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center mx-auto mb-3">
-                <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-              </div>
-              <h3 className="font-semibold text-gray-900 mb-2">Memory</h3>
-              <p className="text-sm text-gray-600">4GB RAM minimum, 8GB recommended</p>
-            </div>
-            <div className="text-center">
-              <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center mx-auto mb-3">
-                <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
-                </svg>
-              </div>
-              <h3 className="font-semibold text-gray-900 mb-2">Storage</h3>
-              <p className="text-sm text-gray-600">500MB free space</p>
-            </div>
-          </div>
-        </div>
-
-        {/* License & Copyright */}
-        <div className="bg-gray-50 rounded-xl border border-gray-200 p-6 text-center">
-          <p className="text-sm text-gray-600 mb-2">
-            © 2024 QuickWP Manager. All rights reserved.
-          </p>
-          <p className="text-xs text-gray-500">
-            This software is licensed under the MIT License.
-          </p>
-        </div>
-      </div>
+      <p className="text-center text-xs text-gray-500">
+        © 2024 QuickWP Manager. All rights reserved. This software is licensed under the MIT License.
+      </p>
     </div>
   );
 }

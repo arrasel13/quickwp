@@ -21,6 +21,13 @@ const LEVEL_STYLE: Record<string, { ring: string; icon: typeof CheckCircleIcon; 
   error: { ring: "border-red-200 bg-red-50", icon: ExclamationTriangleIcon, tone: "text-red-700" },
 };
 
+const BTN =
+  "inline-flex items-center justify-center gap-2 h-9 px-4 text-[13px] font-medium rounded-sm border border-gray-300 text-gray-900 bg-white hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap";
+const BTN_PRIMARY =
+  "inline-flex items-center justify-center gap-2 h-9 px-4 text-[13px] font-medium rounded-sm text-white bg-wp-blue hover:bg-wp-blue-dark disabled:opacity-50 whitespace-nowrap";
+const BOX = "rounded border border-gray-200 bg-white";
+const SECTION = "text-[13px] font-semibold text-gray-900";
+
 export default function GeneralTab() {
   const { data: status, error, loading, reload } = useAsync(() => api.stackStatus(), []);
   const { data: settings, reload: reloadSettings } = useAsync(() => api.settingsGet(), []);
@@ -74,35 +81,32 @@ export default function GeneralTab() {
   const running = status?.edge_running ?? false;
 
   return (
-    <div className="max-w-6xl mx-auto p-4 space-y-4">
-      <div className="flex items-start justify-between">
+    <div>
+      <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-8 pt-6 pb-5">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">General</h1>
-          <p className="text-xs text-gray-600">The stack, and where everything lives.</p>
+          <h1 className="text-xl font-semibold text-gray-900">General</h1>
+          <p className="mt-0.5 text-[13px] text-gray-500">The stack, and where everything lives.</p>
         </div>
-        <button
-          onClick={() => void refreshAll()}
-          disabled={loading}
-          className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
-        >
-          <ArrowPathIcon className={clsx("h-4 w-4 mr-2", loading && "animate-spin")} />
+        <button onClick={() => void refreshAll()} disabled={loading} className={BTN}>
+          <ArrowPathIcon className={clsx("h-4 w-4", loading && "animate-spin")} />
           Refresh
         </button>
       </div>
 
+      <div className="max-w-6xl px-8 py-6 space-y-8">
       {notice && (
-        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900 whitespace-pre-wrap">
+        <div className="rounded border border-blue-200 bg-blue-50 px-4 py-3 text-[13px] text-blue-900 whitespace-pre-wrap">
           {notice}
         </div>
       )}
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-900">
+        <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-900">
           {error}
         </div>
       )}
 
       {/* stack */}
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+      <div className="rounded border border-gray-200 bg-gray-50 p-6">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3">
             <span
@@ -112,10 +116,10 @@ export default function GeneralTab() {
               )}
             />
             <div>
-              <h2 className="text-sm font-semibold text-gray-900">
+              <h2 className="text-base font-semibold text-gray-900">
                 {running ? "Serving" : "Stopped"}
               </h2>
-              <p className="text-xs text-gray-600 tabular-nums">
+              <p className="mt-0.5 text-[13px] text-gray-600 tabular-nums">
                 {running
                   ? `Edge on 127.0.0.1:${status?.edge_port} · ${status?.site_count ?? 0} site(s) · .${status?.tld ?? "test"}`
                   : "Nothing is listening."}
@@ -125,10 +129,7 @@ export default function GeneralTab() {
           <button
             onClick={() => void act(running ? api.stackStop : api.stackStart)}
             disabled={busy}
-            className={clsx(
-              "inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white disabled:opacity-50",
-              running ? "bg-gray-700 hover:bg-gray-800" : "bg-blue-600 hover:bg-blue-700",
-            )}
+            className={running ? BTN : BTN_PRIMARY}
           >
             {running ? <StopIcon className="h-4 w-4" /> : <PlayIcon className="h-4 w-4" />}
             {running ? "Stop all" : "Start all"}
@@ -136,8 +137,8 @@ export default function GeneralTab() {
         </div>
 
         {(status?.pools?.length ?? 0) > 0 && (
-          <div className="mt-4 border-t border-gray-100 pt-3">
-            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">
+          <div className="mt-5 border-t border-gray-200 pt-4">
+            <h3 className="text-xs font-medium text-gray-500 mb-2">
               PHP pools
             </h3>
             <div className="flex flex-wrap gap-2">
@@ -145,10 +146,10 @@ export default function GeneralTab() {
                 <span
                   key={p.name}
                   className={clsx(
-                    "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+                    "inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-xs",
                     p.running
                       ? "border-green-200 bg-green-50 text-green-800"
-                      : "border-gray-200 bg-gray-50 text-gray-500",
+                      : "border-gray-200 bg-white text-gray-600",
                   )}
                 >
                   <span
@@ -168,7 +169,7 @@ export default function GeneralTab() {
 
 
       {/* https --------------------------------------------------------- */}
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+      <div className={clsx(BOX, "p-6")}>
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-start gap-3">
             {status?.https_ready ? (
@@ -177,10 +178,10 @@ export default function GeneralTab() {
               <LockOpenIcon className="h-5 w-5 text-gray-400 mt-0.5" />
             )}
             <div>
-              <h2 className="text-sm font-semibold text-gray-900">
+              <h2 className="text-base font-semibold text-gray-900">
                 {status?.https_ready ? "HTTPS is on" : "HTTPS is off"}
               </h2>
-              <p className="text-xs text-gray-600">
+              <p className="mt-0.5 text-[13px] text-gray-600">
                 {status?.https_ready ? (
                   <>
                     Sites open at{" "}
@@ -212,7 +213,7 @@ export default function GeneralTab() {
                   })()
                 }
                 disabled={busy}
-                className="px-3 py-2 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                className={BTN}
               >
                 Check first
               </button>
@@ -241,7 +242,7 @@ export default function GeneralTab() {
                   })()
                 }
                 disabled={busy}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-green-700 hover:bg-green-800 disabled:opacity-50"
+                className={BTN_PRIMARY}
               >
                 <LockClosedIcon className="h-4 w-4" />
                 Turn on HTTPS
@@ -273,7 +274,7 @@ export default function GeneralTab() {
                 })();
               }}
               disabled={busy}
-              className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+              className={BTN}
             >
               Remove system changes
             </button>
@@ -282,7 +283,7 @@ export default function GeneralTab() {
 
         {/* Four legs, each named. "Mostly on" is not a green lock, so the
             panel shows which one is missing rather than one vague state. */}
-        <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">
           {[
             {
               label: `DNS for .${status?.tld ?? "test"}`,
@@ -308,21 +309,21 @@ export default function GeneralTab() {
             <div
               key={leg.label}
               className={clsx(
-                "rounded-lg border px-3 py-2",
-                leg.ok ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50",
+                "flex h-11 items-center rounded-sm border px-4",
+                leg.ok ? "border-green-200 bg-green-50" : "border-gray-200 bg-white",
               )}
             >
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2 min-w-0">
                 <span
                   className={clsx(
-                    "h-1.5 w-1.5 rounded-full flex-shrink-0",
+                    "h-2 w-2 rounded-full flex-shrink-0",
                     leg.ok ? "bg-green-500" : "bg-gray-300",
                   )}
                 />
                 <span
                   className={clsx(
-                    "text-[11px] font-medium truncate",
-                    leg.ok ? "text-green-900" : "text-gray-600",
+                    "text-[13px] font-medium truncate",
+                    leg.ok ? "text-green-900" : "text-gray-900",
                   )}
                 >
                   {leg.label}
@@ -424,7 +425,7 @@ export default function GeneralTab() {
             <button
               onClick={() => void act(api.httpsTrustCa)}
               disabled={busy}
-              className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+              className={BTN}
             >
               Trust the certificate authority
             </button>
@@ -439,14 +440,14 @@ export default function GeneralTab() {
             <button
               onClick={() => void act(api.httpsRegenerateCerts)}
               disabled={busy}
-              className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+              className={BTN}
             >
               Regenerate certificates
             </button>
           </div>
         )}
 
-        <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
+        <p className="mt-4 text-xs leading-relaxed text-gray-500">
           The certificate authority signs only your local sites, its private key never leaves
           this Mac, and trust lives in your <strong>login</strong> keychain rather than the
           System one — so removing it needs no admin rights. Leaves are issued for under 398
@@ -454,11 +455,11 @@ export default function GeneralTab() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* doctor */}
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
-          <h2 className="text-sm font-semibold text-gray-900 mb-1">Diagnostics</h2>
-          <p className="text-xs text-gray-600 mb-3">
+        <section>
+          <h2 className={SECTION}>Diagnostics</h2>
+          <p className="mt-0.5 mb-3 text-[13px] text-gray-500">
             What is actually true right now — ports, and anything already claiming a TLD.
           </p>
           <div className="space-y-2">
@@ -466,32 +467,30 @@ export default function GeneralTab() {
               const s = LEVEL_STYLE[f.level] ?? LEVEL_STYLE.info;
               const Icon = s.icon;
               return (
-                <div key={i} className={clsx("rounded-lg border p-3", s.ring)}>
+                <div key={i} className={clsx("rounded border p-4", s.ring)}>
                   <div className="flex items-start gap-2">
                     <Icon className={clsx("h-4 w-4 flex-shrink-0 mt-0.5", s.tone)} />
                     <div className="min-w-0">
-                      <h3 className="text-xs font-semibold text-gray-900">{f.title}</h3>
-                      <p className="text-xs text-gray-700 leading-relaxed break-words">{f.detail}</p>
+                      <h3 className="text-[13px] font-semibold text-gray-900">{f.title}</h3>
+                      <p className="mt-0.5 text-xs text-gray-700 leading-relaxed break-words">{f.detail}</p>
                     </div>
                   </div>
                 </div>
               );
             })}
           </div>
-        </div>
+        </section>
 
         {/* where things live */}
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
-          <h2 className="text-sm font-semibold text-gray-900 mb-1">Where things live</h2>
-          <p className="text-xs text-gray-600 mb-3">
+        <section>
+          <h2 className={SECTION}>Where things live</h2>
+          <p className="mt-0.5 mb-3 text-[13px] text-gray-500">
             One directory holds your sites, the downloaded runtimes and the logs.
           </p>
-          <div className="border border-gray-200 rounded-lg px-3 py-2 mb-2">
-            <label className="block">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                Sites folder
-              </span>
-              <span className="block text-[11px] text-gray-600 mb-1.5">
+          <div className={clsx(BOX, "divide-y divide-gray-200")}>
+            <label className="block px-5 py-4">
+              <span className="text-[13px] text-gray-500">Sites folder</span>
+              <span className="block text-xs text-gray-400 mb-2">
                 Where new sites are created. Existing sites stay where they are.
               </span>
               <div className="flex gap-2">
@@ -500,12 +499,12 @@ export default function GeneralTab() {
                   value={sitesDir}
                   onChange={(e) => setSitesDir(e.target.value)}
                   placeholder={settings?.default_sites_dir ?? "~/QuickWP/Sites"}
-                  className="block w-full px-2 py-1.5 border border-gray-300 rounded-md text-[11px] font-mono focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                  className="block w-full h-9 px-3 border border-gray-300 rounded-sm text-xs font-mono focus:outline-none focus:ring-1 focus:ring-wp-blue focus:border-wp-blue"
                 />
                 <button
                   onClick={() => void act(() => api.settingsSet("sites_dir", sitesDir))}
                   disabled={busy || !sitesDir.trim()}
-                  className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap"
+                  className={BTN}
                 >
                   Save
                 </button>
@@ -517,27 +516,25 @@ export default function GeneralTab() {
                     void act(() => api.settingsSet("sites_dir", ""));
                   }}
                   disabled={busy}
-                  className="mt-1.5 text-[10px] text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                  className="mt-2 text-xs text-wp-blue hover:text-wp-blue-dark disabled:opacity-50"
                 >
                   Reset to {settings?.default_sites_dir}
                 </button>
               )}
             </label>
-          </div>
 
-          <dl className="space-y-2 text-xs">
-            {[
-              ["Data directory", settings?.root],
-              ["Logs", settings?.logs_dir],
-            ].map(([label, value]) => (
-              <div key={label as string} className="border border-gray-200 rounded-lg px-3 py-2">
-                <dt className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                  {label}
-                </dt>
-                <dd className="font-mono text-[11px] text-gray-800 break-all">{value ?? "—"}</dd>
-              </div>
-            ))}
-          </dl>
+            <dl className="divide-y divide-gray-200">
+              {[
+                ["Data directory", settings?.root],
+                ["Logs", settings?.logs_dir],
+              ].map(([label, value]) => (
+                <div key={label as string} className="px-5 py-4">
+                  <dt className="text-[13px] text-gray-500">{label}</dt>
+                  <dd className="mt-1 font-mono text-xs text-gray-900 break-all">{value ?? "—"}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
 
           <div className="mt-3 flex items-center gap-2">
             <button
@@ -552,7 +549,7 @@ export default function GeneralTab() {
               default PHP is {settings?.default_php ?? "—"}
             </span>
           </div>
-        </div>
+        </section>
       </div>
 
       <p className="text-[11px] text-gray-500 leading-relaxed max-w-3xl">
@@ -560,6 +557,7 @@ export default function GeneralTab() {
           ? `Requests arrive on 443, TLS terminates in the root edge, and the plaintext is forwarded to QuickWP's router on ${status?.edge_port}. The root process does nothing else.`
           : `Sites are reachable through the edge on port ${status?.edge_port ?? 18089} until HTTPS is on.`}
       </p>
+      </div>
     </div>
   );
 }

@@ -74,6 +74,24 @@ fn main() {
     // Hidden: the tunnel guard. Not in USAGE because nobody runs it by hand --
     // it is spawned beside every share so that a share always has something
     // watching it, even if whatever started it dies without warning.
+    // Hidden: the edge, kept serving after the app quits with "Keep sites
+    // running". The app spawns it on the way out and stops it on the next
+    // launch; see core::handoff.
+    if args[0] == "__serve" {
+        let app = match core::Quickwp::new() {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("serve: {e}");
+                std::process::exit(1);
+            }
+        };
+        eprintln!("serve: keeping sites up on port {} until QuickWP opens again", core::ports::NGINX);
+        if let Err(e) = core::handoff::serve(&app) {
+            eprintln!("serve: {e}");
+            std::process::exit(1);
+        }
+    }
+
     // Hidden: the DNS server itself, run by the LaunchAgent. Not in USAGE
     // because nobody runs it by hand.
     if args[0] == "__dns" {

@@ -57,6 +57,84 @@ pub struct LogSource {
 }
 
 /// Every log the viewer can show, app log first.
+/// One of the four log streams that can explain a single site.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SiteLog {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+    pub exists: bool,
+    pub bytes: u64,
+    /// Only meaningful for the WordPress debug log: whether WP is writing to
+    /// it at all. `None` for the streams QuickWP always writes.
+    pub logging: Option<bool>,
+}
+
+/// Resolve a stream id to the file behind it.
+///
+/// The UI names a stream, never a path -- clearing and downloading act on
+/// whatever this returns, so a path arriving from the front end is not
+/// something to trust.
+pub fn site_log_path(site: &crate::site::Site, id: &str) -> Option<std::path::PathBuf> {
+    let dir = paths::logs();
+    match id {
+        "wp-debug" => Some(
+            std::path::Path::new(&site.docroot)
+                .join("wp-content")
+                .join("debug.log"),
+        ),
+        "app" => Some(paths::app_log()),
+        "server" => Some(dir.join(format!("php-fpm-{}.log", site.php_minor))),
+        // `db_engine` on a site row holds the SERIES ("8.4"), not an engine
+        // name -- both callers of set_database pass the series. The file that
+        // mysqld is started with is always mysql-<series>.log.
+        "database" => site
+            .db_engine
+            .as_deref()
+            .map(|series| dir.join(format!("mysql-{series}.log"))),
+        _ => None,
+    }
+}
+
+/// The four streams, in the order they are worth reading.
+pub fn for_site(site: &crate::site::Site, wp_logging: Option<bool>) -> Vec<SiteLog> {
+    let mut out = Vec::new();
+    for (id, label) in [
+        ("wp-debug", "WordPress debug log"),
+        ("app", "QuickWP (app)"),
+        ("server", "Server (edge/PHP)"),
+        ("database", "Database"),
+    ] {
+        let Some(path) = site_log_path(site, id) else {
+            continue;
+        };
+        let meta = std::fs::metadata(&path);
+        out.push(SiteLog {
+            id: id.into(),
+            label: label.into(),
+            exists: meta.is_ok(),
+            bytes: meta.map(|m| m.len()).unwrap_or(0),
+            path: path.to_string_lossy().into(),
+            logging: if id == "wp-debug" { wp_logging } else { None },
+        });
+    }
+    out
+}
+
+/// Empty a log without deleting it.
+///
+/// Truncated rather than removed: the writer holds the file open, and deleting
+/// it leaves that process writing to an inode nothing can read any more.
+pub fn clear(path: &std::path::Path) -> crate::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::write(path, b"").map_err(|e| crate::Error::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })
+}
+
 pub fn sources() -> Vec<LogSource> {
     let mut out = Vec::new();
     let dir = paths::logs();
@@ -131,8 +209,14 @@ pub fn tail(id: &str, lines: usize) -> crate::Result<String> {
     } else {
         paths::logs().join(format!("{id}.log"))
     };
+    tail_path(&path, lines)
+}
+
+/// The last `lines` of a file named directly, for logs that do not live in
+/// QuickWP's own directory -- a site's wp-content/debug.log, say.
+pub fn tail_path(path: &std::path::Path, lines: usize) -> crate::Result<String> {
     // A log that does not exist yet is not an error: nothing has written to it.
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Ok(text) = std::fs::read_to_string(path) else {
         return Ok(String::new());
     };
     let all: Vec<&str> = text.lines().collect();
@@ -143,6 +227,50 @@ pub fn tail(id: &str, lines: usize) -> crate::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn a_site(db_engine: Option<&str>) -> crate::site::Site {
+        crate::site::Site {
+            id: 1,
+            name: "t".into(),
+            domain: "t.test".into(),
+            docroot: "/tmp/t".into(),
+            kind: "wordpress".into(),
+            php_minor: "8.3".into(),
+            server: "edge".into(),
+            enabled: true,
+            is_linked: false,
+            xdebug: false,
+            db_engine: db_engine.map(String::from),
+            db_name: Some("t".into()),
+            aliases: vec![],
+        }
+    }
+
+    #[test]
+    fn the_database_log_is_named_from_the_series_in_db_engine() {
+        // db_engine holds "8.4", not "mysql" -- reading it as an engine name
+        // built "8.4-<series>.log" and the stream vanished from the list.
+        let p = site_log_path(&a_site(Some("8.4")), "database").unwrap();
+        assert!(
+            p.ends_with("mysql-8.4.log"),
+            "expected mysql-8.4.log, got {}",
+            p.display()
+        );
+    }
+
+    #[test]
+    fn a_site_with_no_database_offers_no_database_log() {
+        assert!(site_log_path(&a_site(None), "database").is_none());
+        let streams = for_site(&a_site(None), None);
+        assert!(!streams.iter().any(|s| s.id == "database"));
+    }
+
+    #[test]
+    fn a_site_with_a_database_lists_all_four_streams() {
+        let streams = for_site(&a_site(Some("8.4")), Some(false));
+        assert_eq!(streams.len(), 4);
+        assert!(streams.iter().any(|s| s.id == "database"));
+    }
 
     #[test]
     fn the_app_log_sorts_first_because_it_answers_why_nothing_happened() {

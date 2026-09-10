@@ -193,6 +193,24 @@ pub const WPCLI_PIN: WpCliPin = WpCliPin {
     sha256: "ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c",
 };
 
+// ------------------------------------------------------------- adminer
+//
+// One PHP file, run by whichever PHP the edge already has a pool for. The
+// `mysql-en` asset rather than the full one: MySQL is the only engine QuickWP
+// runs, and the single-language build is a third of the size.
+
+pub struct AdminerPin {
+    pub version: &'static str,
+    pub url: &'static str,
+    pub sha256: &'static str,
+}
+
+pub const ADMINER_PIN: AdminerPin = AdminerPin {
+    version: "6.0.2",
+    url: "https://github.com/vrana/adminer/releases/download/v6.0.2/adminer-6.0.2-mysql-en.php",
+    sha256: "20b6ed6c5b4c70477b80db96b93fb08cefe3174657cc575436ac4ad7a8de1c79",
+};
+
 // ------------------------------------------------- mailpit / cloudflared
 //
 // Both publish official macOS builds, so the pin points at the vendor's own

@@ -196,6 +196,80 @@ pub fn set_php(db: &Db, domain: &str, minor: &str) -> Result<()> {
 }
 
 /// Add an extra hostname. One certificate will cover every name the site has.
+/// The display name only. The domain, folder and database are untouched --
+/// this is the label in the sidebar, not an identity.
+pub fn set_name(db: &Db, domain: &str, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(crate::Error::other("A site needs a name."));
+    }
+    db.with(|c| {
+        c.execute(
+            "UPDATE sites SET name = ?1 WHERE domain = ?2",
+            rusqlite::params![name, domain],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn set_xdebug(db: &Db, domain: &str, on: bool) -> Result<()> {
+    db.with(|c| {
+        c.execute(
+            "UPDATE sites SET xdebug = ?1 WHERE domain = ?2",
+            rusqlite::params![on, domain],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn set_docroot(db: &Db, domain: &str, docroot: &str) -> Result<()> {
+    db.with(|c| {
+        c.execute(
+            "UPDATE sites SET docroot = ?1 WHERE domain = ?2",
+            rusqlite::params![docroot, domain],
+        )?;
+        Ok(())
+    })
+}
+
+/// Rename the primary domain. Callers are responsible for the rest of the
+/// move -- the certificate and the URLs inside the database.
+pub fn rename_domain(db: &Db, old: &str, new: &str) -> Result<()> {
+    let new = new.trim().to_lowercase();
+    if new.is_empty() || new.contains('/') || new.contains(' ') {
+        return Err(crate::Error::other("That is not a hostname."));
+    }
+    if find(db, &new)?.is_some() {
+        return Err(crate::Error::other(format!("{new} is already taken.")));
+    }
+    db.with(|c| {
+        c.execute(
+            "UPDATE sites SET domain = ?1 WHERE domain = ?2",
+            rusqlite::params![new, old],
+        )?;
+        Ok(())
+    })
+}
+
+/// Drop an alias. The primary domain is not an alias and cannot be removed
+/// this way -- a site with no name answers to nothing.
+pub fn remove_domain(db: &Db, domain: &str, alias: &str) -> Result<()> {
+    if domain == alias {
+        return Err(crate::Error::other(
+            "That is the site's primary domain. Rename the site instead.",
+        ));
+    }
+    let site = find(db, domain)?
+        .ok_or_else(|| crate::Error::other(format!("No site called {domain}.")))?;
+    db.with(|c| {
+        c.execute(
+            "DELETE FROM site_domains WHERE site_id = ?1 AND domain = ?2",
+            rusqlite::params![site.id, alias],
+        )?;
+        Ok(())
+    })
+}
+
 pub fn add_domain(db: &Db, domain: &str, alias: &str) -> Result<()> {
     let alias = normalise_domain(alias);
     if let Some(owner) = find(db, &alias)? {
@@ -366,4 +440,44 @@ mod tests {
         let err = add_domain(&db, "two.test", "shared.test").unwrap_err();
         assert!(err.to_string().contains("already a name of the site"));
     }
+}
+
+/// Bytes on disk under a site's docroot.
+///
+/// Walked rather than shelled out to `du`: the number is wanted in the UI on
+/// every visit to a tab, and spawning a process for it is the kind of cost that
+/// only shows up on someone else's machine.
+///
+/// Symlinks are counted as the link, never followed -- a linked site whose
+/// wp-content points somewhere large should not report that directory's size as
+/// its own, and a loop would not terminate.
+pub fn disk_usage(docroot: &str) -> u64 {
+    fn walk(dir: &std::path::Path, budget: &mut u32) -> u64 {
+        if *budget == 0 {
+            return 0;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        let mut total = 0u64;
+        for e in entries.flatten() {
+            if *budget == 0 {
+                break;
+            }
+            *budget -= 1;
+            let Ok(meta) = e.path().symlink_metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                total += walk(&e.path(), budget);
+            } else {
+                total += meta.len();
+            }
+        }
+        total
+    }
+    // A budget rather than an unbounded walk: node_modules in a linked project
+    // can be a million entries, and a size readout is not worth a hung tab.
+    let mut budget = 400_000u32;
+    walk(std::path::Path::new(docroot), &mut budget)
 }

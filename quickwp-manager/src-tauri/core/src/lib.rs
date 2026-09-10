@@ -4,6 +4,8 @@
 //! shells over this crate, so the app and the terminal cannot drift: the create
 //! dialog and `quickwp site create` run the same code.
 
+pub mod adminer;
+pub mod apps;
 pub mod ca;
 pub mod database;
 pub mod db;
@@ -11,11 +13,14 @@ pub mod dns;
 pub mod error;
 pub mod exec;
 pub mod fastcgi;
+pub mod handoff;
 pub mod log;
 pub mod mail;
+pub mod node;
 pub mod migrate;
 pub mod paths;
 pub mod php;
+pub mod phpscan;
 pub mod ports;
 pub mod proc;
 pub mod pty;
@@ -26,6 +31,7 @@ pub mod runtime;
 pub mod supervisor;
 pub mod tunnel;
 pub mod wordpress;
+pub mod wptools;
 
 pub use error::{Error, Result};
 
@@ -179,6 +185,134 @@ impl Quickwp {
         }
         ca::issue_for(&s.domain, &names)?;
         Ok(true)
+    }
+
+    /// The URL that opens one site's database in Adminer, already logged in.
+    ///
+    /// Fetches Adminer on first use and issues its certificate the same way a
+    /// site gets one -- the edge picks certificates by SNI out of one
+    /// directory, so a hostname with a certificate in there simply works.
+    pub async fn adminer_url(&self, domain: &str) -> Result<String> {
+        let site = site::find(&self.db, domain)?
+            .ok_or_else(|| Error::other(format!("no site called {domain}")))?;
+        let Some(db_name) = site.db_name.clone().filter(|n| !n.is_empty()) else {
+            return Err(Error::other(format!(
+                "{domain} has no database recorded, so there is nothing to browse"
+            )));
+        };
+
+        adminer::ensure(|_| {}).await?;
+
+        let tld = self.db.tld()?;
+        let host = adminer::host(&tld);
+        let names = vec![host.clone()];
+        if !ca::covers(&host, &names) {
+            ca::issue_for(&host, &names)?;
+        }
+
+        let port = match site.db_engine.as_deref() {
+            Some(e) => database::Engine::parse(e)?.port(),
+            None => ports::MYSQL,
+        };
+        Ok(adminer::url(&tld, port, &db_name, &adminer::token()?))
+    }
+
+    /// Everything needed to rebuild this site elsewhere: its files and its
+    /// database, in one archive in ~/Downloads.
+    ///
+    /// The dump goes in beside the docroot rather than inside it. Writing it
+    /// into the site first would mean a crash mid-export leaves a copy of the
+    /// database sitting in a web-served directory, which is a way to hand out a
+    /// site's credentials by accident.
+    pub fn export_site(&self, domain: &str) -> Result<std::path::PathBuf> {
+        let site = site::find(&self.db, domain)?
+            .ok_or_else(|| Error::other(format!("no site called {domain}")))?;
+        let docroot = std::path::PathBuf::from(&site.docroot);
+        if !docroot.is_dir() {
+            return Err(Error::other(format!(
+                "{}'s folder is missing, so there is nothing to export",
+                site.domain
+            )));
+        }
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let dest = paths::downloads().join(format!("{}-{stamp}.zip", site.domain));
+        paths::mkdir_p(&dest.parent().unwrap().to_path_buf())?;
+
+        let parent = docroot
+            .parent()
+            .ok_or_else(|| Error::other("the docroot has no parent directory"))?;
+        let folder = docroot
+            .file_name()
+            .ok_or_else(|| Error::other("the docroot has no name"))?;
+
+        let zip = |args: &[&std::ffi::OsStr], cwd: &std::path::Path| -> Result<()> {
+            let out = std::process::Command::new("/usr/bin/zip")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .map_err(|e| Error::Io { path: "zip".into(), source: e })?;
+            if !out.status.success() {
+                return Err(Error::other(format!(
+                    "zip failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )));
+            }
+            Ok(())
+        };
+
+        use std::ffi::OsStr;
+        zip(
+            &[
+                OsStr::new("-r"),
+                OsStr::new("-q"),
+                OsStr::new("-X"),
+                dest.as_os_str(),
+                folder,
+            ],
+            parent,
+        )?;
+
+        // The database, when there is one. A site without one still exports.
+        if let Some(name) = site.db_name.as_deref() {
+            if !name.is_empty() {
+                // The same setting the rest of the app resolves the series
+                // from, so an export uses the engine the site actually runs on.
+                let series = self
+                    .db
+                    .setting("db_series")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string());
+                match database::export(&series, name) {
+                    Ok(sql) => {
+                        // -j so it lands at the archive root rather than under
+                        // whatever path Downloads happens to have.
+                        let r = zip(
+                            &[OsStr::new("-j"), OsStr::new("-q"), dest.as_os_str(), sql.as_os_str()],
+                            parent,
+                        );
+                        let _ = std::fs::remove_file(&sql);
+                        r?;
+                    }
+                    Err(e) => {
+                        // Say so rather than shipping a files-only archive that
+                        // looks complete.
+                        let _ = std::fs::remove_file(&dest);
+                        return Err(Error::other(format!(
+                            "the files were archived but the database dump failed, so nothing was \
+                             kept: {e}"
+                        )));
+                    }
+                }
+            }
+        }
+
+        log::write(&format!("site exported: {} -> {}", site.domain, dest.display()));
+        Ok(dest)
     }
 
     /// Re-issue anything whose name set has drifted. Cheap and idempotent.

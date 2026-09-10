@@ -21,44 +21,114 @@ Before running QuickWP Manager, ensure you have the following installed:
    - Install from: https://rustup.rs/
    - Verify installation: cargo --version
 
-3. Laravel Herd (for WordPress development)
-   - Download from: https://herd.laravel.com/
-   - Required for WordPress site management features
+3. Xcode Command Line Tools (macOS only)
+   - Install with: xcode-select --install
+   - Required to link the Rust backend
 
-4. WP-CLI (WordPress Command Line Interface)
-   - Install from: https://wp-cli.org/
-   - Required for WordPress operations
+NOT prerequisites (QuickWP handles these itself):
+
+- PHP, MySQL/MariaDB and WP-CLI are downloaded on demand the first time a
+  site needs them, each verified against a pinned checksum. You do not
+  install them yourself.
+
+- Laravel Herd is optional. QuickWP only reads Herd/Valet configuration for
+  the "Import from Herd" tab and to spot port conflicts. It never edits or
+  removes anything Herd owns, and QuickWP runs fine with Herd absent.
 
 ===============================================================================
-🔧 DEVELOPMENT MODE (PREVIEW WITHOUT BUILD)
+▶️ RUNNING THE PROJECT (DEV MODE / PREVIEW)
 ===============================================================================
 
-To run the project in development mode for preview and testing:
+All commands below run from the app directory, not the repo root:
 
-1. Navigate to the project directory:
    cd quickwp-manager
 
-2. Install dependencies (first time only):
+-------------------------------------------------------------------------------
+ONE-TIME SETUP
+-------------------------------------------------------------------------------
+
    npm install
 
-3. Start the development server:
+That is all that is needed up front. Cargo fetches the Rust crates on the
+first run of the app.
+
+-------------------------------------------------------------------------------
+THE PREVIEW: RUN THE REAL DESKTOP APP
+-------------------------------------------------------------------------------
+
    npm run tauri dev
 
-   Alternative commands:
-   - npm run tauri:dev
-   - tauri dev
+This is the way to see the UI as it actually behaves. It:
 
-4. The application will:
-   - Start the Vite development server (usually on http://localhost:1420)
-   - Compile the Rust backend
-   - Launch the desktop application window
-   - Enable hot-reload for instant updates when you modify code
+   - starts Vite on http://localhost:1420 (a fixed port -- it fails rather
+     than sliding to another one, because Tauri is pointed at that address)
+   - compiles the Rust backend
+   - opens the "QuickWP Manager" window
+   - watches src/ and hot-reloads the React UI
 
-5. Development Features:
-   - Hot Module Replacement (HMR) - changes appear instantly
-   - Debug console available
-   - Source maps for debugging
-   - Fast compilation and reload
+⏱️  Be patient the first time. The initial Rust compile takes several
+    minutes on a cold target directory. Later runs start in seconds.
+
+What reloads, and what does not:
+
+   - Edit anything under src/ (React, Tailwind) -> the window updates almost
+     immediately, no restart.
+   - Edit anything under src-tauri/ (Rust) -> Tauri recompiles and relaunches
+     the window by itself. Slower, but automatic.
+
+DevTools: right-click inside the window -> "Inspect Element" for the console
+and the DOM, exactly as in a browser.
+
+-------------------------------------------------------------------------------
+⚠️  THE BROWSER-ONLY ROUTE, AND ITS LIMIT
+-------------------------------------------------------------------------------
+
+   npm run dev          # then open http://localhost:1420
+
+This serves the same React app in your normal browser, and it is genuinely
+faster to iterate in. But understand what you are looking at:
+
+   Every call to the backend goes through Tauri's invoke(), which only exists
+   inside the app window. In a plain browser tab it throws, so any tab that
+   reads real data shows its error state instead of its content -- the Sites
+   tab, for instance, renders "Could not read your sites".
+
+So use the browser only for pure layout and styling work on views that do not
+depend on backend data. For anything involving sites, PHP versions, services
+or HTTPS, use `npm run tauri dev`.
+
+(`npm run preview` serves the built dist/ folder in a browser and has exactly
+the same limitation.)
+
+-------------------------------------------------------------------------------
+SEEING THE "NO SITES YET" EMPTY STATE
+-------------------------------------------------------------------------------
+
+The Sites tab shows its empty state only when the backend reports zero sites.
+There is no mock data behind it -- an empty list means you really have no
+sites yet.
+
+To check what you have, and to get back to empty:
+
+   cd quickwp-manager/src-tauri
+   cargo build -p quickwp-cli          # build the CLI once
+
+   # It is not on your PATH; run it from the target directory:
+   ./target/debug/quickwp site list      # every site, and whether it serves
+   ./target/debug/quickwp site delete <domain>
+
+Or from inside the app: pick the site, then Actions -> "Delete site". Delete
+means the same thing in both places. A site you LINKED (rather than created)
+loses only QuickWP's record of it -- your folder is left alone.
+
+-------------------------------------------------------------------------------
+FRONTEND CHECKS WITHOUT LAUNCHING ANYTHING
+-------------------------------------------------------------------------------
+
+   npx tsc --noEmit     # type-check the React code on its own
+   npm run build        # type-check + produce dist/ (no Rust involved)
+
+Both are quick, and worth running before a commit that touches src/.
 
 ===============================================================================
 🏗️ PRODUCTION BUILD (FOR DEPLOYMENT)
@@ -160,8 +230,15 @@ Common Issues and Solutions:
    Solution: Install Microsoft C++ Build Tools
    https://visualstudio.microsoft.com/visual-cpp-build-tools/
 
-5. Application doesn't start
-   Solution: Check if Laravel Herd and WP-CLI are installed
+5. "Port 1420 is already in use"
+   Solution: Another `npm run dev` or `npm run tauri dev` is still running.
+   The port is fixed on purpose, so close the other one rather than
+   changing it.  lsof -ti:1420 | xargs kill
+
+6. The Sites tab says "Could not read your sites"
+   Solution: You are almost certainly viewing it in a plain browser tab via
+   `npm run dev`. The backend is only reachable inside the app window --
+   use `npm run tauri dev`.
 
 ===============================================================================
 🔄 DEVELOPMENT WORKFLOW

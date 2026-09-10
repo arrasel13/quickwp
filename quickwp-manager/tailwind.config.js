@@ -7,6 +7,13 @@ export default {
   theme: {
     extend: {
       colors: {
+        // The dark frame around the content sheet.
+        chrome: '#1e1e1e',
+        // WordPress admin blue, for the one primary action on a screen.
+        wp: {
+          blue: '#3858e9',
+          'blue-dark': '#2145e6',
+        },
         primary: {
           50: '#eff6ff',
           100: '#dbeafe',
@@ -33,7 +40,8 @@ export default {
         }
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        // The platform's own UI font, so the app reads as native.
+        sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'system-ui', 'sans-serif'],
       },
       animation: {
         'fade-in': 'fadeIn 0.2s ease-in-out',

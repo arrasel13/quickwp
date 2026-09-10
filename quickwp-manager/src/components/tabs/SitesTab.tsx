@@ -4,10 +4,6 @@ import { useAsync } from "../../lib/useAsync";
 import { Tab, Dialog, Transition } from "@headlessui/react";
 import {
   GlobeAltIcon,
-  MagnifyingGlassIcon,
-  CogIcon,
-  LockClosedIcon,
-  LinkIcon,
   PlusIcon,
   XMarkIcon,
   ArrowLeftIcon,
@@ -15,11 +11,18 @@ import {
   StopIcon,
   CodeBracketIcon,
   FolderIcon,
-  CommandLineIcon,
-  DocumentTextIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { Fragment } from "react";
+import SiteOverview from "../site/SiteOverview";
+import SiteWordPress from "../site/SiteWordPress";
+import SiteDatabase from "../site/SiteDatabase";
+import SiteLogs from "../site/SiteLogs";
+import SiteSettings from "../site/SiteSettings";
+import TerminalTab from "./TerminalTab";
+import MailTab from "./MailTab";
+import SiteAvatar from "../SiteAvatar";
+import { useSites } from "../../lib/sites";
 import ProgressBar from "../ui/ProgressBar";
 import TerminalOutput from "../ui/TerminalOutput";
 
@@ -29,8 +32,9 @@ interface WordPressSite {
   url: string;
   path: string;
   linkedPath: string;
+  /** "wordpress" or "php" — WordPress sites have no Node step. */
+  kind: string;
   phpVersion: string;
-  nodeVersion: string;
   status: "running" | "stopped" | "error";
 }
 
@@ -49,12 +53,83 @@ interface SiteConfig {
 
 type ProjectType = "laravel" | "existing" | "wordpress";
 
+// Tailwind only keeps classes it can see spelled out, so the per-option colours
+// are written here rather than assembled from ProjectOption.color at runtime.
+const optionTones: Record<string, { bg: string; text: string }> = {
+  red: { bg: "bg-red-50", text: "text-red-600" },
+  blue: { bg: "bg-blue-50", text: "text-blue-600" },
+  green: { bg: "bg-green-50", text: "text-green-600" },
+};
+
+// One definition for every control in the dialog. The fields had drifted into
+// three different paddings, and every one of them carried `focus:ring-0`
+// alongside `focus:ring-blue-300` -- the ring-0 won, so tabbing through the
+// form showed no focus at all.
+const fieldClass =
+  "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 " +
+  "placeholder-gray-400 transition-colors focus:border-blue-500 focus:outline-none " +
+  "focus:ring-2 focus:ring-blue-500/30";
+
+const labelClass = "mb-1.5 block text-xs font-medium text-gray-700";
+
+// A docroot folder, a .test hostname and a database name have to survive
+// exactly as typed. Left alone, the webview offers autofill, capitalises the
+// first letter and underlines the lot in red, so every text field in the New
+// Site dialog opts out.
+// The version list is read from wordpress.org rather than baked into the app —
+// a hard-coded list is how this dropdown ended up offering 6.4 as its newest
+// choice long after 7.x shipped. Kept for the life of the process because the
+// Sites tab remounts on every sidebar switch and the answer rarely changes.
+let wpReleaseCache: string[] | null = null;
+
+/** Stands in when the machine is offline. Correct as of the 7.1 release. */
+const WP_FALLBACK_VERSIONS = ["7.1", "7.0.4", "6.9.7", "6.8.8", "6.7.7"];
+
+/** Newest first. Descending, so a negative result means `a` is the newer one. */
+function compareVersions(a: string, b: string): number {
+  const x = a.split(".").map(Number);
+  const y = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (y[i] ?? 0) - (x[i] ?? 0);
+  }
+  return 0;
+}
+
+async function fetchWpVersions(): Promise<string[]> {
+  if (wpReleaseCache) return wpReleaseCache;
+  const res = await fetch("https://api.wordpress.org/core/stable-check/1.0/");
+  if (!res.ok) throw new Error(`wordpress.org replied ${res.status}`);
+  const all = (await res.json()) as Record<string, string>;
+
+  // One entry per release line, keeping its newest patch. Listing 7.0.1
+  // through 7.0.4 as four separate choices is noise; 7.0.4 is the one anyone
+  // picking "the 7.0 line" actually wants.
+  const newestOfLine = new Map<string, string>();
+  for (const v of Object.keys(all)) {
+    const line = v.split(".").slice(0, 2).join(".");
+    const held = newestOfLine.get(line);
+    if (!held || compareVersions(v, held) < 0) newestOfLine.set(line, v);
+  }
+
+  wpReleaseCache = [...newestOfLine.values()].sort(compareVersions).slice(0, 5);
+  return wpReleaseCache;
+}
+
+const noAutoFill = {
+  autoComplete: "off",
+  autoCorrect: "off",
+  autoCapitalize: "off",
+  spellCheck: false,
+} as const;
+
 interface ProjectOption {
   id: ProjectType;
   name: string;
   description: string;
   icon: React.ComponentType<{ className?: string }>;
   color: string;
+  /** Laravel has no implementation yet; the card says so instead of alerting. */
+  available?: boolean;
 }
 
 export default function SitesTab() {
@@ -64,12 +139,27 @@ export default function SitesTab() {
   const { data: stack } = useAsync(() => api.stackStatus(), []);
   const httpsReady = stack?.https_ready ?? false;
 
+  // What Node this machine already has. QuickWP installs none of its own, so
+  // the list is whatever nvm/fnm/Volta/Homebrew/asdf put there — newest first.
+  const { data: nodeInstalls } = useAsync(() => api.nodeList(), []);
+  const nodeVersions = useMemo(
+    () => (nodeInstalls ?? []).map((n) => n.version),
+    [nodeInstalls],
+  );
+  /** Newest installed, and the default selection for every site. */
+  const latestNode = nodeVersions[0] ?? null;
+
+  // The list, the selection and the "+" request are shared with the sidebar,
+  // which is where sites are listed and picked.
   const {
-    data: backendSites,
+    sites: backendSites,
     error: sitesError,
     loading: sitesLoading,
     reload: reloadSites,
-  } = useAsync(() => api.siteList(), []);
+    selected,
+    select,
+    newSiteRequest,
+  } = useSites();
 
   const sites: WordPressSite[] = useMemo(
     () =>
@@ -82,21 +172,31 @@ export default function SitesTab() {
         path: s.docroot,
         // A linked site's folder is yours; QuickWP never copies or deletes it.
         linkedPath: s.is_linked ? s.docroot : "—",
+        kind: s.kind,
         phpVersion: s.php_minor,
-        nodeVersion: "—",
         status: s.enabled ? "running" : "stopped",
       })),
     [backendSites, httpsReady],
   );
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedId = selected ? String(selected.id) : null;
+  /** The unmapped row: panels need db_engine, aliases and docroot verbatim. */
+  const selectedBackendSite = useMemo(
+    () =>
+      (backendSites ?? []).find((b) => String(b.id) === selectedId) ??
+      (backendSites ?? [])[0] ??
+      null,
+    [backendSites, selectedId],
+  );
   const selectedSite: WordPressSite | null =
     sites.find((s) => s.id === selectedId) ?? sites[0] ?? null;
-  const setSelectedSite = (s: WordPressSite) => setSelectedId(s.id);
-  const [showPreview, setShowPreview] = useState(true);
-  const [showPhpDropdown, setShowPhpDropdown] = useState(false);
-  const [showNodeDropdown, setShowNodeDropdown] = useState(false);
-  const [showActionsDropdown, setShowActionsDropdown] = useState(false);
+  // Node is not persisted per site by the backend yet, so a choice lasts for
+  // the session. It defaults to the newest version actually installed.
+  const [nodeChoice, setNodeChoice] = useState<Record<string, string>>({});
+  const nodeForSelected = selectedSite
+    ? nodeChoice[selectedSite.id] ?? latestNode ?? "—"
+    : "—";
+
 
   // Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -117,6 +217,8 @@ export default function SitesTab() {
     adminPassword: "",
     adminEmail: "",
   });
+  // Populated from wordpress.org the first time the WordPress step is opened.
+  const [wpVersions, setWpVersions] = useState<string[]>(WP_FALLBACK_VERSIONS);
   const [isInstalling, setIsInstalling] = useState(false);
   const [progress, setProgress] = useState(0);
   const [terminalOutput, setTerminalOutput] = useState<string[]>([]);
@@ -127,22 +229,25 @@ export default function SitesTab() {
   const projectOptions: ProjectOption[] = [
     {
       id: "laravel",
-      name: "New Laravel Project",
-      description: "Create a new Laravel application with Herd",
+      name: "Laravel project",
+      description: "Not built yet.",
       icon: CodeBracketIcon,
       color: "red",
+      available: false,
     },
     {
       id: "existing",
-      name: "Link Existing Project",
-      description: "Link an existing project to Herd",
+      name: "Link a folder",
+      description:
+        "Serve a folder where it already is. Nothing is copied or moved.",
       icon: FolderIcon,
       color: "blue",
     },
     {
       id: "wordpress",
-      name: "New WordPress Site",
-      description: "Create a new WordPress development site",
+      name: "WordPress site",
+      description:
+        "WordPress, PHP and a database — downloaded and wired up for you.",
       icon: GlobeAltIcon,
       color: "green",
     },
@@ -150,26 +255,42 @@ export default function SitesTab() {
 
   // Available versions
   const phpVersions = ["8.3", "8.2", "8.1", "8.0", "7.4"];
-  const nodeVersions = ["22", "20", "18", "16", "14"];
-
-  // Actions dropdown options
-  const actionOptions = [
-    { id: "terminal", name: "Terminal", icon: CommandLineIcon },
-    { id: "ide", name: "Open in browser", icon: CodeBracketIcon },
-    { id: "logs", name: "Logs", icon: DocumentTextIcon },
-    {
-      id: "toggle",
-      name: selectedSite?.status === "running" ? "Stop site" : "Start site",
-      icon: selectedSite?.status === "running" ? StopIcon : PlayIcon,
-    },
-    { id: "delete", name: "Delete site", icon: XMarkIcon },
-  ];
 
   const siteDetailTabs = [
-    { name: "General", id: "general" },
-    { name: "Information", id: "information" },
-    { name: "Connect to Forge", id: "forge" },
+    { name: "Overview", id: "overview" },
+    { name: "WordPress", id: "wordpress" },
+    { name: "Database", id: "database" },
+    { name: "Logs", id: "logs" },
+    { name: "Terminal", id: "terminal" },
+    { name: "Mail", id: "mail" },
+    { name: "Settings", id: "settings" },
   ];
+
+  /** Overview opens first: what the site is, and where to go from it. */
+  const DEFAULT_SITE_TAB = 0;
+  // Controlled rather than defaultIndex, so switching sites can put the
+  // selection back on Overview instead of wherever the last site was left.
+  const [siteTab, setSiteTab] = useState(DEFAULT_SITE_TAB);
+  useEffect(() => {
+    setSiteTab(DEFAULT_SITE_TAB);
+  }, [selectedId]);
+
+  // Fetched lazily: opening the dialog is the first moment the list matters,
+  // and an offline machine simply keeps the fallback.
+  useEffect(() => {
+    if (modalStep !== "wordpress") return;
+    let cancelled = false;
+    void fetchWpVersions()
+      .then((v) => {
+        if (!cancelled && v.length) setWpVersions(v);
+      })
+      .catch(() => {
+        /* offline, or wordpress.org is down: WP_FALLBACK_VERSIONS stands */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modalStep]);
 
   // Auto-generate values when site title changes
   useEffect(() => {
@@ -208,6 +329,11 @@ export default function SitesTab() {
     setModalStep("select");
     setSelectedProjectType(null);
   };
+
+  // The sidebar's "+" asks for the dialog; this screen owns it.
+  useEffect(() => {
+    if (newSiteRequest > 0) openModal();
+  }, [newSiteRequest]);
 
   const closeModal = () => {
     setIsModalOpen(false);
@@ -250,7 +376,7 @@ export default function SitesTab() {
       const domain = prompt("Domain for this site:", `${suggested}.test`);
       if (!domain) return;
       try {
-        await api.siteCreate({
+        const linked = await api.siteCreate({
           name: suggested,
           domain,
           kind: "php",
@@ -258,6 +384,7 @@ export default function SitesTab() {
           link_path: path,
         });
         await reloadSites();
+        select(String(linked.id));
         closeModal();
       } catch (e) {
         alert(errorText(e));
@@ -358,6 +485,8 @@ export default function SitesTab() {
       }
 
       await reloadSites();
+      // Open what was just made, rather than leaving the old site in view.
+      select(String(site.id));
       setIsInstalling(false);
       setInstallDone(true);
       setCurrentStep("");
@@ -372,7 +501,6 @@ export default function SitesTab() {
 
   // Version switching functions
   const handlePhpVersionChange = async (version: string) => {
-    setShowPhpDropdown(false);
     if (!selectedSite) return;
     try {
       // A site stores a minor, never a patch. Switching regenerates no config
@@ -384,81 +512,12 @@ export default function SitesTab() {
     }
   };
 
-  const handleNodeVersionChange = (_version: string) => {
-    setShowNodeDropdown(false);
-    // Node version management is not wired to a backend yet.
-  };
-
-  const handleToggleSite = async () => {
+  const handleNodeVersionChange = (version: string) => {
     if (!selectedSite) return;
-    try {
-      await api.siteSetEnabled(selectedSite.name, selectedSite.status !== "running");
-      await reloadSites();
-    } catch (e) {
-      alert(errorText(e));
-    }
+    // Remembered for the session only: there is no per-site Node column in
+    // the database yet, so nothing would survive a restart.
+    setNodeChoice((prev) => ({ ...prev, [selectedSite.id]: version }));
   };
-
-  const handleDeleteSite = async () => {
-    if (!selectedSite) return;
-    const linked = (backendSites ?? []).find((s) => s.domain === selectedSite.name)?.is_linked;
-    const warning = linked
-      ? "Remove " + selectedSite.name + " from QuickWP?\n\nYour folder stays exactly where it is — QuickWP only forgets it."
-      : "Delete " + selectedSite.name + "?\n\nThis removes its docroot at " + selectedSite.path + ".";
-    if (!confirm(warning)) return;
-    try {
-      await api.siteDelete(selectedSite.name);
-      setSelectedId(null);
-      await reloadSites();
-    } catch (e) {
-      alert(errorText(e));
-    }
-  };
-
-  // Actions handler
-  const handleActionClick = (actionId: string) => {
-    setShowActionsDropdown(false);
-
-    switch (actionId) {
-      case "terminal":
-        alert("A terminal in the docroot needs a PTY bridge — not built yet.\n\ncd " + selectedSite?.path);
-        break;
-      case "ide":
-        void api.siteOpen(selectedSite!.name).catch((e) => alert(errorText(e)));
-        break;
-      case "logs":
-        alert("Logs live in the QuickWP data directory — the log viewer is not built yet.");
-        break;
-      case "toggle":
-        void handleToggleSite();
-        break;
-      case "delete":
-        void handleDeleteSite();
-        break;
-      default:
-        break;
-    }
-  };
-
-  // Close dropdowns when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (
-        !target.closest(".version-dropdown") &&
-        !target.closest(".actions-dropdown")
-      ) {
-        setShowPhpDropdown(false);
-        setShowNodeDropdown(false);
-        setShowActionsDropdown(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, []);
 
   // Every hook above this point runs unconditionally; these early returns are
   // after the last one, so the order stays stable.
@@ -483,426 +542,147 @@ export default function SitesTab() {
 
 
   return (
-    <div className="h-screen flex flex-col">
+    // h-full, not h-screen: the tab sits in an inset sheet shorter than the
+    // window, and a screen-tall root would overflow it.
+    <div className="h-full flex flex-col">
       {/* The dialog below must stay mounted even with no sites, or
           "New site" sets state with nothing there to show it. */}
       {selectedSite ? (
         <>
-      {/* Header */}
-      <div className="border-b border-gray-200 p-4 flex-shrink-0">
-        <div className="flex items-center justify-between">
-          <h3 className="text-2xl font-bold text-gray-900">
-            Development Sites
-          </h3>
-          <div className="flex items-center space-x-2">
-            <button className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
-              <CogIcon className="h-6 w-6" />
-            </button>
-            <button className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
-              <LockClosedIcon className="h-6 w-6" />
-            </button>
-
-            {/* Search */}
-            <div className="relative">
-              <MagnifyingGlassIcon className="h-4 w-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search sites..."
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
+      {/* Header: the site in view, named the way the sidebar names it. */}
+      <div className="flex flex-shrink-0 items-center gap-3 px-6 pt-5 pb-3">
+        <div className="inline-flex min-w-0 max-w-full items-center gap-3 rounded-md bg-gray-900 py-1.5 pl-1.5 pr-4 text-white">
+          <SiteAvatar
+            name={selectedBackendSite?.name || selectedSite.name}
+            className="h-9 w-9 text-sm"
+          />
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-semibold leading-5">
+              {selectedBackendSite?.name || selectedSite.name}
+            </div>
+            <div className="truncate text-[11px] leading-4 text-gray-300">
+              {selectedSite.name}
             </div>
           </div>
         </div>
+        <span
+          className={clsx(
+            "inline-flex flex-shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium",
+            selectedSite.status === "running"
+              ? "bg-green-50 text-green-700"
+              : "bg-gray-100 text-gray-500",
+          )}
+        >
+          <span
+            className={clsx(
+              "h-1.5 w-1.5 rounded-full",
+              selectedSite.status === "running" ? "bg-green-500" : "bg-gray-400",
+            )}
+          />
+          {selectedSite.status === "running" ? "Running" : "Stopped"}
+        </span>
       </div>
 
       {/* Main Content */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar - Sites List */}
-        <div className="w-72 border-r border-gray-200 shadow-sm flex flex-col">
-          {/* Sites List - Scrollable */}
-          <div className="flex-1 overflow-y-auto p-4">
-            <div className="space-y-1">
-              {sites.map((site) => (
-                <button
-                  key={site.id}
-                  onClick={() => setSelectedSite(site)}
-                  className={clsx(
-                    "w-full flex items-center justify-between p-2 rounded-lg text-left transition-all duration-200",
-                    selectedSite.id === site.id
-                      ? "bg-blue-50 border border-blue-200 shadow-sm"
-                      : "border border-transparent hover:bg-gray-100 hover:border-gray-200"
-                  )}
-                >
-                  <div className="flex items-center space-x-3">
-                    <div
-                      className={clsx(
-                        "w-3 h-3 rounded-full",
-                        site.status === "running"
-                          ? "bg-green-500"
-                          : "bg-gray-400"
-                      )}
-                    />
-                    <span className="text-sm font-medium text-gray-900">
-                      {site.name}
-                    </span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <LinkIcon className="h-4 w-4 text-gray-400" />
-                    <LockClosedIcon className="h-4 w-4 text-gray-400" />
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Add Site Button - Fixed at bottom */}
-          <div className="p-4 border-t border-gray-200">
-            <div className="flex justify-center">
-              <button
-                onClick={openModal}
-                className="flex items-center justify-center px-3 py-1.5 text-sm bg-gray-400 text-white rounded-lg hover:bg-gray-500 transition-colors shadow-sm font-medium"
-              >
-                <PlusIcon className="h-4 w-4" />
-                Add New Site
-              </button>
-            </div>
-          </div>
-        </div>
-
         {/* Right Content - Site Details */}
         <div className="flex-1 flex flex-col bg-gray-50 overflow-hidden min-h-0">
           {/* Site Detail Tabs */}
-          <Tab.Group as="div" className="flex flex-col flex-1 min-h-0">
-            <Tab.List className="flex border-b border-gray-200 px-6 flex-shrink-0 shadow-sm">
+          <Tab.Group
+            as="div"
+            className="flex flex-col flex-1 min-h-0"
+            selectedIndex={siteTab}
+            onChange={setSiteTab}
+          >
+            <Tab.List className="flex flex-shrink-0 gap-1 border-b border-gray-200 bg-white px-4">
               {siteDetailTabs.map((tab) => (
                 <Tab
                   key={tab.id}
                   className={({ selected }) =>
                     clsx(
-                      "py-2 px-4 text-sm border-b-2 focus:outline-none focus-visible:outline-none focus:ring-0 active:outline-none transition-colors font-medium",
-                      selected
-                        ? "border-blue-500 text-blue-600"
-                        : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+                      "relative px-3 py-3 text-[13px] font-medium transition-colors focus:outline-none focus-visible:outline-none focus:ring-0 active:outline-none",
+                      selected ? "text-gray-900" : "text-gray-500 hover:text-gray-900"
                     )
                   }
                 >
-                  {tab.name}
+                  {({ selected }) => (
+                    <>
+                      {tab.name}
+                      {/* An element, not a border: the global tab focus
+                          rule strips borders, hiding the marker on click. */}
+                      {selected && (
+                        <span className="absolute inset-x-2 bottom-0 h-0.5 bg-gray-900" />
+                      )}
+                    </>
+                  )}
                 </Tab>
               ))}
             </Tab.List>
 
             <Tab.Panels className="flex-1 overflow-hidden min-h-0">
-              {/* General Tab */}
+              {/* Overview */}
               <Tab.Panel className="h-full overflow-y-auto">
-                <div className="p-4">
-                  <div className="space-y-4">
-                    {/* Site preview and controls */}
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                      {/* Site preview */}
-                      <div className="lg:col-span-2">
-                        <div className="bg-white border border-gray-200 rounded-xl min-h-96 flex items-center justify-center shadow-sm">
-                          <div className="text-center p-8">
-                            <div className="w-20 h-20 bg-gray-100 rounded-xl shadow-sm flex items-center justify-center mb-6 mx-auto">
-                              <GlobeAltIcon className="h-10 w-10 text-gray-400" />
-                            </div>
-                            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                              Site Preview
-                            </h3>
-                            <p className="text-sm text-gray-500">
-                              Live preview of your WordPress site will appear
-                              here
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Site controls */}
-                      <div className="space-y-4">
-                        <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm space-y-6">
-                          <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-semibold text-gray-900">
-                              {selectedSite.name.replace(".test", "")}
-                            </h3>
-                            <div className="relative actions-dropdown">
-                              <button
-                                onClick={() => {
-                                  setShowActionsDropdown(!showActionsDropdown);
-                                  setShowPhpDropdown(false);
-                                  setShowNodeDropdown(false);
-                                }}
-                                className="px-3 py-1 bg-blue-500 text-xs text-white rounded-md hover:bg-blue-600 transition-colors font-medium focus:outline-none focus-visible:outline-none"
-                              >
-                                Actions
-                              </button>
-                              {showActionsDropdown && (
-                                <div className="absolute right-0 top-8 mt-1 w-32 bg-white border border-gray-200 rounded-md shadow-lg z-20">
-                                  {actionOptions.map((action) => (
-                                    <button
-                                      key={action.id}
-                                      onClick={() =>
-                                        handleActionClick(action.id)
-                                      }
-                                      className="flex items-center w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:outline-none first:rounded-t-md last:rounded-b-md"
-                                    >
-                                      <action.icon className="h-4 w-4 mr-2 text-gray-500" />
-                                      {action.name}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Show Preview Toggle */}
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium text-gray-700">
-                              Show Preview
-                            </span>
-                            <button
-                              onClick={() => setShowPreview(!showPreview)}
-                              className={clsx(
-                                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2",
-                                showPreview ? "bg-blue-600" : "bg-gray-200"
-                              )}
-                            >
-                              <span
-                                className={clsx(
-                                  "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-                                  showPreview
-                                    ? "translate-x-6"
-                                    : "translate-x-1"
-                                )}
-                              />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Site details */}
-                    <div className="bg-gray-100 border border-gray-300 rounded-xl p-4 shadow-sm">
-                      <div className="">
-                        <div className="flex items-center justify-between py-2 border-b border-gray-200">
-                          <span className="text-sm font-medium text-gray-600">
-                            PHP Version:
-                          </span>
-                          <div className="relative version-dropdown">
-                            <div className="flex items-center">
-                              <input
-                                type="text"
-                                value={selectedSite.phpVersion}
-                                readOnly
-                                className="w-16 px-2 py-1 text-xs text-center border border-gray-300 rounded-l-md bg-white focus:outline-none focus:ring-0 focus:ring-gray-300"
-                              />
-                              <button
-                                onClick={() => {
-                                  setShowPhpDropdown(!showPhpDropdown);
-                                  setShowNodeDropdown(false);
-                                }}
-                                className="px-2 py-1 bg-blue-500 border border-blue-500 hover:border hover:border-blue-500 text-white rounded-r-md hover:bg-blue-600 transition-colors focus:outline-none focus:ring-0 focus:ring-blue-500"
-                              >
-                                <svg
-                                  className="w-4 h-4"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M19 9l-7 7-7-7"
-                                  />
-                                </svg>
-                              </button>
-                            </div>
-                            {showPhpDropdown && (
-                              <div className="absolute right-0 top-6 mt-1 w-20 bg-white border border-gray-200 rounded-md shadow-lg z-10">
-                                {phpVersions.map((version) => (
-                                  <button
-                                    key={version}
-                                    onClick={() =>
-                                      handlePhpVersionChange(version)
-                                    }
-                                    className="block w-full text-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:outline-none first:rounded-t-md last:rounded-b-md"
-                                  >
-                                    {version}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between py-2 border-b border-gray-200">
-                          <span className="text-sm font-medium text-gray-600">
-                            Node Version:
-                          </span>
-                          <div className="relative version-dropdown">
-                            <div className="flex items-center">
-                              <input
-                                type="text"
-                                value={selectedSite.nodeVersion}
-                                title="Node versions are not managed by QuickWP yet"
-                                readOnly
-                                className="w-16 px-2 py-1 text-xs text-center border border-gray-300 rounded-l-md bg-white focus:outline-none focus:ring-0 focus:ring-gray-300"
-                              />
-                              <button
-                                onClick={() => {
-                                  setShowNodeDropdown(!showNodeDropdown);
-                                  setShowPhpDropdown(false);
-                                }}
-                                className="px-2 py-1 bg-blue-500 border border-blue-500 text-white rounded-r-md hover:bg-blue-600 transition-colors focus:outline-none focus:ring-0 focus:ring-blue-500"
-                              >
-                                <svg
-                                  className="w-4 h-4"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M19 9l-7 7-7-7"
-                                  />
-                                </svg>
-                              </button>
-                            </div>
-                            {showNodeDropdown && (
-                              <div className="absolute right-0 top-6 mt-1 w-20 bg-white border border-gray-200 rounded-md shadow-lg z-10">
-                                {nodeVersions.map((version) => (
-                                  <button
-                                    key={version}
-                                    onClick={() =>
-                                      handleNodeVersionChange(version)
-                                    }
-                                    className="block w-full text-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:outline-none first:rounded-t-md last:rounded-b-md"
-                                  >
-                                    {version}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-start gap-3 py-2 border-b border-gray-200">
-                          <span className="text-sm font-medium text-gray-600 block">
-                            Path
-                          </span>
-                          <div className="break-all">
-                            <span className="text-xs text-blue-600 hover:text-blue-800 cursor-pointer bg-blue-50 px-2 py-1 rounded-md font-mono">
-                              {selectedSite.path}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-start gap-3 py-2 border-b border-gray-200">
-                          <div className="flex items-center space-x-2">
-                            <span className="text-sm font-medium text-gray-600">
-                              Linked Path
-                            </span>
-                            <LinkIcon className="h-4 w-4 text-gray-400" />
-                          </div>
-                          <div className="break-all">
-                            <span className="text-xs text-blue-600 hover:text-blue-800 cursor-pointer bg-blue-50 px-2 py-1 rounded-md font-mono">
-                              {selectedSite.linkedPath}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-start gap-3 py-2">
-                          <span className="text-sm font-medium text-gray-600 block">
-                            URL
-                          </span>
-                          <div>
-                            <a
-                              href={selectedSite.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs text-blue-600 hover:text-blue-800 bg-blue-50 px-2 py-1 rounded-md font-mono inline-block"
-                            >
-                              {selectedSite.url}
-                            </a>
-                            {/* The loopback address is where the request lands,
-                                not where the site lives. Shown as context, not
-                                offered as the address. */}
-                            <p className="mt-1 text-[10px] text-gray-400 font-mono">
-                              {httpsReady
-                                ? `resolves to 127.0.0.1 · served on 443`
-                                : `not resolving yet — reachable on 127.0.0.1:${stack?.edge_port ?? 18089} until HTTPS is on`}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                {selectedBackendSite && (
+                  <SiteOverview site={selectedBackendSite} />
+                )}
               </Tab.Panel>
 
-              {/* Information Tab */}
+              {/* WordPress */}
               <Tab.Panel className="h-full overflow-y-auto">
-                <div className="p-6">
-                  <div className="bg-white border border-gray-200 rounded-xl p-8 shadow-sm">
-                    <div className="text-center">
-                      <div className="w-16 h-16 bg-blue-100 rounded-xl flex items-center justify-center mx-auto mb-4">
-                        <svg
-                          className="w-8 h-8 text-blue-500"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                          />
-                        </svg>
-                      </div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                        Site Information
-                      </h3>
-                      <p className="text-gray-500">
-                        Detailed information about this WordPress site will be
-                        displayed here
-                      </p>
-                    </div>
-                  </div>
-                </div>
+                {selectedBackendSite && (
+                  <SiteWordPress
+                    domain={selectedSite.name}
+                    docroot={selectedBackendSite.docroot}
+                    site={selectedBackendSite}
+                    onDeleted={() => void reloadSites()}
+                  />
+                )}
               </Tab.Panel>
 
-              {/* Connect to Forge Tab */}
+              {/* Database */}
+              {/* overflow-hidden, not auto: Adminer fills the pane and scrolls
+                  inside its own frame. */}
+              <Tab.Panel className="h-full overflow-hidden">
+                {selectedBackendSite ? (
+                  <SiteDatabase site={selectedBackendSite} />
+                ) : null}
+              </Tab.Panel>
+
+              {/* Logs */}
+              <Tab.Panel className="h-full overflow-hidden">
+                <SiteLogs domain={selectedSite.name} />
+              </Tab.Panel>
+
+              {/* Terminal — the xterm component, pinned to this site instead
+                  of offering a picker. */}
+              <Tab.Panel className="h-full overflow-hidden">
+                <TerminalTab fixedDomain={selectedSite.name} />
+              </Tab.Panel>
+
+              {/* Mail — one Mailpit catches what every site sends, so this is
+                  the same inbox from whichever site you open it. */}
               <Tab.Panel className="h-full overflow-y-auto">
-                <div className="p-6">
-                  <div className="bg-white border border-gray-200 rounded-xl p-8 shadow-sm">
-                    <div className="text-center">
-                      <div className="w-16 h-16 bg-purple-100 rounded-xl flex items-center justify-center mx-auto mb-4">
-                        <svg
-                          className="w-8 h-8 text-purple-500"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-                          />
-                        </svg>
-                      </div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                        Connect to Laravel Forge
-                      </h3>
-                      <p className="text-gray-500">
-                        Connect this site to Laravel Forge for deployment and
-                        server management
-                      </p>
-                    </div>
-                  </div>
-                </div>
+                <MailTab />
+              </Tab.Panel>
+
+              {/* Settings */}
+              <Tab.Panel className="h-full overflow-y-auto">
+                {selectedBackendSite ? (
+                  <SiteSettings
+                    site={selectedBackendSite}
+                    onChanged={async () => {
+                      await reloadSites();
+                    }}
+                    environment={{
+                      httpsReady,
+                      phpVersions,
+                      nodeInstalls: nodeInstalls ?? [],
+                      nodeSelected: nodeForSelected,
+                      onNodeChange: handleNodeVersionChange,
+                      onPhpChange: (v) => void handlePhpVersionChange(v),
+                    }}
+                  />
+                ) : null}
               </Tab.Panel>
             </Tab.Panels>
           </Tab.Group>
@@ -911,467 +691,469 @@ export default function SitesTab() {
 
         </>
       ) : (
-        <div className="flex-1 p-8">
-          <div className="max-w-xl">
-            <h2 className="text-lg font-semibold text-gray-900 mb-1">No sites yet</h2>
-            <p className="text-sm text-gray-600 mb-5">
-              Create your first site and QuickWP provisions a docroot, wires it to a PHP
-              pool, and serves it.
-            </p>
-            <button
-              onClick={openModal}
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              <PlusIcon className="h-4 w-4" />
-              New site
-            </button>
+        <div className="flex-1 overflow-y-auto bg-gradient-to-b from-gray-50 to-white">
+          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-8 py-12">
+            {/* Hero */}
+            <div className="text-center">
+              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 ring-1 ring-inset ring-blue-100">
+                <GlobeAltIcon className="h-8 w-8 text-blue-600" />
+              </div>
+              <h2 className="text-2xl font-bold tracking-tight text-gray-900">
+                No sites yet
+              </h2>
+              <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-gray-600">
+                Create your first site and QuickWP provisions a docroot, wires it to a
+                PHP pool, and serves it on a{" "}
+                <span className="font-medium text-gray-900">.test</span> name.
+              </p>
+              <button
+                onClick={openModal}
+                className="mt-6 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              >
+                <PlusIcon className="h-4 w-4" />
+                New site
+              </button>
+            </div>
+
           </div>
         </div>
       )}
 
       {/* Add New Site Modal */}
       <Transition appear show={isModalOpen} as={Fragment}>
-        <Dialog as="div" className="relative z-50" onClose={closeModal}>
+        <Dialog
+          as="div"
+          className="relative z-50"
+          // Escape and backdrop clicks are ignored mid-install: closing would
+          // hide a running installation, not stop it -- and would take the
+          // one-time admin password with it.
+          onClose={isInstalling ? () => {} : closeModal}
+        >
           <Transition.Child
             as={Fragment}
-            enter="ease-out duration-300"
+            enter="ease-out duration-200"
             enterFrom="opacity-0"
             enterTo="opacity-100"
-            leave="ease-in duration-200"
+            leave="ease-in duration-150"
             leaveFrom="opacity-100"
             leaveTo="opacity-0"
           >
-            <div className="fixed inset-0 bg-black bg-opacity-25" />
+            <div className="fixed inset-0 bg-gray-900/40" />
           </Transition.Child>
 
           <div className="fixed inset-0 overflow-y-auto">
-            <div className="flex min-h-full items-center justify-center p-4 text-center">
+            <div className="flex min-h-full items-center justify-center p-4">
               <Transition.Child
                 as={Fragment}
-                enter="ease-out duration-300"
+                enter="ease-out duration-200"
                 enterFrom="opacity-0 scale-95"
                 enterTo="opacity-100 scale-100"
-                leave="ease-in duration-200"
+                leave="ease-in duration-150"
                 leaveFrom="opacity-100 scale-100"
                 leaveTo="opacity-0 scale-95"
               >
-                <Dialog.Panel className="w-full max-w-5xl max-h-[90vh] transform overflow-hidden rounded-2xl bg-white text-left align-middle shadow-xl transition-all flex flex-col">
+                <Dialog.Panel className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white text-left shadow-2xl">
+                  {/* Header — shared by both steps */}
+                  <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-6 py-4">
+                    <div className="min-w-0">
+                      <Dialog.Title
+                        as="h3"
+                        className="text-base font-semibold text-gray-900"
+                      >
+                        {modalStep === "select"
+                          ? "Add a new site"
+                          : "New WordPress site"}
+                      </Dialog.Title>
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        {modalStep === "select"
+                          ? "Pick what you want QuickWP to serve."
+                          : "QuickWP downloads WordPress, PHP and a database as needed."}
+                      </p>
+                    </div>
+                    <button
+                      onClick={closeModal}
+                      disabled={isInstalling}
+                      aria-label="Close"
+                      className="-mr-1 rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 disabled:pointer-events-none disabled:opacity-40"
+                    >
+                      <XMarkIcon className="h-5 w-5" />
+                    </button>
+                  </div>
+
                   {modalStep === "select" && (
                     <>
-                      {/* Modal Header */}
-                      <div className="border-b border-gray-200 p-6 flex-shrink-0">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <Dialog.Title
-                              as="h3"
-                              className="text-2xl font-bold text-gray-900"
-                            >
-                              Add New Site
-                            </Dialog.Title>
-                            <p className="text-gray-600 mt-2">
-                              Choose the type of project you want to create
-                            </p>
-                          </div>
-                          <button
-                            onClick={closeModal}
-                            className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                          >
-                            <XMarkIcon className="h-6 w-6" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Modal Content */}
-                      <div className="flex-1 overflow-y-auto p-8">
-                        {/* Project Options */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                          {projectOptions.map((option) => (
-                            <button
-                              key={option.id}
-                              onClick={() => handleProjectSelect(option.id)}
-                              className={clsx(
-                                "p-6 border-2 rounded-xl text-left transition-all duration-200 hover:shadow-lg",
-                                option.color === "red" &&
-                                  "border-red-200 hover:border-red-300 hover:bg-red-50",
-                                option.color === "blue" &&
-                                  "border-blue-200 hover:border-blue-300 hover:bg-blue-50",
-                                option.color === "green" &&
-                                  "border-green-200 hover:border-green-300 hover:bg-green-50"
-                              )}
-                            >
-                              <div className="flex items-center mb-4">
+                      <div className="flex-1 overflow-y-auto p-6">
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          {projectOptions.map((option) => {
+                            const tone = optionTones[option.color];
+                            const disabled = option.available === false;
+                            return (
+                              <button
+                                key={option.id}
+                                onClick={() => handleProjectSelect(option.id)}
+                                disabled={disabled}
+                                className={clsx(
+                                  "group relative rounded-xl border p-4 text-left transition-all focus:outline-none focus:ring-2 focus:ring-blue-500",
+                                  disabled
+                                    ? "cursor-not-allowed border-gray-200 opacity-60"
+                                    : "border-gray-200 hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md"
+                                )}
+                              >
+                                {disabled && (
+                                  <span className="absolute right-3 top-3 rounded bg-gray-200 px-1.5 py-0.5 text-[8px] font-medium text-gray-600">
+                                    Soon
+                                  </span>
+                                )}
                                 <div
                                   className={clsx(
-                                    "w-12 h-12 rounded-lg flex items-center justify-center mr-4",
-                                    option.color === "red" && "bg-red-100",
-                                    option.color === "blue" && "bg-blue-100",
-                                    option.color === "green" && "bg-green-100"
+                                    "mb-3 flex h-10 w-10 items-center justify-center rounded-lg",
+                                    tone.bg
                                   )}
                                 >
                                   <option.icon
-                                    className={clsx(
-                                      "h-6 w-6",
-                                      option.color === "red" && "text-red-600",
-                                      option.color === "blue" &&
-                                        "text-blue-600",
-                                      option.color === "green" &&
-                                        "text-green-600"
-                                    )}
+                                    className={clsx("h-5 w-5", tone.text)}
                                   />
                                 </div>
-                              </div>
-                              <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                                {option.name}
-                              </h3>
-                              <p className="text-gray-600 text-sm">
-                                {option.description}
-                              </p>
-                            </button>
-                          ))}
+                                <div className="text-sm font-semibold text-gray-900">
+                                  {option.name}
+                                </div>
+                                <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                                  {option.description}
+                                </p>
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
 
-                      {/* Modal Footer */}
-                      <div className="border-t border-gray-200 p-6 flex-shrink-0">
-                        <div className="flex justify-end">
-                          <button
-                            onClick={closeModal}
-                            className="btn-secondary"
-                          >
-                            Cancel
-                          </button>
-                        </div>
+                      <div className="flex justify-end border-t border-gray-200 bg-gray-50 px-6 py-4">
+                        <button
+                          onClick={closeModal}
+                          className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                        >
+                          Cancel
+                        </button>
                       </div>
                     </>
                   )}
 
                   {modalStep === "wordpress" && (
                     <>
-                      {/* WordPress Creation Header */}
-                      <div className="border-b border-gray-200 p-6 flex-shrink-0">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <Dialog.Title
-                              as="h3"
-                              className="text-2xl font-bold text-gray-900"
-                            >
-                              Create New WordPress Site
-                            </Dialog.Title>
-                            <p className="text-gray-600 mt-1">
-                              Set up a new WordPress development environment
-                              with Laravel Herd
-                            </p>
-                          </div>
-                          <button
-                            onClick={closeModal}
-                            className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                          >
-                            <XMarkIcon className="h-6 w-6" />
-                          </button>
-                        </div>
-                      </div>
+                      {/* Everything fits without scrolling: four rows of
+                          fields across three fieldsets. The body still scrolls
+                          so the install log has somewhere to go once it
+                          appears. */}
+                      <div className="flex-1 space-y-3 overflow-y-auto bg-gray-50 p-5">
+                        <fieldset className="rounded-lg border border-gray-200 bg-white px-4 pb-4 pt-4">
+                          <legend className="ml-1 px-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+                            Site
+                          </legend>
 
-                      {/* Modal Content */}
-                      <div className="flex-1 overflow-y-auto">
-                        <div className="p-6 space-y-4">
-                          {/* Smart Auto-Generation Section */}
-                          <fieldset className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-4 shadow-sm">
-                            <legend className="flex items-center text-md text-blue-900 bg-blue-200 px-2 py-1 rounded-md">
-                              <div className="w-6 h-6 bg-blue-500 rounded-lg flex items-center justify-center mr-2">
-                                <svg
-                                  className="w-4 h-4 text-white"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M13 10V3L4 14h7v7l9-11h-7z"
-                                  />
-                                </svg>
-                              </div>
-                              Smart Auto-Generation
-                            </legend>
-                            <p className="text-blue-700 text-sm mb-4 border-b border-blue-200 pb-4">
-                              Enter your site title and we'll automatically
-                              generate the folder name, URL, and database name
-                            </p>
-
-                            <div className="flex items-center justify-between gap-4">
-                              <div className="flex-1">
-                                <label className="block text-sm font-medium text-blue-900 mb-2">
-                                  Site Title *
-                                </label>
-                                <input
-                                  type="text"
-                                  value={config.siteTitle}
-                                  onChange={(e) =>
-                                    handleInputChange(
-                                      "siteTitle",
-                                      e.target.value
-                                    )
-                                  }
-                                  placeholder="WordPress Site Title"
-                                  className="w-full px-3 py-2 text-sm border border-blue-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300 text-gray-900 placeholder-gray-500"
-                                />
-                              </div>
-
-                              {/* {config.siteTitle && ( */}
-                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                <div>
-                                  <label className="block text-sm font-medium text-blue-900 mb-2">
-                                    Generated Folder Name
-                                  </label>
-                                  <input
-                                    type="text"
-                                    className="px-3 py-2 bg-blue-100 border border-blue-200 rounded-md text-sm text-blue-900 font-mono focus:outline-none focus:ring-0 focus:ring-blue-300"
-                                    value={config.folderName ?? ""}
-                                    onChange={(e) =>
-                                      setConfig({
-                                        ...config,
-                                        folderName: e.target.value,
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div>
-                                  <label className="block text-sm font-medium text-blue-900 mb-2">
-                                    Generated Site URL
-                                  </label>
-                                  <input
-                                    type="text"
-                                    className="px-3 py-2 bg-blue-100 border border-blue-200 rounded-md text-sm text-blue-900 font-mono focus:outline-none focus:ring-0 focus:ring-blue-300"
-                                    value={config.siteUrl ?? ""}
-                                    onChange={(e) =>
-                                      setConfig({
-                                        ...config,
-                                        siteUrl: e.target.value,
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div>
-                                  <label className="block text-sm font-medium text-blue-900 mb-2">
-                                    Generated Database Name
-                                  </label>
-                                  <input
-                                    type="text"
-                                    className="px-3 py-2 bg-blue-100 border border-blue-200 rounded-md text-sm text-blue-900 font-mono focus:outline-none focus:ring-0 focus:ring-blue-300"
-                                    value={config.databaseName ?? ""}
-                                    onChange={(e) =>
-                                      setConfig({
-                                        ...config,
-                                        databaseName: e.target.value,
-                                      })
-                                    }
-                                  />
-                                </div>
-                              </div>
-
-                              {/* )} */}
+                          {/* One row of four. Nine columns divide as 3/2/2/2,
+                              giving the title — the only field you must fill
+                              in — half again the width of the derived ones. */}
+                          <div className="grid gap-3 sm:grid-cols-9">
+                            <div className="sm:col-span-3">
+                              <label htmlFor="wp-site-title" className={labelClass}>
+                                Site title <span className="text-red-500">*</span>
+                              </label>
+                              <input
+                                id="wp-site-title"
+                                {...noAutoFill}
+                                type="text"
+                                value={config.siteTitle}
+                                onChange={(e) =>
+                                  handleInputChange("siteTitle", e.target.value)
+                                }
+                                placeholder="My WordPress Site"
+                                disabled={isInstalling}
+                                className={fieldClass}
+                              />
                             </div>
-                          </fieldset>
+                            <div className="sm:col-span-2">
+                              <label htmlFor="wp-folder" className={labelClass}>
+                                Folder name
+                              </label>
+                              <input
+                                id="wp-folder"
+                                {...noAutoFill}
+                                type="text"
+                                value={config.folderName ?? ""}
+                                onChange={(e) =>
+                                  handleInputChange("folderName", e.target.value)
+                                }
+                                disabled={isInstalling}
+                                className={clsx(fieldClass, "font-mono text-xs")}
+                              />
+                            </div>
+                            <div className="sm:col-span-2">
+                              <label htmlFor="wp-url" className={labelClass}>
+                                Site URL
+                              </label>
+                              <input
+                                id="wp-url"
+                                {...noAutoFill}
+                                type="text"
+                                value={config.siteUrl ?? ""}
+                                onChange={(e) =>
+                                  handleInputChange("siteUrl", e.target.value)
+                                }
+                                disabled={isInstalling}
+                                className={clsx(fieldClass, "font-mono text-xs")}
+                              />
+                            </div>
+                            <div className="sm:col-span-2">
+                              <label htmlFor="wp-db" className={labelClass}>
+                                Database name
+                              </label>
+                              <input
+                                id="wp-db"
+                                {...noAutoFill}
+                                type="text"
+                                value={config.databaseName ?? ""}
+                                onChange={(e) =>
+                                  handleInputChange("databaseName", e.target.value)
+                                }
+                                disabled={isInstalling}
+                                className={clsx(fieldClass, "font-mono text-xs")}
+                              />
+                            </div>
+                          </div>
+                          <p className="mt-2 text-[11px] text-gray-500">
+                            The other three are derived from the title — edit any
+                            of them.
+                          </p>
+                        </fieldset>
 
-                          {/* WordPress Configuration */}
-                          <fieldset className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                            <legend className="flex items-center text-md text-black bg-gray-200 px-2 py-1 rounded-md">
-                              WordPress Configuration
-                            </legend>
+                        <fieldset className="rounded-lg border border-gray-200 bg-white px-4 pb-4 pt-4">
+                          <legend className="ml-1 px-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+                            Environment
+                          </legend>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  WordPress Version
-                                </label>
-                                <select
-                                  value={config.wpVersion}
-                                  onChange={(e) =>
-                                    handleInputChange(
-                                      "wpVersion",
-                                      e.target.value
-                                    )
-                                  }
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
-                                >
-                                  <option value="latest">Latest Version</option>
-                                  <option value="6.4">WordPress 6.4</option>
-                                  <option value="6.3">WordPress 6.3</option>
-                                  <option value="6.2">WordPress 6.2</option>
-                                </select>
-                              </div>
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  PHP Version
-                                </label>
-                                <select
-                                  value={config.phpVersion || "8.3"}
-                                  onChange={(e) =>
-                                    handleInputChange(
-                                      "phpVersion",
-                                      e.target.value
-                                    )
-                                  }
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
-                                >
-                                  <option value="8.3">PHP 8.3</option>
-                                  <option value="8.2">PHP 8.2</option>
-                                  <option value="8.1">PHP 8.1</option>
-                                  <option value="8.0">PHP 8.0</option>
-                                  <option value="7.4">PHP 7.4</option>
-                                </select>
-                              </div>
-                              <div className="flex items-center">
+                          <div className="grid gap-3 sm:grid-cols-3">
+                            <div>
+                              <label htmlFor="wp-version" className={labelClass}>
+                                WordPress version
+                              </label>
+                              <select
+                                id="wp-version"
+                                value={config.wpVersion}
+                                onChange={(e) =>
+                                  handleInputChange("wpVersion", e.target.value)
+                                }
+                                disabled={isInstalling}
+                                className={fieldClass}
+                              >
+                                <option value="latest">
+                                  Latest{wpVersions[0] ? ` (${wpVersions[0]})` : ""}
+                                </option>
+                                {/* The newest release is skipped: "Latest"
+                                    above already resolves to it, and listing
+                                    it twice reads as two different choices. */}
+                                {wpVersions.slice(1).map((v) => (
+                                  <option key={v} value={v}>
+                                    WordPress {v}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label htmlFor="wp-php" className={labelClass}>
+                                PHP version
+                              </label>
+                              {/* Reuses the same list the site detail pane
+                                  offers, so the two cannot drift apart. */}
+                              <select
+                                id="wp-php"
+                                value={config.phpVersion || "8.3"}
+                                onChange={(e) =>
+                                  handleInputChange("phpVersion", e.target.value)
+                                }
+                                disabled={isInstalling}
+                                className={fieldClass}
+                              >
+                                {phpVersions.map((v) => (
+                                  <option key={v} value={v}>
+                                    PHP {v}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="flex items-end">
+                              <label
+                                htmlFor="enableDebug"
+                                className="flex items-center gap-2 pb-2.5 text-sm text-gray-700"
+                              >
                                 <input
                                   type="checkbox"
                                   id="enableDebug"
                                   checked={config.enableDebug}
                                   onChange={(e) =>
-                                    handleInputChange(
-                                      "enableDebug",
-                                      e.target.checked
-                                    )
+                                    handleInputChange("enableDebug", e.target.checked)
                                   }
-                                  className="h-4 w-4 text-blue-600 focus:outline-none focus:ring-0 focus:ring-blue-300 border-gray-300 rounded"
+                                  disabled={isInstalling}
+                                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
                                 />
-                                <label
-                                  htmlFor="enableDebug"
-                                  className="ml-2 block text-sm text-gray-700"
-                                >
-                                  Enable Debug Mode
-                                </label>
-                              </div>
+                                Enable debug mode
+                              </label>
                             </div>
-                          </fieldset>
+                          </div>
+                        </fieldset>
 
-                          {/* Admin User Configuration */}
-                          <fieldset className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                            <legend className="flex items-center text-md text-black bg-gray-200 px-2 py-1 rounded-md">
-                              Admin User Configuration
-                            </legend>
+                        <fieldset className="rounded-lg border border-gray-200 bg-white px-4 pb-4 pt-4">
+                          <legend className="ml-1 px-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+                            Admin account
+                          </legend>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  Admin Username
-                                </label>
-                                <input
-                                  type="text"
-                                  value={config.adminUser}
-                                  onChange={(e) =>
-                                    handleInputChange(
-                                      "adminUser",
-                                      e.target.value
-                                    )
-                                  }
-                                  placeholder="admin"
-                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  Admin Password
-                                </label>
-                                <input
-                                  type="password"
-                                  value={config.adminPassword}
-                                  onChange={(e) =>
-                                    handleInputChange(
-                                      "adminPassword",
-                                      e.target.value
-                                    )
-                                  }
-                                  placeholder="Enter admin password"
-                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  Admin Email
-                                </label>
-                                <input
-                                  type="email"
-                                  value={config.adminEmail}
-                                  onChange={(e) =>
-                                    handleInputChange(
-                                      "adminEmail",
-                                      e.target.value
-                                    )
-                                  }
-                                  placeholder="admin@example.com"
-                                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-0 focus:ring-blue-300"
-                                />
-                              </div>
-                            </div>
-                          </fieldset>
-
-                          {/* Progress and Terminal Output */}
-                          {isInstalling && (
-                            <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
-                              <div className="flex items-center mb-4">
-                                <div className="w-10 h-10 bg-green-500 rounded-lg flex items-center justify-center mr-4">
-                                  <PlayIcon className="w-6 h-6 text-white" />
-                                </div>
-                                <div>
-                                  <h2 className="text-lg font-semibold text-gray-900">
-                                    Installing WordPress Site
-                                  </h2>
-                                  <p className="text-gray-600 text-sm">
-                                    {currentStep || "Preparing installation..."}
-                                  </p>
-                                </div>
-                              </div>
-                              <ProgressBar
-                                progress={progress}
-                                className="mb-4"
-                              />
-                              <TerminalOutput
-                                output={terminalOutput}
-                                className="max-h-40"
+                          <div className="grid gap-3 sm:grid-cols-3">
+                            <div>
+                              <label htmlFor="wp-admin-user" className={labelClass}>
+                                Username
+                              </label>
+                              <input
+                                id="wp-admin-user"
+                                {...noAutoFill}
+                                type="text"
+                                value={config.adminUser}
+                                onChange={(e) =>
+                                  handleInputChange("adminUser", e.target.value)
+                                }
+                                placeholder="admin"
+                                disabled={isInstalling}
+                                className={fieldClass}
                               />
                             </div>
-                          )}
-                        </div>
+                            <div>
+                              <label htmlFor="wp-admin-pass" className={labelClass}>
+                                Password
+                              </label>
+                              <input
+                                id="wp-admin-pass"
+                                {...noAutoFill}
+                                autoComplete="new-password"
+                                type="password"
+                                value={config.adminPassword}
+                                onChange={(e) =>
+                                  handleInputChange("adminPassword", e.target.value)
+                                }
+                                placeholder="Generated if blank"
+                                disabled={isInstalling}
+                                className={fieldClass}
+                              />
+                            </div>
+                            <div>
+                              <label htmlFor="wp-admin-email" className={labelClass}>
+                                Email
+                              </label>
+                              <input
+                                id="wp-admin-email"
+                                {...noAutoFill}
+                                type="email"
+                                value={config.adminEmail}
+                                onChange={(e) =>
+                                  handleInputChange("adminEmail", e.target.value)
+                                }
+                                placeholder="admin@example.com"
+                                disabled={isInstalling}
+                                className={fieldClass}
+                              />
+                            </div>
+                          </div>
+                          <p className="mt-2 text-[11px] text-gray-500">
+                            The password is shown once, when the install
+                            finishes — it is never stored in the clear.
+                          </p>
+                        </fieldset>
+
+                        {/* The log stays up after the run ends. It used to be
+                            gated on isInstalling alone, so the moment the
+                            install finished this panel unmounted and took the
+                            one-time admin password -- and any failure
+                            message -- with it. */}
+                        {(isInstalling || installDone || terminalOutput.length > 0) && (
+                          <section className="rounded-xl border border-gray-200 bg-white p-5">
+                            <div className="mb-4 flex items-center gap-3">
+                              <div
+                                className={clsx(
+                                  "flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg",
+                                  installDone
+                                    ? "bg-green-100"
+                                    : isInstalling
+                                      ? "bg-blue-100"
+                                      : "bg-red-100"
+                                )}
+                              >
+                                <PlayIcon
+                                  className={clsx(
+                                    "h-5 w-5",
+                                    installDone
+                                      ? "text-green-600"
+                                      : isInstalling
+                                        ? "text-blue-600"
+                                        : "text-red-600"
+                                  )}
+                                />
+                              </div>
+                              <div className="min-w-0">
+                                <h4 className="text-sm font-semibold text-gray-900">
+                                  {installDone
+                                    ? "Site created"
+                                    : isInstalling
+                                      ? "Installing"
+                                      : "Installation failed"}
+                                </h4>
+                                <p className="mt-0.5 text-xs text-gray-500">
+                                  {installDone
+                                    ? "Copy the admin password below — it is not stored in the clear."
+                                    : isInstalling
+                                      ? currentStep || "Preparing…"
+                                      : "The log below says why."}
+                                </p>
+                              </div>
+                            </div>
+                            {(isInstalling || installDone) && (
+                              <ProgressBar progress={progress} className="mb-4" />
+                            )}
+                            <TerminalOutput
+                              output={terminalOutput}
+                              className="max-h-48"
+                            />
+                          </section>
+                        )}
                       </div>
 
-                      {/* Modal Footer */}
-                      <div className="border-t border-gray-200 p-6 flex-shrink-0">
-                        <div className="flex flex-col sm:flex-row gap-4 justify-between">
-                          <button
-                            type="button"
-                            onClick={() => setModalStep("select")}
-                            disabled={isInstalling}
-                            className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            <ArrowLeftIcon className="h-5 w-5 mr-2" />
-                            Back
-                          </button>
-                          <button
-                            onClick={installDone ? closeModal : simulateInstallation}
-                            disabled={(!config.siteTitle && !installDone) || isInstalling}
-                            className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {isInstalling ? (
-                              <>
-                                <StopIcon className="h-5 w-5 mr-2" />
-                                Installing...
-                              </>
-                            ) : installDone ? (
-                              // Not auto-closed: the admin password is printed
-                              // once and closing on a timer would take it away
-                              // before it could be copied.
-                              <>Done — close</>
-                            ) : (
-                              <>
-                                <PlayIcon className="h-5 w-5 mr-2" />
-                                Create WordPress Site
-                              </>
-                            )}
-                          </button>
-                        </div>
+                      <div className="flex items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4">
+                        <button
+                          type="button"
+                          onClick={() => setModalStep("select")}
+                          disabled={isInstalling}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <ArrowLeftIcon className="h-4 w-4" />
+                          Back
+                        </button>
+                        <button
+                          onClick={installDone ? closeModal : simulateInstallation}
+                          disabled={(!config.siteTitle && !installDone) || isInstalling}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {isInstalling ? (
+                            <>
+                              <StopIcon className="h-4 w-4" />
+                              Installing…
+                            </>
+                          ) : installDone ? (
+                            // Not auto-closed: the admin password is printed
+                            // once and closing on a timer would take it away
+                            // before it could be copied.
+                            <>Done — close</>
+                          ) : (
+                            <>
+                              <PlayIcon className="h-4 w-4" />
+                              Create site
+                            </>
+                          )}
+                        </button>
                       </div>
                     </>
                   )}
