@@ -1039,14 +1039,59 @@ fn setup_status(state: State<'_, AppState>) -> Res<SetupStatus> {
     ];
 
     let report = privileged::verify(&tld);
+
+    let installed = |id: &str| components.iter().any(|c| c.id == id && c.installed);
+    let flag = state.app.db.setting("onboarding_done")?;
+    let done = onboarding_done(
+        flag.as_deref(),
+        !site::list(&state.app.db)?.is_empty(),
+        installed("php") && installed("mysql") && installed("wp-cli"),
+    );
+    // Decided once. Writing it here means a setup that predates the flag --
+    // or one whose wizard was always skipped -- settles the question on the
+    // next launch instead of re-deriving it forever.
+    if done && flag.as_deref() != Some("1") {
+        let _ = state.app.db.set_setting("onboarding_done", "1");
+    }
+
     Ok(SetupStatus {
-        done: state.app.db.setting("onboarding_done")?.as_deref() == Some("1"),
+        done,
         default_php,
         default_mysql,
         tld,
         components,
         https_ready: report.all_ok,
     })
+}
+
+/// Whether the first run is behind us.
+///
+/// The flag alone is not enough: it is only written when the wizard is seen
+/// through to its last step, so someone who skips it every time would be
+/// greeted forever -- on a machine with sites on it. A machine that has sites,
+/// or that already has the runtimes the wizard installs, has plainly been set
+/// up, whoever set it up.
+fn onboarding_done(flag: Option<&str>, has_sites: bool, runtimes_ready: bool) -> bool {
+    flag == Some("1") || has_sites || runtimes_ready
+}
+
+#[cfg(test)]
+mod onboarding_tests {
+    use super::onboarding_done;
+
+    #[test]
+    fn a_fresh_machine_is_greeted_and_nothing_else_is() {
+        // Nothing installed, no sites, wizard never finished: the first run.
+        assert!(!onboarding_done(None, false, false));
+        // Skipped the wizard, but has been using the app since.
+        assert!(onboarding_done(None, true, false));
+        // Set up before the flag existed, or by the CLI.
+        assert!(onboarding_done(None, false, true));
+        // Finished the wizard, on a machine with nothing else yet.
+        assert!(onboarding_done(Some("1"), false, false));
+        // Explicitly not done, and no evidence otherwise.
+        assert!(!onboarding_done(Some("0"), false, false));
+    }
 }
 
 /// Fetch Adminer on its own, so the first run can install it up front rather
