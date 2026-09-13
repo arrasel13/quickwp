@@ -135,7 +135,7 @@ export default function ExposeTab() {
                               0,
                               Math.round((t.expires_at - Date.now() / 1000) / 60),
                             )} min`
-                          : "closes when QuickWP quits"}
+                          : "closes when Nexora quits"}
                       </p>
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
@@ -193,7 +193,7 @@ export default function ExposeTab() {
         the share and closes it the moment that goes — a crash included, because macOS cannot
         signal a child when its parent dies, so the guard polls and matches on the owner's start
         time as well as its pid. A share started from the CLI has no window to close, so it
-        carries a deadline the guard enforces. QuickWP also sweeps on launch: a tunnel left
+        carries a deadline the guard enforces. Nexora also sweeps on launch: a tunnel left
         running by a previous crash is found and closed. Every share is written to the app log.
       </p>
     </div>

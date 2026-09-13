@@ -22,7 +22,7 @@ pub struct FoundSite {
     pub source: String,
     pub php_minor: Option<String>,
     pub is_wordpress: bool,
-    /// False when QuickWP already has a site answering on that name.
+    /// False when Nexora already has a site answering on that name.
     pub importable: bool,
     pub note: Option<String>,
 }
@@ -142,7 +142,7 @@ pub fn scan(db: &Db) -> Result<ScanResult> {
             source: tool,
             importable: !taken,
             note: if taken {
-                Some("QuickWP already has a site here.".into())
+                Some("Nexora already has a site here.".into())
             } else {
                 None
             },
@@ -220,7 +220,7 @@ pub struct ImportRequest {
 /// Import one found site.
 ///
 /// It is LINKED, never copied: the folder stays exactly where it is, and
-/// deleting the QuickWP site later removes only our record of it. Copying
+/// deleting the Nexora site later removes only our record of it. Copying
 /// someone's project into our own directory is what makes a tool hard to leave.
 pub fn import_site(db: &Db, req: &ImportRequest) -> Result<site::Site> {
     let path = PathBuf::from(&req.path);
@@ -364,7 +364,7 @@ pub struct DbCopyResult {
     pub message: String,
 }
 
-/// Copy a site's database from the source server into QuickWP's.
+/// Copy a site's database from the source server into Nexora's.
 ///
 /// The source is READ and never modified. Both copies exist afterwards, which
 /// is the point: you can compare them, and going back costs nothing.
@@ -382,7 +382,7 @@ pub fn copy_database(
 
     if src_port == crate::ports::MYSQL {
         return Err(Error::other(
-            "That site already points at QuickWP's own MySQL. Nothing to copy.",
+            "That site already points at Nexora's own MySQL. Nothing to copy.",
         ));
     }
 
@@ -545,7 +545,7 @@ fn rewrite_line(line: &str, key: &str, value: &str, is_php: bool) -> String {
 pub fn apply_config_rewrite(site: &site::Site, target_db: &str) -> Result<String> {
     let diff = preview_config_rewrite(site, target_db)?;
     if diff.changes.is_empty() {
-        return Ok("Nothing to change — the config already points at QuickWP.".into());
+        return Ok("Nothing to change — the config already points at Nexora.".into());
     }
 
     let file = PathBuf::from(&diff.file);
@@ -557,7 +557,7 @@ pub fn apply_config_rewrite(site: &site::Site, target_db: &str) -> Result<String
     // Backup first, and never overwrite an existing backup: the first one is
     // the pre-migration state, which is the one worth keeping.
     let backup = file.with_extension(format!(
-        "{}.quickwp-backup",
+        "{}.nexora-backup",
         file.extension().and_then(|e| e.to_str()).unwrap_or("bak")
     ));
     if !backup.exists() {
@@ -593,7 +593,7 @@ mod stage_tests {
 
     #[test]
     fn wp_config_connection_settings_are_parsed_not_guessed() {
-        let dir = std::env::temp_dir().join("quickwp-wpconfig-parse");
+        let dir = std::env::temp_dir().join("nexora-wpconfig-parse");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("wp-config.php"),
@@ -611,7 +611,7 @@ mod stage_tests {
 
     #[test]
     fn a_dotenv_is_parsed_too() {
-        let dir = std::env::temp_dir().join("quickwp-dotenv-parse");
+        let dir = std::env::temp_dir().join("nexora-dotenv-parse");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join(".env"),
@@ -626,7 +626,7 @@ mod stage_tests {
 
     #[test]
     fn a_preview_writes_nothing() {
-        let dir = std::env::temp_dir().join("quickwp-preview-readonly");
+        let dir = std::env::temp_dir().join("nexora-preview-readonly");
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = dir.join("wp-config.php");
         let original = "<?php\ndefine( 'DB_NAME', 'oldsite' );\ndefine( 'DB_HOST', '127.0.0.1:3306' );\n";

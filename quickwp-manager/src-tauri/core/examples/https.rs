@@ -3,16 +3,16 @@
 //! Runs the real edge binary on unprivileged ports, so it exercises exactly the
 //! code that runs as root on 443 -- same TLS, same SNI resolution, same
 //! forwarding -- while proving the certificate chain verifies against our CA.
-use quickwp_core as core;
+use nexora_core as core;
 use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let minor = "8.3";
-    let app = core::Quickwp::new()?;
+    let app = core::Nexora::new()?;
     let tld = "test";
     let domain = format!("lock.{tld}");
 
-    println!("QuickWP HTTPS spike\n");
+    println!("Nexora HTTPS spike\n");
 
     print!("[1/7] certificate authority ... ");
     std::io::stdout().flush().ok();
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print!("[5/7] starting the real edge binary (unprivileged ports) ... ");
     std::io::stdout().flush().ok();
     let edge_bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/debug/quickwp-edge");
+        .join("../target/debug/nexora-edge");
     let mut edge = std::process::Command::new(&edge_bin)
         .arg(core::ca::certs_dir())
         .arg(core::ports::NGINX.to_string())

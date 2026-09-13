@@ -2,7 +2,7 @@
 //!
 //! The edge lives inside the app process, so "keep sites running" cannot just
 //! skip the cleanup: the moment the app exits, nothing answers on the edge
-//! port. Instead the app hands the edge to a small background `quickwp
+//! port. Instead the app hands the edge to a small background `nexora
 //! __serve` and leaves the pools and databases where they are -- they run in
 //! their own sessions and log to files, so they outlive the app on their own.
 //!
@@ -138,9 +138,9 @@ fn spawn_serve(cli: &Path) -> Result<u32> {
     Ok(child.id())
 }
 
-/// What `quickwp __serve` runs: the edge, and DNS unless its LaunchAgent is
+/// What `nexora __serve` runs: the edge, and DNS unless its LaunchAgent is
 /// already answering. Never returns while serving.
-pub fn serve(app: &crate::Quickwp) -> Result<()> {
+pub fn serve(app: &crate::Nexora) -> Result<()> {
     // The app has just released the port; give the socket a moment to close.
     let mut edge = None;
     let mut last = None;

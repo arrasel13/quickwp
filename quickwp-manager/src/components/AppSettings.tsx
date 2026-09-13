@@ -38,7 +38,7 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "about", label: "nav.About" },
 ];
 
-// The runtimes and services QuickWP manages, moved here from the sidebar:
+// The runtimes and services Nexora manages, moved here from the sidebar:
 // they are set up once and revisited rarely, unlike sites.
 const SERVICES = [
   { id: "php", label: "nav.PHP", component: PHPTab },
@@ -454,7 +454,7 @@ function SettingsSection({
           disabled={disabled}
           className={SELECT}
         >
-          <optgroup label={t("phpQuickwp")}>
+          <optgroup label={t("phpNexora")}>
             {installed.length === 0 && (
               <option value="" disabled>
                 {t("phpNone")}

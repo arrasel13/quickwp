@@ -1,8 +1,8 @@
-//! QuickWP core.
+//! Nexora core.
 //!
-//! The domain layer. Tauri commands and (later) the `quickwp` CLI are both thin
+//! The domain layer. Tauri commands and (later) the `nexora` CLI are both thin
 //! shells over this crate, so the app and the terminal cannot drift: the create
-//! dialog and `quickwp site create` run the same code.
+//! dialog and `nexora site create` run the same code.
 
 pub mod adminer;
 pub mod apps;
@@ -25,6 +25,8 @@ pub mod ports;
 pub mod proc;
 pub mod pty;
 pub mod privileged;
+pub mod legacy;
+pub mod secrets;
 pub mod server;
 pub mod site;
 pub mod runtime;
@@ -40,13 +42,13 @@ use supervisor::Supervisor;
 
 /// The app's long-lived handle. One per process.
 #[derive(Clone)]
-pub struct Quickwp {
+pub struct Nexora {
     pub db: db::Db,
     pub sup: Supervisor,
     dns: Arc<Mutex<Option<dns::DnsServer>>>,
 }
 
-impl Quickwp {
+impl Nexora {
     pub fn new() -> Result<Self> {
         paths::ensure_dirs()?;
         Ok(Self {
@@ -170,6 +172,9 @@ impl Quickwp {
 
         site::delete(&self.db, &s.domain)?;
         removed.push(format!("site record for {}", s.domain));
+        // Its saved passwords go with it, so a later site on the same domain
+        // does not inherit them.
+        secrets::forget_site(&s.domain);
         log::write(&format!("site deleted: {} ({})", s.domain, removed.join("; ")));
         Ok(removed)
     }
@@ -337,7 +342,7 @@ impl Quickwp {
         if let Some(tool) = &rival {
             out.push(Finding {
                 level: "warn".into(),
-                title: format!("{tool} is running and owns the ports QuickWP needs"),
+                title: format!("{tool} is running and owns the ports Nexora needs"),
                 detail: format!(
                     "Only one local environment can serve https://name.test with no port \
                      number, because only one thing can hold ports 80 and 443. Quit {tool} \
@@ -404,7 +409,7 @@ impl Quickwp {
             out.push(Finding {
                 level: "info".into(),
                 title: "No certificate authority yet".into(),
-                detail: "QuickWP will generate one and ask to trust it in your login keychain, so sites open on a real green lock."
+                detail: "Nexora will generate one and ask to trust it in your login keychain, so sites open on a real green lock."
                     .into(),
             });
         } else if !ca::is_trusted() {

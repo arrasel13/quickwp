@@ -2,7 +2,7 @@
 //!
 //! Two properties are load-bearing and neither is obvious:
 //!
-//! 1. **Ports are offset.** MySQL on 13316 rather than 3306, so QuickWP never
+//! 1. **Ports are offset.** MySQL on 13316 rather than 3306, so Nexora never
 //!    collides with a MySQL you already installed. The offset is the difference
 //!    between coexisting with your current setup and demanding you dismantle it.
 //!
@@ -117,7 +117,7 @@ pub fn list(sup: &Supervisor) -> Vec<EngineStatus> {
 ///
 /// `--initialize-insecure` gives a root account with no password. That is
 /// correct here and would be wrong on a server: the socket is loopback-only,
-/// and a password QuickWP generates and then stores beside the data it protects
+/// and a password Nexora generates and then stores beside the data it protects
 /// is security theatre rather than security.
 fn initialize(series: &str) -> Result<()> {
     let dir = data_dir(series);
@@ -153,7 +153,7 @@ fn initialize(series: &str) -> Result<()> {
 
 /// Is a MySQL already listening on our port, running against our data directory?
 ///
-/// An engine outlives the app: quitting QuickWP does not have to tear down a
+/// An engine outlives the app: quitting Nexora does not have to tear down a
 /// database, and relaunching should not fail because its own engine is still
 /// up. So a port that is taken is checked before it is treated as a conflict --
 /// ours is adopted, anyone else's is reported by name.

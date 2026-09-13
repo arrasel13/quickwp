@@ -144,7 +144,7 @@ pub async fn download_verified(
     paths::mkdir_p(dest.parent().unwrap())?;
 
     let client = reqwest::Client::builder()
-        .user_agent(concat!("QuickWP/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Nexora/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| Error::Download {
             url: url.into(),
@@ -281,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_bad_digest_is_refused_and_writes_nothing() {
-        let dir = std::env::temp_dir().join("quickwp-test-digest");
+        let dir = std::env::temp_dir().join("nexora-test-digest");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("out.bin");

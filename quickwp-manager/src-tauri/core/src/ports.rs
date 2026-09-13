@@ -1,7 +1,7 @@
 //! Port allocation.
 //!
 //! Every number here is offset from its stock default on purpose. The offsets
-//! are the difference between QuickWP coexisting with a MySQL, a Mailpit or a
+//! are the difference between Nexora coexisting with a MySQL, a Mailpit or a
 //! Herd you already run, and demanding you dismantle them first.
 //!
 //! They are also offset from rexenv's, so both can be installed at once while
@@ -23,7 +23,7 @@ pub const REDIS: u16 = 16380;
 pub const MAILPIT_SMTP: u16 = 11026;
 pub const MAILPIT_UI: u16 = 18026;
 
-/// Xdebug's DBGp port. The only port in this file QuickWP does NOT bind:
+/// Xdebug's DBGp port. The only port in this file Nexora does NOT bind:
 /// PHP connects outward to your IDE, so your editor is the listener.
 pub const XDEBUG_DBGP: u16 = 9003;
 
@@ -71,7 +71,7 @@ fn split_minor(minor: &str) -> crate::Result<(u16, u16)> {
 ///
 /// Binding is not a sufficient test for ports below 1024. Only root may bind
 /// those, so an unprivileged process gets PermissionDenied whether or not
-/// anything is actually there -- which made QuickWP report 80 and 443 as "in
+/// anything is actually there -- which made Nexora report 80 and 443 as "in
 /// use" on a machine where they were completely free, and told the user to
 /// quit a tool they had already quit.
 ///
@@ -91,7 +91,7 @@ pub fn is_free(port: u16) -> bool {
 ///
 /// This is the question that survives not being root. It cannot see a socket
 /// bound to another interface, which is fine: what matters here is whether the
-/// address QuickWP would serve on is already answering.
+/// address Nexora would serve on is already answering.
 pub fn is_listening(port: u16) -> bool {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
@@ -177,7 +177,7 @@ pub fn running_dev_tool() -> Option<String> {
 
 /// Gate a start on its port being free.
 ///
-/// Nothing in QuickWP starts without this check. A service that fails to bind
+/// Nothing in Nexora starts without this check. A service that fails to bind
 /// after spawning leaves a half-started stack and a log nobody reads.
 pub fn gate(port: u16) -> crate::Result<()> {
     if is_free(port) {

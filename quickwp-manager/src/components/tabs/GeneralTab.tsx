@@ -191,7 +191,7 @@ export default function GeneralTab() {
                     with a real green lock.
                   </>
                 ) : (
-                  <>Turn this on and QuickWP asks for your password once.</>
+                  <>Turn this on and Nexora asks for your password once.</>
                 )}
               </p>
             </div>
@@ -362,7 +362,7 @@ export default function GeneralTab() {
                 </li>
               ))}
             </ul>
-            {preflight.some((c) => c.id === "resolver-free" && !c.ok) && (
+            {preflight.some((c) => (c.id === "resolver-free" || c.id === "no-rival") && !c.ok) && (
               <label className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -377,16 +377,17 @@ export default function GeneralTab() {
                   className="mt-0.5 h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
                 />
                 <span className="text-[11px] text-amber-900 leading-relaxed">
-                  <strong>Take this TLD over.</strong> QuickWP will replace the resolver file so
-                  the domain points here instead. The other tool keeps its sites and settings —
-                  only the name stops resolving to it, and its own uninstall still works. Leave
-                  this unticked to pick a different TLD in Settings instead.
+                  <strong>Take over from the other tool.</strong> Nexora will replace the
+                  resolver file so the domain points here instead and, if the other tool's server
+                  holds ports 80 and 443, pause that server. Nothing of it is deleted — its sites
+                  just stop loading, and Remove system changes gives it all back. Leave this
+                  unticked to pick a different TLD in Settings instead.
                 </span>
               </label>
             )}
             {preflight.some((c) => c.blocking && !c.ok) && (
               <p className="mt-2 text-[11px] text-gray-600">
-                QuickWP will not ask for your password for an install that cannot succeed.
+                Nexora will not ask for your password for an install that cannot succeed.
               </p>
             )}
           </div>
@@ -498,7 +499,7 @@ export default function GeneralTab() {
                   type="text"
                   value={sitesDir}
                   onChange={(e) => setSitesDir(e.target.value)}
-                  placeholder={settings?.default_sites_dir ?? "~/QuickWP/Sites"}
+                  placeholder={settings?.default_sites_dir ?? "~/Nexora/Sites"}
                   className="block w-full h-9 px-3 border border-gray-300 rounded-sm text-xs font-mono focus:outline-none focus:ring-1 focus:ring-wp-blue focus:border-wp-blue"
                 />
                 <button
@@ -554,7 +555,7 @@ export default function GeneralTab() {
 
       <p className="text-[11px] text-gray-500 leading-relaxed max-w-3xl">
         {status?.https_ready
-          ? `Requests arrive on 443, TLS terminates in the root edge, and the plaintext is forwarded to QuickWP's router on ${status?.edge_port}. The root process does nothing else.`
+          ? `Requests arrive on 443, TLS terminates in the root edge, and the plaintext is forwarded to Nexora's router on ${status?.edge_port}. The root process does nothing else.`
           : `Sites are reachable through the edge on port ${status?.edge_port ?? 18089} until HTTPS is on.`}
       </p>
       </div>

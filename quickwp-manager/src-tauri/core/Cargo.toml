@@ -1,8 +1,8 @@
 [package]
-name = "quickwp-core"
+name = "nexora-core"
 version = "0.1.0"
 edition = "2021"
-description = "Domain logic for QuickWP: runtime supply, process supervision, sites."
+description = "Domain logic for Nexora: runtime supply, process supervision, sites."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

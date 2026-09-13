@@ -8,7 +8,7 @@
 //! The guard is exercised against a stand-in process, not a real tunnel: the
 //! logic under test is "does the guard reap an orphan", and proving that does
 //! not require publishing this machine to the internet.
-use quickwp_core as core;
+use nexora_core as core;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -33,7 +33,7 @@ fn wait_for(buf: &Arc<Mutex<String>>, needle: &str) -> bool {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = std::env::temp_dir().join("quickwp-pty-example");
+    let dir = std::env::temp_dir().join("nexora-pty-example");
     std::fs::create_dir_all(&dir)?;
 
     let site = core::site::Site {
@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         aliases: vec![],
     };
 
-    println!("QuickWP terminal + guard spike\n");
+    println!("Nexora terminal + guard spike\n");
 
     step("1/6", "opening a pseudo-terminal");
     let out = Arc::new(Mutex::new(String::new()));
@@ -62,8 +62,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     step("2/6", "the child sees a TTY (not a pipe)");
     // `test -t 0` is the question that separates a real terminal from a runner.
-    ptys().write("t1", "test -t 0 && echo QUICKWP_IS_A_TTY\n")?;
-    let saw_tty = wait_for(&out, "QUICKWP_IS_A_TTY");
+    ptys().write("t1", "test -t 0 && echo NEXORA_IS_A_TTY\n")?;
+    let saw_tty = wait_for(&out, "NEXORA_IS_A_TTY");
     println!("{}", if saw_tty { "ok" } else { "FAILED" });
 
     step("3/6", "an interactive prompt can be answered");
@@ -71,8 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // whatever the user's SHELL is.
     ptys().write("t1", "printf 'name? '; read n; echo GOT=$n\n")?;
     std::thread::sleep(std::time::Duration::from_millis(500));
-    ptys().write("t1", "quickwp\n")?;
-    let answered = wait_for(&out, "GOT=quickwp");
+    ptys().write("t1", "nexora\n")?;
+    let answered = wait_for(&out, "GOT=nexora");
     println!("{}", if answered { "ok" } else { "FAILED" });
 
     step("4/6", "resize reaches the child");

@@ -96,8 +96,8 @@ export default function MigrateTab() {
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-700 flex-shrink-0 mt-0.5" />
           <div className="text-xs text-amber-900 leading-relaxed">
             <strong>Another tool owns a TLD on this Mac.</strong>{" "}
-            {scan!.stale_resolvers.join(", ")} does not point at QuickWP. Until that changes,
-            those domains resolve elsewhere — QuickWP will not overwrite it without you deciding.
+            {scan!.stale_resolvers.join(", ")} does not point at Nexora. Until that changes,
+            those domains resolve elsewhere — Nexora will not overwrite it without you deciding.
           </div>
         </div>
       )}
@@ -123,7 +123,7 @@ export default function MigrateTab() {
         <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
           <h2 className="text-lg font-semibold text-gray-900">Bring the data across</h2>
           <p className="text-xs text-gray-600 mb-3">
-            Stage 2 copies a site's database into QuickWP's MySQL. Stage 3 points its config at
+            Stage 2 copies a site's database into Nexora's MySQL. Stage 3 points its config at
             the copy — the most invasive step, so it shows a diff and takes a backup first.
           </p>
 
@@ -206,7 +206,7 @@ export default function MigrateTab() {
 
           {diff.diff.changes.length === 0 ? (
             <p className="text-xs text-gray-600">
-              Nothing to change — this config already points at QuickWP.
+              Nothing to change — this config already points at Nexora.
             </p>
           ) : (
             <div className="border border-gray-200 rounded-lg overflow-hidden font-mono text-[11px]">

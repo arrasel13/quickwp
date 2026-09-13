@@ -1,16 +1,20 @@
 import { useState, useEffect, useMemo } from "react";
-import { api, errorText } from "../../lib/api";
+import { api, errorText, FolderStatus } from "../../lib/api";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAsync } from "../../lib/useAsync";
 import { Tab, Dialog, Transition } from "@headlessui/react";
 import {
   GlobeAltIcon,
   PlusIcon,
   XMarkIcon,
-  ArrowLeftIcon,
-  PlayIcon,
-  StopIcon,
   CodeBracketIcon,
   FolderIcon,
+  ArrowDownTrayIcon,
+  ExclamationTriangleIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  EyeIcon,
+  EyeSlashIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { Fragment } from "react";
@@ -23,8 +27,6 @@ import TerminalTab from "./TerminalTab";
 import MailTab from "./MailTab";
 import SiteAvatar from "../SiteAvatar";
 import { useSites } from "../../lib/sites";
-import ProgressBar from "../ui/ProgressBar";
-import TerminalOutput from "../ui/TerminalOutput";
 
 interface WordPressSite {
   id: string;
@@ -40,16 +42,50 @@ interface WordPressSite {
 
 interface SiteConfig {
   siteTitle: string;
+  /** Derived from the name: the folder, and the domain's first label. */
   folderName: string;
   siteUrl: string;
-  databaseName: string;
+  /** Where the site lives. Follows the name until a folder is chosen. */
+  localPath: string;
+  pathChosen: boolean;
+  /** "auto": the latest release, left to update itself. "pick": `wpVersion`, held there. */
+  wpVersionMode: "auto" | "pick";
   wpVersion: string;
   phpVersion: string;
-  enableDebug: boolean;
   adminUser: string;
   adminPassword: string;
   adminEmail: string;
 }
+
+/** Used when the admin email is left empty -- the field's placeholder. */
+const DEFAULT_ADMIN_EMAIL = "admin@localhost.com";
+
+/** A strong admin password, so the form can be submitted as it opens. */
+function generatePassword(length = 24) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#%*-_";
+  const bytes = crypto.getRandomValues(new Uint32Array(length));
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
+
+const blankConfig = (): SiteConfig => ({
+  siteTitle: "",
+  folderName: "",
+  siteUrl: "",
+  localPath: "",
+  pathChosen: false,
+  wpVersionMode: "auto",
+  wpVersion: "",
+  phpVersion: "8.3",
+  adminUser: "admin",
+  adminPassword: generatePassword(),
+  adminEmail: "",
+});
+
+// The New site form's own look: small uppercase labels and plain section
+// titles, one column.
+const formLabel = "mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-gray-700";
+const sectionTitle = "mb-3 text-[15px] font-semibold text-gray-900";
+const radioClass = "h-4 w-4 border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30";
 
 type ProjectType = "laravel" | "existing" | "wordpress";
 
@@ -70,7 +106,6 @@ const fieldClass =
   "placeholder-gray-400 transition-colors focus:border-blue-500 focus:outline-none " +
   "focus:ring-2 focus:ring-blue-500/30";
 
-const labelClass = "mb-1.5 block text-xs font-medium text-gray-700";
 
 // A docroot folder, a .test hostname and a database name have to survive
 // exactly as typed. Left alone, the webview offers autofill, capitalises the
@@ -139,7 +174,7 @@ export default function SitesTab() {
   const { data: stack } = useAsync(() => api.stackStatus(), [], "stack-status");
   const httpsReady = stack?.https_ready ?? false;
 
-  // What Node this machine already has. QuickWP installs none of its own, so
+  // What Node this machine already has. Nexora installs none of its own, so
   // the list is whatever nvm/fnm/Volta/Homebrew/asdf put there — newest first.
   const { data: nodeInstalls } = useAsync(() => api.nodeList(), [], "node-list");
   const nodeVersions = useMemo(
@@ -170,7 +205,7 @@ export default function SitesTab() {
         // it as the fallback, not offered as the site's address.
         url: `${httpsReady ? "https" : "http"}://${s.domain}/`,
         path: s.docroot,
-        // A linked site's folder is yours; QuickWP never copies or deletes it.
+        // A linked site's folder is yours; Nexora never copies or deletes it.
         linkedPath: s.is_linked ? s.docroot : "—",
         kind: s.kind,
         phpVersion: s.php_minor,
@@ -205,25 +240,20 @@ export default function SitesTab() {
     useState<ProjectType | null>(null);
 
   // WordPress site creation states
-  const [config, setConfig] = useState<SiteConfig>({
-    siteTitle: "",
-    folderName: "",
-    siteUrl: "",
-    databaseName: "",
-    wpVersion: "latest",
-    phpVersion: "8.3",
-    enableDebug: false,
-    adminUser: "admin",
-    adminPassword: "",
-    adminEmail: "",
-  });
+  const [config, setConfig] = useState<SiteConfig>(blankConfig);
+  // The default site directory, where a new site goes unless a folder is chosen.
+  const [sitesDir, setSitesDir] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  /** What the chosen folder holds; null until one is chosen. */
+  const [pathStatus, setPathStatus] = useState<FolderStatus | null>(null);
   // Populated from wordpress.org the first time the WordPress step is opened.
   const [wpVersions, setWpVersions] = useState<string[]>(WP_FALLBACK_VERSIONS);
   const [isInstalling, setIsInstalling] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [terminalOutput, setTerminalOutput] = useState<string[]>([]);
+  // What Create is doing right now, shown beside the button.
   const [currentStep, setCurrentStep] = useState("");
-  const [installDone, setInstallDone] = useState(false);
+  /** Why the last Create failed, shown under the form. */
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Project type options
   const projectOptions: ProjectOption[] = [
@@ -254,7 +284,30 @@ export default function SitesTab() {
   ];
 
   // Available versions
-  const phpVersions = ["8.3", "8.2", "8.1", "8.0", "7.4"];
+  // PHP as Nexora ships it, installed or not, read from the backend. The
+  // hard-coded list this replaces had drifted to offer 7.4, which is not
+  // shipped, and to leave out 8.4 and 8.5.
+  const { data: phpList, reload: reloadPhp } = useAsync(() => api.phpList(), [], "php-list");
+  /** A site can only be switched to a PHP that is actually installed. */
+  const phpVersions = useMemo(
+    () => (phpList ?? []).filter((p) => p.installed).map((p) => p.minor),
+    [phpList],
+  );
+  // What a WordPress site needs beyond PHP. The first run installs both, so
+  // creating a site uses them as they are; only one genuinely missing is
+  // fetched, and the dialog says so before Create is pressed.
+  const { data: setup, reload: reloadSetup } = useAsync(
+    () => api.setupStatus(),
+    [],
+    "setup-status",
+  );
+  const componentReady = (id: string) =>
+    setup?.components.find((c) => c.id === id)?.installed ?? false;
+  const [phpDownload, setPhpDownload] = useState<{
+    minor: string;
+    pct: number | null;
+    error: string | null;
+  } | null>(null);
 
   const siteDetailTabs = [
     { name: "Overview", id: "overview" },
@@ -301,26 +354,25 @@ export default function SitesTab() {
     };
   }, [modalStep]);
 
-  // Auto-generate values when site title changes
+  // The folder, the domain and -- until a folder is chosen -- the path all
+  // follow the name.
   useEffect(() => {
-    if (config.siteTitle) {
-      const folderName = config.siteTitle
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, "-")
-        .trim();
-
-      const siteUrl = `${folderName}.test`;
-      const databaseName = folderName.replace(/-/g, "_");
-
-      setConfig((prev) => ({
-        ...prev,
-        folderName,
-        siteUrl,
-        databaseName,
-      }));
-    }
-  }, [config.siteTitle]);
+    const folderName = config.siteTitle
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-");
+    setConfig((prev) => ({
+      ...prev,
+      folderName,
+      siteUrl: folderName ? `${folderName}.test` : "",
+      localPath: prev.pathChosen
+        ? prev.localPath
+        : sitesDir && folderName
+          ? `${sitesDir}/${folderName}`
+          : sitesDir,
+    }));
+  }, [config.siteTitle, sitesDir]);
 
   // Helper functions
   const handleInputChange = (
@@ -337,6 +389,81 @@ export default function SitesTab() {
     setIsModalOpen(true);
     setModalStep("select");
     setSelectedProjectType(null);
+    setPhpDownload(null);
+    void api
+      .settingsGet()
+      .then((st) => setSitesDir(st.sites_dir))
+      .catch(() => {});
+    // Start from a PHP that is installed -- the default when it is -- so a new
+    // site is never held up behind a download nobody asked for.
+    const list = phpList ?? [];
+    const start = list.find((p) => p.is_default && p.installed) ?? list.find((p) => p.installed);
+    if (start) setConfig((c) => ({ ...c, phpVersion: start.minor }));
+    void reloadPhp();
+    void reloadSetup();
+  };
+
+  const selectedPhp = (phpList ?? []).find((p) => p.minor === config.phpVersion);
+  const downloadingPhp = phpDownload !== null && phpDownload.error === null;
+
+  // A PHP that still needs downloading lives under Advanced settings; open it
+  // so the reason Create is disabled is on screen.
+  useEffect(() => {
+    if (modalStep === "wordpress" && selectedPhp && !selectedPhp.installed) setAdvancedOpen(true);
+  }, [modalStep, selectedPhp?.minor, selectedPhp?.installed]);
+
+  /** Pick the site's folder. It must be empty, or already hold a WordPress site. */
+  const chooseFolder = async () => {
+    const picked = await openDialog({
+      directory: true,
+      multiple: false,
+      defaultPath: config.pathChosen ? config.localPath : sitesDir || undefined,
+    }).catch(() => null);
+    if (typeof picked !== "string") return;
+    setConfig((c) => ({ ...c, localPath: picked, pathChosen: true }));
+    setPathStatus(await api.folderStatus(picked).catch(() => null));
+  };
+
+  const adoptingExisting = config.pathChosen && pathStatus === "wordpress";
+  const pathProblem =
+    config.pathChosen && pathStatus && pathStatus !== "empty" && pathStatus !== "wordpress"
+      ? "This folder isn't empty. Select an empty directory or a directory with an existing WordPress site."
+      : null;
+  const userProblem = !adoptingExisting && !config.adminUser.trim() ? "Enter an admin username." : null;
+  const passwordProblem = !adoptingExisting && !config.adminPassword ? "Enter an admin password." : null;
+  const emailProblem =
+    !adoptingExisting && config.adminEmail.trim() && !/^[^\s@]+@[^\s@]+$/.test(config.adminEmail.trim())
+      ? "Enter a valid email address."
+      : null;
+  const canCreate =
+    !!config.siteTitle.trim() &&
+    !pathProblem &&
+    !userProblem &&
+    !passwordProblem &&
+    !emailProblem &&
+    !!selectedPhp?.installed &&
+    !downloadingPhp;
+
+  /** Download one PHP version from the dialog, beside its picker. */
+  const downloadPhp = async (minor: string) => {
+    setPhpDownload({ minor, pct: 0, error: null });
+    const unlisten = await api.onInstallProgress((p) => {
+      if (p.minor !== minor) return;
+      setPhpDownload({
+        minor,
+        pct: p.total ? Math.round((p.received / p.total) * 100) : null,
+        error: null,
+      });
+    });
+    try {
+      await api.phpInstall(minor);
+      await reloadPhp();
+      setPhpDownload(null);
+    } catch (e) {
+      setPhpDownload({ minor, pct: null, error: errorText(e) });
+    } finally {
+      unlisten();
+    }
   };
 
   // The sidebar's "+" asks for the dialog; this screen owns it.
@@ -348,23 +475,13 @@ export default function SitesTab() {
     setIsModalOpen(false);
     setModalStep("select");
     setSelectedProjectType(null);
-    // Reset WordPress config
-    setConfig({
-      siteTitle: "",
-      folderName: "",
-      siteUrl: "",
-      databaseName: "",
-      wpVersion: "latest",
-      phpVersion: "8.3",
-      enableDebug: false,
-      adminUser: "admin",
-      adminPassword: "",
-      adminEmail: "",
-    });
-    setTerminalOutput([]);
-    setProgress(0);
+    setConfig(blankConfig());
+    setAdvancedOpen(false);
+    setShowPassword(false);
+    setPathStatus(null);
+    setCreateError(null);
+    setCurrentStep("");
     setIsInstalling(false);
-    setInstallDone(false);
   };
 
   const handleProjectSelect = async (projectType: ProjectType) => {
@@ -375,9 +492,9 @@ export default function SitesTab() {
     }
     if (projectType === "existing") {
       // Linking serves a folder where it already is. Nothing is copied, and
-      // deleting the site later removes only QuickWP's record of it.
+      // deleting the site later removes only Nexora's record of it.
       const path = prompt(
-        "Link an existing folder\n\nQuickWP serves it where it is — nothing is copied or " +
+        "Link an existing folder\n\nNexora serves it where it is — nothing is copied or " +
           "moved, and deleting the site later leaves your folder alone.\n\nFull path:",
       );
       if (!path) return;
@@ -404,107 +521,95 @@ export default function SitesTab() {
     closeModal();
   };
 
-  const simulateInstallation = async () => {
+  const createSite = async () => {
     setIsInstalling(true);
-    setInstallDone(false);
-    setProgress(0);
-    setTerminalOutput([]);
-
-    const say = (line: string) => setTerminalOutput((prev) => [...prev, line]);
+    setCreateError(null);
     const wantsWordPress = selectedProjectType === "wordpress";
 
     try {
-      setCurrentStep(`Checking PHP ${config.phpVersion}...`);
-      say(`> Checking PHP ${config.phpVersion}`);
-      setProgress(8);
-
       const versions = await api.phpList();
       const chosen = versions.find((v) => v.minor === config.phpVersion);
-      if (!chosen) throw new Error(`PHP ${config.phpVersion} is not a version QuickWP ships.`);
+      if (!chosen) throw new Error(`PHP ${config.phpVersion} is not a version Nexora ships.`);
+      // Never downloaded here: the dialog offers the download beside the
+      // version, and Create stays disabled until it is done.
       if (!chosen.installed) {
-        setCurrentStep(`Downloading PHP ${config.phpVersion}...`);
-        say(`> PHP ${config.phpVersion} is not installed yet — downloading (~35MB)`);
-        await api.phpInstall(config.phpVersion);
-        say("  verified against its pinned checksum");
+        throw new Error(`PHP ${config.phpVersion} is not installed. Download it first.`);
       }
-      setProgress(25);
 
       if (wantsWordPress) {
-        // WordPress needs a database and WP-CLI. Both are fetched on demand,
-        // and the first one is a large download, so say so rather than
-        // appearing to hang.
         const engines = await api.dbList();
         const engine = engines.find((e) => e.installed) ?? engines[0];
+        const cliReady =
+          (await api.setupStatus()).components.find((c) => c.id === "wp-cli")?.installed ?? false;
+        // Only what is genuinely missing is fetched -- normally nothing, since
+        // the first run installs both.
         if (!engine.installed) {
-          setCurrentStep(`Downloading MySQL ${engine.series}...`);
-          say(`> MySQL ${engine.series} is not installed yet — downloading (~250MB, once)`);
+          setCurrentStep(`Downloading MySQL ${engine.series}…`);
           await api.dbInstall(engine.series);
         }
-        setCurrentStep("Starting MySQL...");
-        say("> Starting MySQL");
-        await api.dbStart(engine.series);
-        setProgress(45);
-
-        setCurrentStep("Fetching WP-CLI...");
-        say("> " + (await api.wpEnsureCli()));
+        if (!engine.running) {
+          setCurrentStep("Starting MySQL…");
+          await api.dbStart(engine.series);
+        }
+        if (!cliReady) {
+          setCurrentStep("Downloading WP-CLI…");
+          await api.wpEnsureCli();
+        }
       }
-      setProgress(55);
 
-      setCurrentStep("Creating the site...");
-      say(`> Creating ${config.siteUrl}`);
+      // A chosen folder is checked again now: it may have changed since.
+      let adoptExisting = false;
+      if (wantsWordPress && config.pathChosen) {
+        const status = await api.folderStatus(config.localPath);
+        if (status !== "empty" && status !== "wordpress") {
+          throw new Error(
+            `${config.localPath} isn't empty. Select an empty directory or a directory with an existing WordPress site.`,
+          );
+        }
+        adoptExisting = status === "wordpress";
+      }
+
+      setCurrentStep("Creating the site…");
       const site = await api.siteCreate({
         name: config.siteTitle || config.folderName,
         domain: config.siteUrl,
         kind: wantsWordPress ? "wordpress" : "php",
         php_minor: config.phpVersion,
-        link_path: null,
+        link_path: wantsWordPress && config.pathChosen ? config.localPath : null,
       });
-      setProgress(65);
 
-      setCurrentStep("Starting the PHP pool...");
-      const port = await api.phpStart(site.php_minor);
-      say(`  pool listening on 127.0.0.1:${port}`);
+      setCurrentStep("Starting PHP…");
+      await api.phpStart(site.php_minor);
       await api.stackStart();
-      setProgress(75);
 
-      if (wantsWordPress) {
-        setCurrentStep("Installing WordPress...");
-        say("> Installing WordPress — core, database, wp-config.php, admin user");
-        const res = await api.wpInstall(site.domain, {
+      // A folder that already holds WordPress is linked as it is: `wp core
+      // download --force` and a fresh wp-config.php would overwrite it.
+      if (wantsWordPress && !adoptExisting) {
+        const pinned = config.wpVersionMode === "pick" && config.wpVersion ? config.wpVersion : null;
+        setCurrentStep("Installing WordPress…");
+        // The admin password goes to the login keychain, so Overview can copy it.
+        await api.wpInstall(site.domain, {
           title: config.siteTitle || site.domain,
-          admin_user: config.adminUser || "admin",
-          admin_email: config.adminEmail || `admin@${site.domain}`,
+          admin_user: config.adminUser.trim() || "admin",
+          admin_email: config.adminEmail.trim() || DEFAULT_ADMIN_EMAIL,
           admin_password: config.adminPassword || null,
-          version: config.wpVersion === "latest" ? null : config.wpVersion,
+          version: pinned,
         });
-        setProgress(100);
-        say("");
-        say("WordPress installed.");
-        say(`  url        ${res.url}`);
-        say(`  admin      ${res.admin_user}`);
-        // Shown once, and only here: it is never stored in the clear.
-        say(`  password   ${res.admin_password}      <- copy this now`);
-        say(`  database   ${res.db.name}`);
-      } else {
-        setProgress(100);
-        say("");
-        say("Site created.");
-        say(`  docroot   ${site.docroot}`);
-        say(`  php       ${site.php_minor}`);
+        if (pinned) {
+          // Held at the chosen release; core auto-updates would move it on.
+          // Not worth failing a finished site over.
+          await api.wpConfigSetBool(site.domain, "WP_AUTO_UPDATE_CORE", false).catch(() => {});
+        }
       }
 
       await reloadSites();
-      // Open what was just made, rather than leaving the old site in view.
+      // No success screen: the new site opens, and its Overview is the result.
+      closeModal();
       select(String(site.id));
-      setIsInstalling(false);
-      setInstallDone(true);
-      setCurrentStep("");
     } catch (e) {
-      say("");
-      say(`Failed: ${errorText(e)}`);
+      setCreateError(errorText(e));
       setIsInstalling(false);
       setCurrentStep("");
-      setProgress(0);
     }
   };
 
@@ -711,7 +816,7 @@ export default function SitesTab() {
                 No sites yet
               </h2>
               <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-gray-600">
-                Create your first site and QuickWP provisions a docroot, wires it to a
+                Create your first site and Nexora provisions a docroot, wires it to a
                 PHP pool, and serves it on a{" "}
                 <span className="font-medium text-gray-900">.test</span> name.
               </p>
@@ -761,7 +866,12 @@ export default function SitesTab() {
                 leaveFrom="opacity-100 scale-100"
                 leaveTo="opacity-0 scale-95"
               >
-                <Dialog.Panel className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white text-left shadow-2xl">
+                <Dialog.Panel
+                  className={clsx(
+                    "flex max-h-[90vh] w-full flex-col overflow-hidden rounded-2xl bg-white text-left shadow-2xl",
+                    modalStep === "select" ? "max-w-4xl" : "max-w-xl",
+                  )}
+                >
                   {/* Header — shared by both steps */}
                   <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-6 py-4">
                     <div className="min-w-0">
@@ -771,12 +881,12 @@ export default function SitesTab() {
                       >
                         {modalStep === "select"
                           ? "Add a new site"
-                          : "New WordPress site"}
+                          : "Create a new site"}
                       </Dialog.Title>
                       <p className="mt-0.5 text-xs text-gray-500">
                         {modalStep === "select"
-                          ? "Pick what you want QuickWP to serve."
-                          : "QuickWP downloads WordPress, PHP and a database as needed."}
+                          ? "Pick what you want Nexora to serve."
+                          : "Choose a name and we'll set up a fresh WordPress site on your machine."}
                       </p>
                     </div>
                     <button
@@ -848,321 +958,360 @@ export default function SitesTab() {
 
                   {modalStep === "wordpress" && (
                     <>
-                      {/* Everything fits without scrolling: four rows of
-                          fields across three fieldsets. The body still scrolls
-                          so the install log has somewhere to go once it
-                          appears. */}
-                      <div className="flex-1 space-y-3 overflow-y-auto bg-gray-50 p-5">
-                        <fieldset className="rounded-lg border border-gray-200 bg-white px-4 pb-4 pt-4">
-                          <legend className="ml-1 px-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-                            Site
-                          </legend>
-
-                          {/* One row of four. Nine columns divide as 3/2/2/2,
-                              giving the title — the only field you must fill
-                              in — half again the width of the derived ones. */}
-                          <div className="grid gap-3 sm:grid-cols-9">
-                            <div className="sm:col-span-3">
-                              <label htmlFor="wp-site-title" className={labelClass}>
-                                Site title <span className="text-red-500">*</span>
-                              </label>
-                              <input
-                                id="wp-site-title"
-                                {...noAutoFill}
-                                type="text"
-                                value={config.siteTitle}
-                                onChange={(e) =>
-                                  handleInputChange("siteTitle", e.target.value)
-                                }
-                                placeholder="My WordPress Site"
-                                disabled={isInstalling}
-                                className={fieldClass}
-                              />
-                            </div>
-                            <div className="sm:col-span-2">
-                              <label htmlFor="wp-folder" className={labelClass}>
-                                Folder name
-                              </label>
-                              <input
-                                id="wp-folder"
-                                {...noAutoFill}
-                                type="text"
-                                value={config.folderName ?? ""}
-                                onChange={(e) =>
-                                  handleInputChange("folderName", e.target.value)
-                                }
-                                disabled={isInstalling}
-                                className={clsx(fieldClass, "font-mono text-xs")}
-                              />
-                            </div>
-                            <div className="sm:col-span-2">
-                              <label htmlFor="wp-url" className={labelClass}>
-                                Site URL
-                              </label>
-                              <input
-                                id="wp-url"
-                                {...noAutoFill}
-                                type="text"
-                                value={config.siteUrl ?? ""}
-                                onChange={(e) =>
-                                  handleInputChange("siteUrl", e.target.value)
-                                }
-                                disabled={isInstalling}
-                                className={clsx(fieldClass, "font-mono text-xs")}
-                              />
-                            </div>
-                            <div className="sm:col-span-2">
-                              <label htmlFor="wp-db" className={labelClass}>
-                                Database name
-                              </label>
-                              <input
-                                id="wp-db"
-                                {...noAutoFill}
-                                type="text"
-                                value={config.databaseName ?? ""}
-                                onChange={(e) =>
-                                  handleInputChange("databaseName", e.target.value)
-                                }
-                                disabled={isInstalling}
-                                className={clsx(fieldClass, "font-mono text-xs")}
-                              />
-                            </div>
-                          </div>
-                          <p className="mt-2 text-[11px] text-gray-500">
-                            The other three are derived from the title — edit any
-                            of them.
-                          </p>
-                        </fieldset>
-
-                        <fieldset className="rounded-lg border border-gray-200 bg-white px-4 pb-4 pt-4">
-                          <legend className="ml-1 px-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-                            Environment
-                          </legend>
-
-                          <div className="grid gap-3 sm:grid-cols-3">
-                            <div>
-                              <label htmlFor="wp-version" className={labelClass}>
-                                WordPress version
-                              </label>
-                              <select
-                                id="wp-version"
-                                value={config.wpVersion}
-                                onChange={(e) =>
-                                  handleInputChange("wpVersion", e.target.value)
-                                }
-                                disabled={isInstalling}
-                                className={fieldClass}
-                              >
-                                <option value="latest">
-                                  Latest{wpVersions[0] ? ` (${wpVersions[0]})` : ""}
-                                </option>
-                                {/* The newest release is skipped: "Latest"
-                                    above already resolves to it, and listing
-                                    it twice reads as two different choices. */}
-                                {wpVersions.slice(1).map((v) => (
-                                  <option key={v} value={v}>
-                                    WordPress {v}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div>
-                              <label htmlFor="wp-php" className={labelClass}>
-                                PHP version
-                              </label>
-                              {/* Reuses the same list the site detail pane
-                                  offers, so the two cannot drift apart. */}
-                              <select
-                                id="wp-php"
-                                value={config.phpVersion || "8.3"}
-                                onChange={(e) =>
-                                  handleInputChange("phpVersion", e.target.value)
-                                }
-                                disabled={isInstalling}
-                                className={fieldClass}
-                              >
-                                {phpVersions.map((v) => (
-                                  <option key={v} value={v}>
-                                    PHP {v}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="flex items-end">
-                              <label
-                                htmlFor="enableDebug"
-                                className="flex items-center gap-2 pb-2.5 text-sm text-gray-700"
-                              >
-                                <input
-                                  type="checkbox"
-                                  id="enableDebug"
-                                  checked={config.enableDebug}
-                                  onChange={(e) =>
-                                    handleInputChange("enableDebug", e.target.checked)
-                                  }
-                                  disabled={isInstalling}
-                                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
-                                />
-                                Enable debug mode
-                              </label>
-                            </div>
-                          </div>
-                        </fieldset>
-
-                        <fieldset className="rounded-lg border border-gray-200 bg-white px-4 pb-4 pt-4">
-                          <legend className="ml-1 px-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-                            Admin account
-                          </legend>
-
-                          <div className="grid gap-3 sm:grid-cols-3">
-                            <div>
-                              <label htmlFor="wp-admin-user" className={labelClass}>
-                                Username
-                              </label>
-                              <input
-                                id="wp-admin-user"
-                                {...noAutoFill}
-                                type="text"
-                                value={config.adminUser}
-                                onChange={(e) =>
-                                  handleInputChange("adminUser", e.target.value)
-                                }
-                                placeholder="admin"
-                                disabled={isInstalling}
-                                className={fieldClass}
-                              />
-                            </div>
-                            <div>
-                              <label htmlFor="wp-admin-pass" className={labelClass}>
-                                Password
-                              </label>
-                              <input
-                                id="wp-admin-pass"
-                                {...noAutoFill}
-                                autoComplete="new-password"
-                                type="password"
-                                value={config.adminPassword}
-                                onChange={(e) =>
-                                  handleInputChange("adminPassword", e.target.value)
-                                }
-                                placeholder="Generated if blank"
-                                disabled={isInstalling}
-                                className={fieldClass}
-                              />
-                            </div>
-                            <div>
-                              <label htmlFor="wp-admin-email" className={labelClass}>
-                                Email
-                              </label>
-                              <input
-                                id="wp-admin-email"
-                                {...noAutoFill}
-                                type="email"
-                                value={config.adminEmail}
-                                onChange={(e) =>
-                                  handleInputChange("adminEmail", e.target.value)
-                                }
-                                placeholder="admin@example.com"
-                                disabled={isInstalling}
-                                className={fieldClass}
-                              />
-                            </div>
-                          </div>
-                          <p className="mt-2 text-[11px] text-gray-500">
-                            The password is shown once, when the install
-                            finishes — it is never stored in the clear.
-                          </p>
-                        </fieldset>
-
-                        {/* The log stays up after the run ends. It used to be
-                            gated on isInstalling alone, so the moment the
-                            install finished this panel unmounted and took the
-                            one-time admin password -- and any failure
-                            message -- with it. */}
-                        {(isInstalling || installDone || terminalOutput.length > 0) && (
-                          <section className="rounded-xl border border-gray-200 bg-white p-5">
-                            <div className="mb-4 flex items-center gap-3">
-                              <div
-                                className={clsx(
-                                  "flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg",
-                                  installDone
-                                    ? "bg-green-100"
-                                    : isInstalling
-                                      ? "bg-blue-100"
-                                      : "bg-red-100"
-                                )}
-                              >
-                                <PlayIcon
-                                  className={clsx(
-                                    "h-5 w-5",
-                                    installDone
-                                      ? "text-green-600"
-                                      : isInstalling
-                                        ? "text-blue-600"
-                                        : "text-red-600"
-                                  )}
-                                />
-                              </div>
-                              <div className="min-w-0">
-                                <h4 className="text-sm font-semibold text-gray-900">
-                                  {installDone
-                                    ? "Site created"
-                                    : isInstalling
-                                      ? "Installing"
-                                      : "Installation failed"}
-                                </h4>
-                                <p className="mt-0.5 text-xs text-gray-500">
-                                  {installDone
-                                    ? "Copy the admin password below — it is not stored in the clear."
-                                    : isInstalling
-                                      ? currentStep || "Preparing…"
-                                      : "The log below says why."}
-                                </p>
-                              </div>
-                            </div>
-                            {(isInstalling || installDone) && (
-                              <ProgressBar progress={progress} className="mb-4" />
-                            )}
-                            <TerminalOutput
-                              output={terminalOutput}
-                              className="max-h-48"
+                      <div className="flex-1 overflow-y-auto bg-gray-50 px-5 py-6">
+                        {/* The form steps aside while the site is created and
+                            once it is done; a failed run shows it again, with
+                            the log beneath saying why. */}
+                        {/* The form stays up while the site is created --
+                            disabled, with Create showing progress -- and the
+                            new site opens when it is done. */}
+                        <fieldset
+                          disabled={isInstalling}
+                          className="m-0 min-w-0 border-0 p-0 transition-opacity disabled:opacity-70"
+                        >
+                        {(
+                          <div className="mx-auto max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                            <label htmlFor="wp-site-title" className={formLabel}>
+                              Site name (required)
+                            </label>
+                            <input
+                              id="wp-site-title"
+                              {...noAutoFill}
+                              type="text"
+                              value={config.siteTitle}
+                              onChange={(e) => handleInputChange("siteTitle", e.target.value)}
+                              placeholder="My WordPress Website"
+                              autoFocus
+                              className={fieldClass}
                             />
-                          </section>
+
+                            <button
+                              type="button"
+                              onClick={() => setAdvancedOpen((o) => !o)}
+                              aria-expanded={advancedOpen}
+                              aria-controls="new-site-advanced"
+                              className="mt-4 inline-flex items-center gap-1.5 rounded text-sm font-medium text-gray-700 transition-colors hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                            >
+                              <ChevronRightIcon
+                                className={clsx("h-3.5 w-3.5 transition-transform", advancedOpen && "rotate-90")}
+                              />
+                              Advanced settings
+                            </button>
+
+                            {advancedOpen && (
+                              <div id="new-site-advanced" className="mt-5 space-y-6">
+                                <section>
+                                  <h4 className={sectionTitle}>Site details</h4>
+
+                                  <label htmlFor="wp-path" className={formLabel}>
+                                    Local path
+                                  </label>
+                                  <div
+                                    className={clsx(
+                                      "flex items-center rounded-lg border bg-white focus-within:ring-2 focus-within:ring-blue-500/30",
+                                      pathProblem ? "border-red-400" : "border-gray-300",
+                                    )}
+                                  >
+                                    <input
+                                      id="wp-path"
+                                      readOnly
+                                      value={config.localPath}
+                                      title={config.localPath}
+                                      onClick={() => void chooseFolder()}
+                                      className="min-w-0 flex-1 cursor-pointer truncate rounded-l-lg border-0 bg-transparent px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-0"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => void chooseFolder()}
+                                      className="flex-shrink-0 rounded-r-lg px-3 py-2 text-sm font-medium text-gray-800 transition-colors hover:text-blue-700 focus:outline-none"
+                                    >
+                                      Choose…
+                                    </button>
+                                  </div>
+                                  <p
+                                    className={clsx(
+                                      "mt-1.5 text-xs leading-relaxed",
+                                      pathProblem ? "text-red-700" : adoptingExisting ? "text-green-700" : "text-gray-500",
+                                    )}
+                                  >
+                                    {pathProblem ??
+                                      (adoptingExisting
+                                        ? "This folder already has a WordPress site. Nexora links it as it is — nothing is reinstalled."
+                                        : "Select an empty directory or a directory with an existing WordPress site.")}
+                                  </p>
+
+                                  {!adoptingExisting && (
+                                    <div className="mt-5" role="radiogroup" aria-labelledby="wp-version-label">
+                                      <p id="wp-version-label" className={formLabel}>
+                                        WordPress version
+                                      </p>
+                                      <label className="flex cursor-pointer items-start gap-2.5">
+                                        <input
+                                          type="radio"
+                                          name="wp-version-mode"
+                                          checked={config.wpVersionMode === "auto"}
+                                          onChange={() => handleInputChange("wpVersionMode", "auto")}
+                                          className={clsx(radioClass, "mt-0.5")}
+                                        />
+                                        <span>
+                                          <span className="block text-sm text-gray-900">Automatic updates</span>
+                                          <span className="block text-xs leading-relaxed text-gray-500">
+                                            WordPress installs updates on its own schedule.
+                                            {wpVersions[0] ? ` Will install version ${wpVersions[0]}.` : ""}
+                                          </span>
+                                        </span>
+                                      </label>
+                                      <label className="mt-2 flex cursor-pointer items-center gap-2.5">
+                                        <input
+                                          type="radio"
+                                          name="wp-version-mode"
+                                          checked={config.wpVersionMode === "pick"}
+                                          onChange={() =>
+                                            setConfig((c) => ({
+                                              ...c,
+                                              wpVersionMode: "pick",
+                                              wpVersion: c.wpVersion || wpVersions[0] || "",
+                                            }))
+                                          }
+                                          className={radioClass}
+                                        />
+                                        <span className="text-sm text-gray-900">Select a version</span>
+                                      </label>
+                                      <div className="ml-6 mt-2 w-44">
+                                        <select
+                                          id="wp-version"
+                                          aria-label="WordPress version to install"
+                                          value={config.wpVersion || wpVersions[0] || ""}
+                                          onChange={(e) =>
+                                            setConfig((c) => ({
+                                              ...c,
+                                              wpVersionMode: "pick",
+                                              wpVersion: e.target.value,
+                                            }))
+                                          }
+                                          className={clsx(
+                                            fieldClass,
+                                            "pr-9",
+                                            config.wpVersionMode !== "pick" && "text-gray-500",
+                                          )}
+                                        >
+                                          {wpVersions.map((v) => (
+                                            <option key={v} value={v}>
+                                              {v}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    </div>
+                                  )}
+                                </section>
+
+                                <section className="border-t border-gray-200 pt-6">
+                                  <h4 className={sectionTitle}>PHP environment</h4>
+                                  <label htmlFor="wp-php" className={formLabel}>
+                                    PHP version
+                                  </label>
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-48">
+                                      <select
+                                        id="wp-php"
+                                        value={config.phpVersion}
+                                        onChange={(e) => {
+                                          handleInputChange("phpVersion", e.target.value);
+                                          setPhpDownload(null);
+                                        }}
+                                        disabled={downloadingPhp}
+                                        // pr-9 keeps a long label clear of the arrow
+                                        // the forms plugin draws.
+                                        className={clsx(fieldClass, "pr-9")}
+                                      >
+                                        {(phpList ?? []).map((p) => (
+                                          <option key={p.minor} value={p.minor}>
+                                            {p.minor}
+                                            {p.installed ? "" : " (not installed)"}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    {selectedPhp && !selectedPhp.installed && (
+                                      <button
+                                        type="button"
+                                        onClick={() => void downloadPhp(selectedPhp.minor)}
+                                        disabled={downloadingPhp}
+                                        title={`Download PHP ${selectedPhp.minor} (about 35 MB)`}
+                                        className="inline-flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-blue-600 bg-white px-3 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        <ArrowDownTrayIcon className="h-4 w-4" />
+                                        {downloadingPhp
+                                          ? phpDownload?.pct != null
+                                            ? `${phpDownload.pct}%`
+                                            : "Downloading…"
+                                          : "Download"}
+                                      </button>
+                                    )}
+                                  </div>
+                                  {selectedPhp && !selectedPhp.installed && (
+                                    <p
+                                      className={clsx(
+                                        "mt-1.5 flex items-center gap-1.5 text-xs",
+                                        phpDownload?.error ? "text-red-700" : "text-amber-700",
+                                      )}
+                                    >
+                                      <ExclamationTriangleIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                                      {phpDownload?.error ??
+                                        `PHP ${selectedPhp.minor} isn't installed — download it before creating the site.`}
+                                    </p>
+                                  )}
+                                  {setup && (!componentReady("mysql") || !componentReady("wp-cli")) && (
+                                    <p className="mt-1.5 text-xs text-amber-700">
+                                      {[
+                                        !componentReady("mysql") && "MySQL",
+                                        !componentReady("wp-cli") && "WP-CLI",
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" and ")}{" "}
+                                      not installed yet — downloaded once when you create the site.
+                                    </p>
+                                  )}
+                                </section>
+
+                                {!adoptingExisting && (
+                                  <section className="border-t border-gray-200 pt-6">
+                                    <h4 className={sectionTitle}>WordPress admin</h4>
+
+                                    <label htmlFor="wp-admin-user" className={formLabel}>
+                                      Admin username (required)
+                                    </label>
+                                    <input
+                                      id="wp-admin-user"
+                                      {...noAutoFill}
+                                      type="text"
+                                      value={config.adminUser}
+                                      onChange={(e) => handleInputChange("adminUser", e.target.value)}
+                                      aria-invalid={!!userProblem}
+                                      className={clsx(fieldClass, userProblem && "border-red-400")}
+                                    />
+                                    {userProblem && <p className="mt-1 text-xs text-red-700">{userProblem}</p>}
+
+                                    <label htmlFor="wp-admin-pass" className={clsx(formLabel, "mt-4")}>
+                                      Admin password (required)
+                                    </label>
+                                    <div className="relative">
+                                      <input
+                                        id="wp-admin-pass"
+                                        {...noAutoFill}
+                                        autoComplete="new-password"
+                                        type={showPassword ? "text" : "password"}
+                                        value={config.adminPassword}
+                                        onChange={(e) => handleInputChange("adminPassword", e.target.value)}
+                                        aria-invalid={!!passwordProblem}
+                                        className={clsx(fieldClass, "pr-10", passwordProblem && "border-red-400")}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowPassword((v) => !v)}
+                                        aria-label={showPassword ? "Hide password" : "Show password"}
+                                        title={showPassword ? "Hide password" : "Show password"}
+                                        className="absolute inset-y-0 right-0 flex items-center rounded-r-lg px-3 text-gray-500 transition-colors hover:text-gray-800 focus:outline-none focus-visible:text-blue-700"
+                                      >
+                                        {showPassword ? (
+                                          <EyeSlashIcon className="h-4 w-4" />
+                                        ) : (
+                                          <EyeIcon className="h-4 w-4" />
+                                        )}
+                                      </button>
+                                    </div>
+                                    {passwordProblem && (
+                                      <p className="mt-1 text-xs text-red-700">{passwordProblem}</p>
+                                    )}
+
+                                    <label htmlFor="wp-admin-email" className={clsx(formLabel, "mt-4")}>
+                                      Admin email (required)
+                                    </label>
+                                    <input
+                                      id="wp-admin-email"
+                                      {...noAutoFill}
+                                      type="email"
+                                      value={config.adminEmail}
+                                      onChange={(e) => handleInputChange("adminEmail", e.target.value)}
+                                      placeholder={DEFAULT_ADMIN_EMAIL}
+                                      aria-invalid={!!emailProblem}
+                                      className={clsx(fieldClass, emailProblem && "border-red-400")}
+                                    />
+                                    {emailProblem && <p className="mt-1 text-xs text-red-700">{emailProblem}</p>}
+
+                                    <p className="mt-3 text-xs leading-relaxed text-gray-500">
+                                      The password is saved to your login keychain, so you can copy it
+                                      later from Overview.
+                                    </p>
+                                  </section>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        </fieldset>
+
+                        {createError && (
+                          <div
+                            role="alert"
+                            className="mx-auto mt-4 flex max-w-md items-start gap-2.5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-800"
+                          >
+                            <ExclamationTriangleIcon className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium">The site could not be created</p>
+                              <p className="mt-0.5 break-words text-xs leading-relaxed">{createError}</p>
+                            </div>
+                          </div>
                         )}
                       </div>
 
-                      <div className="flex items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4">
+                      <div className="flex items-center justify-between gap-3 border-t border-gray-200 bg-white px-6 py-4">
                         <button
                           type="button"
                           onClick={() => setModalStep("select")}
                           disabled={isInstalling}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="inline-flex items-center gap-1 rounded-lg px-2 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          <ArrowLeftIcon className="h-4 w-4" />
+                          <ChevronLeftIcon className="h-4 w-4" />
                           Back
                         </button>
-                        <button
-                          onClick={installDone ? closeModal : simulateInstallation}
-                          disabled={(!config.siteTitle && !installDone) || isInstalling}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {isInstalling ? (
-                            <>
-                              <StopIcon className="h-4 w-4" />
-                              Installing…
-                            </>
-                          ) : installDone ? (
-                            // Not auto-closed: the admin password is printed
-                            // once and closing on a timer would take it away
-                            // before it could be copied.
-                            <>Done — close</>
-                          ) : (
-                            <>
-                              <PlayIcon className="h-4 w-4" />
-                              Create site
-                            </>
+                        <div className="flex min-w-0 items-center gap-3">
+                          {isInstalling && currentStep && (
+                            <span className="truncate text-xs text-gray-500" aria-live="polite">
+                              {currentStep}
+                            </span>
                           )}
-                        </button>
+                          <button
+                            onClick={() => void createSite()}
+                            disabled={isInstalling || !canCreate}
+                            aria-busy={isInstalling}
+                            title={
+                              selectedPhp && !selectedPhp.installed
+                                ? `Download PHP ${selectedPhp.minor} first`
+                                : undefined
+                            }
+                            className={clsx(
+                              "inline-flex flex-shrink-0 items-center gap-2 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2",
+                              isInstalling
+                                ? "cursor-wait"
+                                : "disabled:cursor-not-allowed disabled:opacity-50",
+                            )}
+                          >
+                            {isInstalling ? (
+                              <>
+                                <span
+                                  aria-hidden
+                                  className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                                />
+                                Creating…
+                              </>
+                            ) : (
+                              "Create site"
+                            )}
+                          </button>
+                        </div>
                       </div>
                     </>
                   )}

@@ -3,7 +3,7 @@
 //!
 //! Run deliberately, never as part of the regular suite: it exposes this
 //! machine to the internet for the duration.
-use quickwp_core as core;
+use nexora_core as core;
 use std::io::Write;
 
 fn step(n: &str, s: &str) {
@@ -62,9 +62,9 @@ fn fetch(url: &str, pin: Option<(&str, &str)>) -> (String, String) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let minor = "8.3";
     let domain = "tunnelcheck.test";
-    let app = core::Quickwp::new()?;
+    let app = core::Nexora::new()?;
 
-    println!("QuickWP live tunnel check\n");
+    println!("Nexora live tunnel check\n");
 
     step("1/6", "throwaway site + pool + router");
     core::runtime::install_php(minor, "fpm", |_| {}).await?;
@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // A marker only this test would serve, so a success cannot be someone
     // else's page answering.
-    let marker = format!("QUICKWP-TUNNEL-{}", core::proc::now());
+    let marker = format!("NEXORA-TUNNEL-{}", core::proc::now());
     std::fs::write(
         std::path::Path::new(&site.docroot).join("index.php"),
         format!("<?php echo {marker:?};"),
@@ -182,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if dns_blocked {
         // Not even a public resolver has the name, so there is nothing to pin
-        // and no round trip to make. Everything QuickWP controls still worked.
+        // and no round trip to make. Everything Nexora controls still worked.
         println!(
             "\nINCONCLUSIVE  the tunnel registered with Cloudflare and the origin served\n\
              correctly, but the hostname is unresolvable even from 1.1.1.1, so the\n\

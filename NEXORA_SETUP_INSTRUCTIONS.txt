@@ -1,8 +1,8 @@
 ===============================================================================
-                          QUICKWP MANAGER - SETUP INSTRUCTIONS
+                          NEXORA MANAGER - SETUP INSTRUCTIONS
 ===============================================================================
 
-🚀 QUICKWP MANAGER - WordPress Development Environment Desktop Application
+🚀 NEXORA MANAGER - WordPress Development Environment Desktop Application
 
 This document provides complete instructions for running the project in
 development mode (preview) and building it for production deployment.
@@ -11,7 +11,7 @@ development mode (preview) and building it for production deployment.
 📋 PREREQUISITES
 ===============================================================================
 
-Before running QuickWP Manager, ensure you have the following installed:
+Before running Nexora, ensure you have the following installed:
 
 1. Node.js (version 16.x or higher)
    - Download from: https://nodejs.org/
@@ -25,15 +25,15 @@ Before running QuickWP Manager, ensure you have the following installed:
    - Install with: xcode-select --install
    - Required to link the Rust backend
 
-NOT prerequisites (QuickWP handles these itself):
+NOT prerequisites (Nexora handles these itself):
 
 - PHP, MySQL/MariaDB and WP-CLI are downloaded on demand the first time a
   site needs them, each verified against a pinned checksum. You do not
   install them yourself.
 
-- Laravel Herd is optional. QuickWP only reads Herd/Valet configuration for
+- Laravel Herd is optional. Nexora only reads Herd/Valet configuration for
   the "Import from Herd" tab and to spot port conflicts. It never edits or
-  removes anything Herd owns, and QuickWP runs fine with Herd absent.
+  removes anything Herd owns, and Nexora runs fine with Herd absent.
 
 ===============================================================================
 ▶️ RUNNING THE PROJECT (DEV MODE / PREVIEW)
@@ -63,7 +63,7 @@ This is the way to see the UI as it actually behaves. It:
    - starts Vite on http://localhost:1420 (a fixed port -- it fails rather
      than sliding to another one, because Tauri is pointed at that address)
    - compiles the Rust backend
-   - opens the "QuickWP Manager" window
+   - opens the "Nexora" window
    - watches src/ and hot-reloads the React UI
 
 ⏱️  Be patient the first time. The initial Rust compile takes several
@@ -111,15 +111,15 @@ sites yet.
 To check what you have, and to get back to empty:
 
    cd quickwp-manager/src-tauri
-   cargo build -p quickwp-cli          # build the CLI once
+   cargo build -p nexora-cli          # build the CLI once
 
    # It is not on your PATH; run it from the target directory:
-   ./target/debug/quickwp site list      # every site, and whether it serves
-   ./target/debug/quickwp site delete <domain>
+   ./target/debug/nexora site list      # every site, and whether it serves
+   ./target/debug/nexora site delete <domain>
 
 Or from inside the app: pick the site, then Actions -> "Delete site". Delete
 means the same thing in both places. A site you LINKED (rather than created)
-loses only QuickWP's record of it -- your folder is left alone.
+loses only Nexora's record of it -- your folder is left alone.
 
 -------------------------------------------------------------------------------
 FRONTEND CHECKS WITHOUT LAUNCHING ANYTHING
@@ -173,16 +173,16 @@ After building, you'll find the installation files in:
 📁 Platform-specific locations:
 
 🍎 macOS:
-   - App Bundle: src-tauri/target/release/bundle/macos/QuickWP Manager.app
-   - DMG Installer: src-tauri/target/release/bundle/dmg/QuickWP Manager_0.1.0_aarch64.dmg
+   - App Bundle: src-tauri/target/release/bundle/macos/Nexora.app
+   - DMG Installer: src-tauri/target/release/bundle/dmg/Nexora_0.1.0_aarch64.dmg
 
 🪟 Windows:
-   - Executable: src-tauri/target/release/bundle/msi/QuickWP Manager_0.1.0_x64_en-US.msi
-   - Setup File: src-tauri/target/release/bundle/nsis/QuickWP Manager_0.1.0_x64-setup.exe
+   - Executable: src-tauri/target/release/bundle/msi/Nexora_0.1.0_x64_en-US.msi
+   - Setup File: src-tauri/target/release/bundle/nsis/Nexora_0.1.0_x64-setup.exe
 
 🐧 Linux:
-   - AppImage: src-tauri/target/release/bundle/appimage/quickwp-manager_0.1.0_amd64.AppImage
-   - DEB Package: src-tauri/target/release/bundle/deb/quickwp-manager_0.1.0_amd64.deb
+   - AppImage: src-tauri/target/release/bundle/appimage/nexora_0.1.0_amd64.AppImage
+   - DEB Package: src-tauri/target/release/bundle/deb/nexora_0.1.0_amd64.deb
 
 ===============================================================================
 📱 INSTALLATION INSTRUCTIONS
@@ -191,7 +191,7 @@ After building, you'll find the installation files in:
 🍎 macOS Installation:
 1. Locate the .dmg file in the build output
 2. Double-click the .dmg file to mount it
-3. Drag "QuickWP Manager" to the Applications folder
+3. Drag "Nexora" to the Applications folder
 4. Launch from Applications or Spotlight
 
 🪟 Windows Installation:
@@ -202,11 +202,11 @@ After building, you'll find the installation files in:
 
 🐧 Linux Installation:
 1. For AppImage:
-   - Make executable: chmod +x quickwp-manager_0.1.0_amd64.AppImage
-   - Run directly: ./quickwp-manager_0.1.0_amd64.AppImage
+   - Make executable: chmod +x nexora_0.1.0_amd64.AppImage
+   - Run directly: ./nexora_0.1.0_amd64.AppImage
 
 2. For DEB package:
-   - Install: sudo dpkg -i quickwp-manager_0.1.0_amd64.deb
+   - Install: sudo dpkg -i nexora_0.1.0_amd64.deb
    - Launch from applications menu
 
 ===============================================================================
@@ -268,7 +268,7 @@ For issues and questions:
 ===============================================================================
 
 You should now be able to:
-✅ Run QuickWP Manager in development mode
+✅ Run Nexora in development mode
 ✅ Build the application for production
 ✅ Install and distribute the application
 ✅ Manage WordPress development environments

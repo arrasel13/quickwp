@@ -3,14 +3,14 @@
 //!   download -> verify sha256 -> extract -> start pool -> execute PHP
 //!
 //! Run: cargo run --example spike -- 8.3
-use quickwp_core as core;
+use nexora_core as core;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let minor = std::env::args().nth(1).unwrap_or_else(|| "8.3".into());
     let pin = core::runtime::php_pin(&minor, "fpm")?;
 
-    println!("QuickWP runtime spike");
+    println!("Nexora runtime spike");
     println!("  arch      {}", core::runtime::arch());
     println!("  php       {} ({})", pin.patch, pin.minor);
     println!("  url       {}", pin.url);

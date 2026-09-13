@@ -38,7 +38,7 @@ pnpm-debug.log*
 # build whose provenance nobody can state.
 
 # ------------------------------------------------------------------ Secrets
-# QuickWP generates a local CA. A private key must never reach a remote.
+# Nexora generates a local CA. A private key must never reach a remote.
 *.pem
 *.key
 *.p12

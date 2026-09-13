@@ -1,4 +1,4 @@
-# QuickWP Manager
+# Nexora
 
 A modern desktop application for managing WordPress development environments with Laravel Herd and WP-CLI integration.
 
@@ -42,7 +42,7 @@ A modern desktop application for managing WordPress development environments wit
 
 ## Prerequisites
 
-Before using QuickWP Manager, ensure you have the following installed:
+Before using Nexora, ensure you have the following installed:
 
 - **Laravel Herd**: Local development environment
 - **WP-CLI**: WordPress command line interface

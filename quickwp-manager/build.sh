@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# QuickWP Manager Build Script
+# Nexora Build Script
 # Builds the application for multiple platforms
 
 set -e
@@ -8,12 +8,12 @@ set -e
 # The privileged edge and the CLI must be built and staged before the app
 # bundle, so `tauri build` can copy them into the .app. The daemon install and
 # the tunnel guard both resolve them from Contents/Resources.
-cargo build --release -p quickwp-edge -p quickwp-cli --manifest-path src-tauri/Cargo.toml
+cargo build --release -p nexora-edge -p nexora-cli --manifest-path src-tauri/Cargo.toml
 mkdir -p src-tauri/bundled
-cp src-tauri/target/release/quickwp-edge src-tauri/bundled/quickwp-edge
-cp src-tauri/target/release/quickwp      src-tauri/bundled/quickwp
+cp src-tauri/target/release/nexora-edge src-tauri/bundled/nexora-edge
+cp src-tauri/target/release/nexora      src-tauri/bundled/nexora
 
-echo "🚀 QuickWP Manager Build Script"
+echo "🚀 Nexora Build Script"
 echo "================================"
 
 # Colors for output
@@ -144,4 +144,4 @@ else
     exit 1
 fi
 
-print_success "🎉 QuickWP Manager build complete!"
+print_success "🎉 Nexora build complete!"

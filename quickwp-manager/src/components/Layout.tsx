@@ -1,14 +1,16 @@
-import { useEffect, useState } from "react";
-import { AdjustmentsHorizontalIcon, PlusIcon } from "@heroicons/react/24/outline";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { FolderOpenIcon, PlayIcon, PlusIcon, StopIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import clsx from "clsx";
-import { api, hasBackend } from "../lib/api";
+import { api, errorText, hasBackend, type Site } from "../lib/api";
 import { setLanguage, useT } from "../lib/i18n";
 import { SitesProvider, useSites } from "../lib/sites";
 import AppSettings from "./AppSettings";
 import QuitDialog from "./QuitDialog";
 import SiteAvatar from "./SiteAvatar";
+import ConfirmDialog from "./ui/ConfirmDialog";
+import markUrl from "../assets/nexora-mark.svg";
 import SitesTab from "./tabs/SitesTab";
 
 // The window has no title bar on macOS (tauri.conf.json: titleBarStyle
@@ -17,7 +19,7 @@ import SitesTab from "./tabs/SitesTab";
 // is still there and the strip only needs to hold the "+".
 const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent);
 
-const COLLAPSED_KEY = "quickwp.sidebar-collapsed";
+const COLLAPSED_KEY = "nexora.sidebar-collapsed";
 
 // A preference of this window only, so it lives in the webview rather than the
 // backend's settings table. Storage can be unavailable; that just means the
@@ -30,20 +32,30 @@ const readCollapsed = () => {
   }
 };
 
-// The sidebar lists your sites -- the thing you open QuickWP for. Everything
+// The sidebar lists your sites -- the thing you open Nexora for. Everything
 // else lives in App settings: General (the stack and HTTPS), PHP, Node,
 // Services, Expose, Import from Herd and About. Mail, Logs and a terminal are
 // tabs of each site.
-export default function Layout() {
+export default function Layout({ openNewSite = false }: { openNewSite?: boolean }) {
   return (
     <SitesProvider>
-      <Shell />
+      <Shell openNewSite={openNewSite} />
     </SitesProvider>
   );
 }
 
-function Shell() {
+function Shell({ openNewSite }: { openNewSite: boolean }) {
   const t = useT();
+  const { requestNewSite } = useSites();
+  // Arriving from setup's "Start Build": open the New site dialog at once.
+  // Once only -- the ref survives StrictMode's second effect run.
+  const openedNewSite = useRef(false);
+  useEffect(() => {
+    if (openNewSite && !openedNewSite.current) {
+      openedNewSite.current = true;
+      requestNewSite();
+    }
+  }, [openNewSite]);
   const [version, setVersion] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -117,7 +129,7 @@ function Shell() {
                   collapsed ? "justify-center w-full px-0" : "px-3",
                 )}
               >
-                <AdjustmentsHorizontalIcon className="h-4 w-4 flex-shrink-0 text-gray-400" />
+                <img src={markUrl} alt="" aria-hidden className="h-4 w-4 flex-shrink-0" draggable={false} />
                 <span className={collapsed ? "sr-only" : undefined}>{t("appSettings")}</span>
               </button>
               <button
@@ -171,59 +183,293 @@ function NewSiteButton() {
 
 function SiteList({ collapsed }: { collapsed: boolean }) {
   const t = useT();
-  const { sites, selected, select, loading, error } = useSites();
+  const { sites, selected, select, loading, error, reload } = useSites();
+  // The site a right-click opened the menu for, and where it was clicked.
+  const [menu, setMenu] = useState<{ site: Site; x: number; y: number } | null>(null);
+  const [toDelete, setToDelete] = useState<Site | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!actionError) return;
+    const timer = setTimeout(() => setActionError(null), 6000);
+    return () => clearTimeout(timer);
+  }, [actionError]);
+
+  const toggle = async (site: Site) => {
+    setActionError(null);
+    try {
+      await api.siteSetEnabled(site.domain, !site.enabled);
+      // A started site should load straight away, not wait for the stack.
+      if (!site.enabled) await api.stackStart();
+    } catch (e) {
+      setActionError(errorText(e));
+    } finally {
+      await reload();
+    }
+  };
+
+  const openFolder = (site: Site) => {
+    setActionError(null);
+    void api.pathOpen(site.docroot).catch((e) => setActionError(errorText(e)));
+  };
+
+  const confirmDelete = async () => {
+    if (!toDelete) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.siteDelete(toDelete.domain);
+      setToDelete(null);
+      await reload();
+    } catch (e) {
+      setDeleteError(errorText(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
-    <nav
-      aria-label={t("sites")}
-      className="sidebar-scroll flex-1 space-y-0.5 overflow-y-auto overflow-x-hidden px-3 pb-3"
-    >
-      {!collapsed && error && (
-        <p className="px-3 py-2 text-xs leading-relaxed text-red-300">{t("sitesError")}</p>
-      )}
-      {!collapsed && !error && !loading && sites.length === 0 && (
-        <p className="px-3 py-2 text-xs text-gray-500">{t("noSitesYet")}</p>
-      )}
-      {sites.map((s) => {
-        const active = selected?.id === s.id;
-        const label = s.name || s.domain;
-        const dot = (
-          <span
-            className={clsx(
-              "h-2 w-2 flex-shrink-0 rounded-full",
-              s.enabled ? "bg-green-500" : "bg-gray-600",
-            )}
-          />
-        );
-        return (
-          <button
-            key={s.id}
-            onClick={() => select(String(s.id))}
-            aria-current={active ? "page" : undefined}
-            title={collapsed ? `${label} — ${s.domain}` : s.domain}
-            className={clsx(
-              "flex w-full items-center rounded-md text-left text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30",
-              collapsed ? "justify-center p-1.5" : "gap-2 px-3 py-2",
-              active ? "bg-white/10 text-white" : "text-gray-300 hover:bg-white/5 hover:text-white",
-            )}
-          >
-            {collapsed ? (
-              <span className="relative">
-                <SiteAvatar name={label} className="h-8 w-8 text-xs" />
-                <span className="absolute -bottom-0.5 -right-0.5 rounded-full ring-2 ring-chrome">
-                  {dot}
+    <>
+      <nav
+        aria-label={t("sites")}
+        className="sidebar-scroll flex-1 space-y-0.5 overflow-y-auto overflow-x-hidden px-3 pb-3"
+      >
+        {!collapsed && error && (
+          <p className="px-3 py-2 text-xs leading-relaxed text-red-300">{t("sitesError")}</p>
+        )}
+        {!collapsed && !error && !loading && sites.length === 0 && (
+          <p className="px-3 py-2 text-xs text-gray-500">{t("noSitesYet")}</p>
+        )}
+        {sites.map((s) => {
+          const active = selected?.id === s.id;
+          const label = s.name || s.domain;
+          const dot = (
+            <span
+              className={clsx(
+                "h-2 w-2 flex-shrink-0 rounded-full",
+                s.enabled ? "bg-green-500" : "bg-gray-600",
+              )}
+            />
+          );
+          return (
+            <button
+              key={s.id}
+              onClick={() => select(String(s.id))}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                // The context-menu key and Shift+F10 report no pointer
+                // position; open beside the row instead.
+                const row = e.currentTarget.getBoundingClientRect();
+                const fromKeyboard = e.clientX === 0 && e.clientY === 0;
+                setMenu({
+                  site: s,
+                  x: fromKeyboard ? row.left + 12 : e.clientX,
+                  y: fromKeyboard ? row.bottom : e.clientY,
+                });
+              }}
+              aria-haspopup="menu"
+              aria-current={active ? "page" : undefined}
+              title={collapsed ? `${label} — ${s.domain}` : s.domain}
+              className={clsx(
+                "flex w-full items-center rounded-md text-left text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30",
+                collapsed ? "justify-center p-1.5" : "gap-2 px-3 py-2",
+                active || menu?.site.id === s.id
+                  ? "bg-white/10 text-white"
+                  : "text-gray-300 hover:bg-white/5 hover:text-white",
+              )}
+            >
+              {collapsed ? (
+                <span className="relative">
+                  <SiteAvatar name={label} className="h-8 w-8 text-xs" />
+                  <span className="absolute -bottom-0.5 -right-0.5 rounded-full ring-2 ring-chrome">
+                    {dot}
+                  </span>
+                  <span className="sr-only">{label}</span>
                 </span>
-                <span className="sr-only">{label}</span>
-              </span>
-            ) : (
-              <>
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-                {dot}
-              </>
-            )}
-          </button>
-        );
-      })}
-    </nav>
+              ) : (
+                <>
+                  <span className="min-w-0 flex-1 truncate">{label}</span>
+                  {dot}
+                </>
+              )}
+            </button>
+          );
+        })}
+        {actionError && (
+          <p role="alert" className="mt-2 break-words rounded-md bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-300">
+            {actionError}
+          </p>
+        )}
+      </nav>
+
+      {menu && (
+        <SiteMenu
+          site={menu.site}
+          x={menu.x}
+          y={menu.y}
+          labels={{
+            start: t("site.start"),
+            stop: t("site.stop"),
+            open: t("site.openFolder"),
+            remove: t("site.delete"),
+          }}
+          onClose={() => setMenu(null)}
+          onToggle={() => void toggle(menu.site)}
+          onOpenFolder={() => openFolder(menu.site)}
+          onDelete={() => {
+            setDeleteError(null);
+            setToDelete(menu.site);
+          }}
+        />
+      )}
+
+      <ConfirmDialog
+        open={toDelete !== null}
+        title={toDelete ? `Delete ${toDelete.domain}?` : ""}
+        busy={deleting}
+        confirmLabel="Delete site"
+        body={
+          toDelete && (
+            <span>
+              {toDelete.is_linked ? (
+                <>
+                  This removes the site from Nexora. Its folder at{" "}
+                  <code className="font-mono text-[11px]">{toDelete.docroot}</code> is linked, so
+                  it stays where it is
+                </>
+              ) : (
+                <>
+                  This removes the site, its folder at{" "}
+                  <code className="font-mono text-[11px]">{toDelete.docroot}</code>
+                </>
+              )}
+              {toDelete.db_name ? (
+                <>
+                  , its database <code className="font-mono text-[11px]">{toDelete.db_name}</code>
+                </>
+              ) : null}{" "}
+              and its certificate. It cannot be undone — export it first from WordPress › Tools if
+              you might want it back.
+              {deleteError && <span className="mt-2 block text-red-700">{deleteError}</span>}
+            </span>
+          )
+        }
+        onCancel={() => setToDelete(null)}
+        onConfirm={() => void confirmDelete()}
+      />
+    </>
+  );
+}
+
+/** The right-click menu for one site in the sidebar. */
+function SiteMenu({
+  site,
+  x,
+  y,
+  labels,
+  onClose,
+  onToggle,
+  onOpenFolder,
+  onDelete,
+}: {
+  site: Site;
+  x: number;
+  y: number;
+  labels: { start: string; stop: string; open: string; remove: string };
+  onClose: () => void;
+  onToggle: () => void;
+  onOpenFolder: () => void;
+  onDelete: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ left: x, top: y });
+
+  // Kept inside the window: opened near an edge, it moves back in. Measured
+  // before paint, so it never flashes at the wrong place.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    setPos({
+      left: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+      top: Math.max(8, Math.min(y, window.innerHeight - height - 8)),
+    });
+    el.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }, [x, y]);
+
+  useEffect(() => {
+    const away = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose();
+    };
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", escape);
+    window.addEventListener("resize", onClose);
+    window.addEventListener("blur", onClose);
+    document.addEventListener("scroll", onClose, true);
+    return () => {
+      window.removeEventListener("mousedown", away);
+      window.removeEventListener("keydown", escape);
+      window.removeEventListener("resize", onClose);
+      window.removeEventListener("blur", onClose);
+      document.removeEventListener("scroll", onClose, true);
+    };
+  }, [onClose]);
+
+  const moveFocus = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = e.key === "ArrowDown" ? at + 1 : at - 1 + items.length;
+    items[next % items.length]?.focus();
+  };
+
+  const item = (
+    label: string,
+    Icon: React.ComponentType<{ className?: string }>,
+    action: () => void,
+    danger = false,
+  ) => (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={() => {
+        onClose();
+        action();
+      }}
+      className={clsx(
+        "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] focus:outline-none",
+        danger
+          ? "text-red-600 hover:bg-red-50 focus:bg-red-50"
+          : "text-gray-800 hover:bg-gray-100 focus:bg-gray-100",
+      )}
+    >
+      <Icon className={clsx("h-4 w-4 flex-shrink-0", danger ? "text-red-500" : "text-gray-500")} />
+      {label}
+    </button>
+  );
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      aria-label={site.name || site.domain}
+      onKeyDown={moveFocus}
+      onContextMenu={(e) => e.preventDefault()}
+      style={{ left: pos.left, top: pos.top }}
+      className="fixed z-50 min-w-[190px] rounded-lg bg-white p-1 shadow-xl ring-1 ring-black/10"
+    >
+      {site.enabled
+        ? item(labels.stop, StopIcon, onToggle)
+        : item(labels.start, PlayIcon, onToggle)}
+      {item(labels.open, FolderOpenIcon, onOpenFolder)}
+      <div role="separator" className="my-1 h-px bg-gray-100" />
+      {item(labels.remove, TrashIcon, onDelete, true)}
+    </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { hasBackend } from "../../lib/api";
+import Logo from "../Logo";
 
 const FEATURES = [
   "WordPress site creation and management",
@@ -57,14 +58,10 @@ export default function AboutTab() {
   return (
     <div className="space-y-5">
       <section className="flex items-center gap-4 rounded-md border border-gray-200 bg-gray-50 px-6 py-5">
-        <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-xl bg-wp-blue">
-          <svg className="h-8 w-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
-        </div>
+        <Logo className="h-14 w-14 rounded-xl" />
         <div className="min-w-0 flex-1">
-          <h1 className="text-[17px] font-semibold text-gray-900">QuickWP Manager</h1>
-          <p className="text-[13px] text-gray-600">WordPress Development Environment Manager</p>
+          <h1 className="text-[17px] font-semibold text-gray-900">Nexora</h1>
+          <p className="text-[13px] text-gray-600">The modern development workspace</p>
         </div>
         {version && (
           <span className="flex-shrink-0 rounded-full bg-wp-blue px-3 py-1 text-[11px] font-medium text-white tabular-nums">
@@ -75,7 +72,7 @@ export default function AboutTab() {
 
       <Section title="About This Application">
         <p className="text-[13px] leading-relaxed text-gray-600">
-          QuickWP Manager is a powerful desktop application designed to streamline WordPress
+          Nexora is a powerful desktop application designed to streamline WordPress
           development workflows. Built with modern technologies, it provides an intuitive interface
           for managing WordPress sites, PHP versions, Node.js environments, and development tools
           all in one place.
@@ -129,7 +126,7 @@ export default function AboutTab() {
       </Section>
 
       <p className="text-center text-xs text-gray-500">
-        © 2024 QuickWP Manager. All rights reserved. This software is licensed under the MIT License.
+        © 2024 Nexora. All rights reserved. This software is licensed under the MIT License.
       </p>
     </div>
   );

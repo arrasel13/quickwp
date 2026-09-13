@@ -95,7 +95,7 @@ export default function SiteDatabase({ site }: { site: Site }) {
         <div className="rounded-xl border border-gray-200 bg-white p-6 text-center shadow-sm">
           <h3 className="text-sm font-semibold text-gray-900">No database</h3>
           <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-gray-500">
-            This site has no database recorded. QuickWP creates one when it
+            This site has no database recorded. Nexora creates one when it
             installs WordPress; a plain PHP site gets one only if you make it
             yourself.
           </p>
@@ -162,7 +162,7 @@ export default function SiteDatabase({ site }: { site: Site }) {
                     The {site.db_engine} engine is stopped
                   </h3>
                   <p className="mt-1 text-xs leading-relaxed text-gray-500">
-                    Start it from App settings › Services and this page will connect.
+                    Start it from Nexora Settings › Services and this page will connect.
                   </p>
                 </>
               ) : urlError ? (
@@ -247,7 +247,7 @@ export default function SiteDatabase({ site }: { site: Site }) {
               </button>
               {!running && (
                 <p className="mt-2 text-[11px] text-gray-500">
-                  The engine is stopped — start it from App settings › Services first.
+                  The engine is stopped — start it from Nexora Settings › Services first.
                 </p>
               )}
               {note && (

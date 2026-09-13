@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Pin QuickWP runtime components by SHA-256.
+# Pin Nexora runtime components by SHA-256.
 #
-# Every binary QuickWP runs is verified against a checksum compiled into the
+# Every binary Nexora runs is verified against a checksum compiled into the
 # app. That pin is what makes a compromised download host unable to reach an
 # installed user, so it must be taken from the published asset -- never from a
 # local build.

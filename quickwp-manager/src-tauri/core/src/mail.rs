@@ -100,7 +100,7 @@ pub fn stop(sup: &Supervisor) -> Result<bool> {
 
 /// The `sendmail_path` a pool uses when the catch-all is on.
 ///
-/// PHP hands this to popen, so the binary path is single-quoted: QuickWP lives
+/// PHP hands this to popen, so the binary path is single-quoted: Nexora lives
 /// under "Application Support", and an unquoted path with a space becomes two
 /// arguments and a mail that silently never sends.
 pub fn sendmail_path() -> Result<String> {
@@ -156,17 +156,17 @@ pub fn laravel_env() -> Vec<(String, String)> {
 /// a plugin has called `isSMTP()` and pointed PHPMailer at a real provider.
 pub const MU_PLUGIN: &str = r#"<?php
 /**
- * Plugin Name: QuickWP Mail Catcher
+ * Plugin Name: Nexora Mail Catcher
  * Description: Routes every message this site sends to Mailpit instead of the internet.
  *
- * Written by QuickWP. Removing the catch-all switch removes this file.
+ * Written by Nexora. Removing the catch-all switch removes this file.
  */
 add_action('phpmailer_init', function ($phpmailer) {
     // Runs last on purpose: an SMTP plugin has already called isSMTP() and
     // pointed PHPMailer at a real provider by now, and this puts it back.
     $phpmailer->isSMTP();
     $phpmailer->Host       = '127.0.0.1';
-    $phpmailer->Port       = QUICKWP_MAILPIT_PORT;
+    $phpmailer->Port       = NEXORA_MAILPIT_PORT;
     $phpmailer->SMTPAuth   = false;
     $phpmailer->SMTPSecure = '';
     $phpmailer->SMTPAutoTLS = false;
@@ -174,7 +174,7 @@ add_action('phpmailer_init', function ($phpmailer) {
 "#;
 
 fn mu_plugin_path(docroot: &str) -> PathBuf {
-    PathBuf::from(docroot).join("wp-content/mu-plugins/quickwp-mail.php")
+    PathBuf::from(docroot).join("wp-content/mu-plugins/nexora-mail.php")
 }
 
 /// Install or remove the mu-plugin for one site.
@@ -183,6 +183,7 @@ fn mu_plugin_path(docroot: &str) -> PathBuf {
 /// existed is caught too, because "every site's mail is caught" must not
 /// quietly mean "every site created after you found the switch".
 pub fn set_site_catch(docroot: &str, on: bool) -> Result<()> {
+    crate::legacy::remove_old_mu_plugins(docroot);
     let path = mu_plugin_path(docroot);
     if !on {
         let _ = std::fs::remove_file(&path);
@@ -192,7 +193,7 @@ pub fn set_site_catch(docroot: &str, on: bool) -> Result<()> {
         return Ok(()); // not a WordPress site; the sendmail shim covers it
     }
     paths::mkdir_p(path.parent().unwrap())?;
-    let body = MU_PLUGIN.replace("QUICKWP_MAILPIT_PORT", &ports::MAILPIT_SMTP.to_string());
+    let body = MU_PLUGIN.replace("NEXORA_MAILPIT_PORT", &ports::MAILPIT_SMTP.to_string());
     std::fs::write(&path, body).map_err(|e| Error::Io { path, source: e })
 }
 
@@ -244,7 +245,7 @@ mod tests {
 
     #[test]
     fn removing_the_catch_on_a_non_wordpress_site_is_not_an_error() {
-        let dir = std::env::temp_dir().join("quickwp-mail-nonwp");
+        let dir = std::env::temp_dir().join("nexora-mail-nonwp");
         std::fs::create_dir_all(&dir).unwrap();
         assert!(set_site_catch(&dir.to_string_lossy(), true).is_ok());
         assert!(set_site_catch(&dir.to_string_lossy(), false).is_ok());

@@ -1,6 +1,6 @@
 //! Pinned runtime components.
 //!
-//! Every binary QuickWP runs is verified against a checksum that is a
+//! Every binary Nexora runs is verified against a checksum that is a
 //! constant in this binary. That pin is the anchor of the supply chain:
 //! it is what makes compromising a download host unable to reach an
 //! installed user. A hash here was taken from the published asset by
@@ -196,7 +196,7 @@ pub const WPCLI_PIN: WpCliPin = WpCliPin {
 // ------------------------------------------------------------- adminer
 //
 // One PHP file, run by whichever PHP the edge already has a pool for. The
-// `mysql-en` asset rather than the full one: MySQL is the only engine QuickWP
+// `mysql-en` asset rather than the full one: MySQL is the only engine Nexora
 // runs, and the single-language build is a third of the size.
 
 pub struct AdminerPin {

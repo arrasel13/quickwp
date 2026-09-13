@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "QuickWP Manager",
-  "version": "0.1.0",
-  "identifier": "com.quickwp.manager",
+  "productName": "Nexora",
+  "mainBinaryName": "nexora-app",
+  "version": "0.1.1",
+  "identifier": "com.nexora.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "QuickWP Manager",
+        "title": "Nexora",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
@@ -41,11 +42,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "publisher": "QuickWP",
+    "publisher": "Nexora",
     "category": "DeveloperTool",
     "shortDescription": "WordPress development environment manager",
     "longDescription": "A desktop application for managing WordPress sites with Laravel Herd and WP-CLI integration",
-    "copyright": "Copyright \u00a9 2024 QuickWP. All rights reserved.",
+    "copyright": "Copyright \u00a9 2024 Nexora. All rights reserved.",
     "license": "MIT",
     "macOS": {
       "frameworks": [],
@@ -58,8 +59,8 @@
       "timestampUrl": ""
     },
     "resources": {
-      "bundled/quickwp-edge": "quickwp-edge",
-      "bundled/quickwp": "quickwp"
+      "bundled/nexora-edge": "nexora-edge",
+      "bundled/nexora": "nexora"
     }
   }
 }

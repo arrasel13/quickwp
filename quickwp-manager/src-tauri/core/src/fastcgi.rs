@@ -1,6 +1,6 @@
 //! A minimal FastCGI client.
 //!
-//! This is not test scaffolding: it is how QuickWP answers "is this pool
+//! This is not test scaffolding: it is how Nexora answers "is this pool
 //! actually serving?" without standing up a web server. A pool that is running
 //! and a pool that is serving are different facts, and reporting the first as
 //! the second is the kind of lie that makes a status light worthless.
@@ -153,7 +153,7 @@ pub fn run_script(port: u16, script: &std::path::Path) -> Result<FcgiResponse> {
             ("REQUEST_URI", "/"),
             ("DOCUMENT_ROOT", script.parent().unwrap().to_str().unwrap_or("/")),
             ("SERVER_PROTOCOL", "HTTP/1.1"),
-            ("SERVER_SOFTWARE", "QuickWP"),
+            ("SERVER_SOFTWARE", "Nexora"),
             ("REMOTE_ADDR", "127.0.0.1"),
             ("CONTENT_LENGTH", "0"),
         ],

@@ -3,19 +3,19 @@
 //! The dialog previously created a blank PHP site and called it WordPress, and
 //! the modal never mounted when the list was empty. Neither was caught because
 //! nothing ran this path end to end.
-use quickwp_core as core;
+use nexora_core as core;
 use std::io::Write;
 
 fn step(n: &str, s: &str) { print!("[{n}] {s} ... "); std::io::stdout().flush().ok(); }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = core::Quickwp::new()?;
+    let app = core::Nexora::new()?;
     let minor = "8.3";
     let series = core::runtime::MYSQL_SERIES[0];
     let domain = "createflow.test";
 
-    println!("QuickWP New Site flow\n");
+    println!("Nexora New Site flow\n");
 
     step("1/7", "PHP, MySQL, WP-CLI");
     core::runtime::install_php(minor, "fpm", |_| {}).await?;

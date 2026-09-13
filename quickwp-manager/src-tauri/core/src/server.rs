@@ -1,11 +1,11 @@
 //! The edge: a hostname-routing HTTP server that speaks FastCGI to PHP pools.
 //!
-//! QuickWP serves sites itself rather than downloading nginx and Caddy and
+//! Nexora serves sites itself rather than downloading nginx and Caddy and
 //! generating config for both. That removes two pinned binaries, two config
 //! generators and the class of bug where a site is in the database but missing
 //! from a server block.
 //!
-//! Routing is by Host header, and every name QuickWP knows answers for itself:
+//! Routing is by Host header, and every name Nexora knows answers for itself:
 //! a stopped site returns its own 503 page rather than falling through to
 //! whichever site happens to be first. Falling through is how a stopped site
 //! ends up serving a neighbour's content.
@@ -129,7 +129,7 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
                     503,
                     "text/html; charset=utf-8",
                     "<h1>503</h1><p>The database browser is not installed yet. \
-                     Open a site's Database tab once and QuickWP will fetch it.</p>",
+                     Open a site's Database tab once and Nexora will fetch it.</p>",
                 )
             }
         }
@@ -210,7 +210,7 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
         ("QUERY_STRING", &query),
         ("DOCUMENT_ROOT", &docroot_s),
         ("SERVER_PROTOCOL", "HTTP/1.1"),
-        ("SERVER_SOFTWARE", "QuickWP"),
+        ("SERVER_SOFTWARE", "Nexora"),
         ("REMOTE_ADDR", "127.0.0.1"),
         ("SERVER_NAME", &host),
         ("SERVER_PORT", &server_port),
@@ -380,9 +380,9 @@ fn stopped_page(site: &site::Site) -> String {
 padding:0 1.5rem;color:#1a1f27;background:#f7f8fa}}code{{background:#e9edf2;padding:1px 5px}}
 @media(prefers-color-scheme:dark){{body{{color:#e7eaf0;background:#0f1217}}code{{background:#1e242e}}}}</style>
 <h1>This site is stopped</h1>
-<p>Nothing is broken. You stopped <strong>{name}</strong> in QuickWP, so it is served by
+<p>Nothing is broken. You stopped <strong>{name}</strong> in Nexora, so it is served by
 nothing — every other site on this machine is still running.</p>
-<p>Start it again from the Sites tab, or run <code>quickwp site start {domain}</code>.</p>"#,
+<p>Start it again from the Sites tab, or run <code>nexora site start {domain}</code>.</p>"#,
         name = html_escape(&site.name),
         domain = html_escape(&site.domain),
     )
@@ -395,7 +395,7 @@ fn unknown_host(host: &str) -> String {
 padding:0 1.5rem;color:#1a1f27;background:#f7f8fa}}code{{background:#e9edf2;padding:1px 5px}}
 @media(prefers-color-scheme:dark){{body{{color:#e7eaf0;background:#0f1217}}code{{background:#1e242e}}}}</style>
 <h1>No site answers on {host}</h1>
-<p>QuickWP has no site with that hostname. Create one in the Sites tab.</p>"#,
+<p>Nexora has no site with that hostname. Create one in the Sites tab.</p>"#,
         host = html_escape(host)
     )
 }

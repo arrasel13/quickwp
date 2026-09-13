@@ -1,6 +1,6 @@
 //! Node versions already installed on this machine.
 //!
-//! QuickWP does not install Node. People arrive with one already managed by
+//! Nexora does not install Node. People arrive with one already managed by
 //! nvm, fnm, Volta, asdf, n or Homebrew, and a second copy owned by us would
 //! be the one thing on the machine their `package.json` scripts do not use.
 //! So this only reports what is there.

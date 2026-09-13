@@ -1,6 +1,6 @@
 //! The app's own log, and reading everyone else's.
 //!
-//! QuickWP's log is first in the viewer's list because when a service did not
+//! Nexora's log is first in the viewer's list because when a service did not
 //! start, the reason is in *our* log and not in that service's empty file.
 //! It lives beside every other log rather than in ~/Library/Logs: one directory
 //! beats the platform convention when the convention splits a diagnosis across
@@ -52,7 +52,7 @@ pub struct LogSource {
     pub label: String,
     pub path: String,
     pub bytes: u64,
-    /// True for QuickWP's own log, which sorts first.
+    /// True for Nexora's own log, which sorts first.
     pub is_app: bool,
 }
 
@@ -66,7 +66,7 @@ pub struct SiteLog {
     pub exists: bool,
     pub bytes: u64,
     /// Only meaningful for the WordPress debug log: whether WP is writing to
-    /// it at all. `None` for the streams QuickWP always writes.
+    /// it at all. `None` for the streams Nexora always writes.
     pub logging: Option<bool>,
 }
 
@@ -101,7 +101,7 @@ pub fn for_site(site: &crate::site::Site, wp_logging: Option<bool>) -> Vec<SiteL
     let mut out = Vec::new();
     for (id, label) in [
         ("wp-debug", "WordPress debug log"),
-        ("app", "QuickWP (app)"),
+        ("app", "Nexora (app)"),
         ("server", "Server (edge/PHP)"),
         ("database", "Database"),
     ] {
@@ -141,8 +141,8 @@ pub fn sources() -> Vec<LogSource> {
 
     let app = paths::app_log();
     out.push(LogSource {
-        id: "quickwp".into(),
-        label: "QuickWP".into(),
+        id: "nexora".into(),
+        label: "Nexora".into(),
         bytes: std::fs::metadata(&app).map(|m| m.len()).unwrap_or(0),
         path: app.to_string_lossy().into(),
         is_app: true,
@@ -159,7 +159,7 @@ pub fn sources() -> Vec<LogSource> {
                 return None;
             }
             let name = p.file_stem()?.to_string_lossy().into_owned();
-            if name == "quickwp" {
+            if name == "nexora" {
                 return None;
             }
             Some(LogSource {
@@ -204,7 +204,7 @@ fn pretty(id: &str) -> String {
 
 /// The last `lines` lines of one log.
 pub fn tail(id: &str, lines: usize) -> crate::Result<String> {
-    let path = if id == "quickwp" {
+    let path = if id == "nexora" {
         paths::app_log()
     } else {
         paths::logs().join(format!("{id}.log"))
@@ -213,7 +213,7 @@ pub fn tail(id: &str, lines: usize) -> crate::Result<String> {
 }
 
 /// The last `lines` of a file named directly, for logs that do not live in
-/// QuickWP's own directory -- a site's wp-content/debug.log, say.
+/// Nexora's own directory -- a site's wp-content/debug.log, say.
 pub fn tail_path(path: &std::path::Path, lines: usize) -> crate::Result<String> {
     // A log that does not exist yet is not an error: nothing has written to it.
     let Ok(text) = std::fs::read_to_string(path) else {
@@ -276,7 +276,7 @@ mod tests {
     fn the_app_log_sorts_first_because_it_answers_why_nothing_happened() {
         let s = sources();
         assert!(s[0].is_app);
-        assert_eq!(s[0].id, "quickwp");
+        assert_eq!(s[0].id, "nexora");
     }
 
     #[test]

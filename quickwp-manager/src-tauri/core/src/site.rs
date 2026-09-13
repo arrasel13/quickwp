@@ -138,7 +138,7 @@ pub fn find_by_id(db: &Db, id: i64) -> Result<Option<Site>> {
 
 /// Delete a site.
 ///
-/// A linked site loses only QuickWP's record of it. The folder stays exactly
+/// A linked site loses only Nexora's record of it. The folder stays exactly
 /// where it was, with exactly what was in it.
 pub fn delete(db: &Db, domain: &str) -> Result<()> {
     let Some(site) = find(db, domain)? else {
@@ -337,7 +337,7 @@ $docroot = __DIR__;
   }}
 </style>
 <h1><?= htmlspecialchars($domain) ?></h1>
-<p class="sub">Served by QuickWP.</p>
+<p class="sub">Served by Nexora.</p>
 <dl>
   <dt>PHP</dt><dd><?= PHP_VERSION ?></dd>
   <dt>SAPI</dt><dd><?= PHP_SAPI ?></dd>
@@ -345,7 +345,7 @@ $docroot = __DIR__;
   <dt>Pool port</dt><dd><?= htmlspecialchars($_SERVER['SERVER_PORT'] ?? '?') ?></dd>
 </dl>
 <p>Edit <code>index.php</code> in the docroot above. This file is written once and
-never overwritten by QuickWP.</p>
+never overwritten by Nexora.</p>
 "#,
         domain = domain
     );
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn domains_normalise_and_cannot_be_claimed_twice() {
         let db = Db::open_in_memory().unwrap();
-        let tmp = std::env::temp_dir().join("quickwp-site-test");
+        let tmp = std::env::temp_dir().join("nexora-site-test");
         std::fs::create_dir_all(&tmp).unwrap();
 
         let a = create(
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn deleting_a_linked_site_leaves_the_folder_alone() {
         let db = Db::open_in_memory().unwrap();
-        let tmp = std::env::temp_dir().join("quickwp-linked-keep");
+        let tmp = std::env::temp_dir().join("nexora-linked-keep");
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("mine.txt"), "my work").unwrap();
 
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn an_alias_cannot_be_stolen_from_another_site() {
         let db = Db::open_in_memory().unwrap();
-        let tmp = std::env::temp_dir().join("quickwp-alias-test");
+        let tmp = std::env::temp_dir().join("nexora-alias-test");
         std::fs::create_dir_all(&tmp).unwrap();
         for d in ["one.test", "two.test"] {
             create(

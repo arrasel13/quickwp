@@ -1,4 +1,4 @@
-//! The four things QuickWP touches outside its own directory.
+//! The four things Nexora touches outside its own directory.
 //!
 //! Each is asked for once, at the moment it is first needed, and each is undone
 //! by `remove_system_changes`. That function is written in the same file as the
@@ -13,8 +13,8 @@
 use crate::{ca, paths, ports, Error, Result};
 use std::path::PathBuf;
 
-pub const DAEMON_LABEL: &str = "com.quickwp.manager.edge";
-pub const DNS_AGENT_LABEL: &str = "com.quickwp.manager.dns";
+pub const DAEMON_LABEL: &str = "com.nexora.app.edge";
+pub const DNS_AGENT_LABEL: &str = "com.nexora.app.dns";
 
 pub fn resolver_path(tld: &str) -> PathBuf {
     PathBuf::from(format!("/etc/resolver/{tld}"))
@@ -29,16 +29,25 @@ pub fn dns_agent_plist_path() -> PathBuf {
 }
 
 pub fn dns_agent_running() -> bool {
-    // A user agent lives in the GUI domain for this uid.
+    // A user agent lives in the GUI domain for this uid. Loaded is not
+    // running: an agent whose program is missing stays loaded and never runs.
     let uid = unsafe { libc::getuid() };
     std::process::Command::new("/bin/launchctl")
         .args(["print", &format!("gui/{uid}/{DNS_AGENT_LABEL}")])
         .output()
-        .map(|o| o.status.success())
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("state = running"))
         .unwrap_or(false)
 }
 
-/// Install the DNS agent, so names keep resolving after QuickWP is closed.
+/// Does the installed agent run this program? One pointed anywhere else --
+/// an old path, or the app instead of the CLI -- answers nothing.
+pub fn dns_agent_runs(cli_binary: &std::path::Path) -> bool {
+    std::fs::read_to_string(dns_agent_plist_path())
+        .map(|plist| plist.contains(&format!("<string>{}</string>", cli_binary.display())))
+        .unwrap_or(false)
+}
+
+/// Install the DNS agent, so names keep resolving after Nexora is closed.
 ///
 /// This is not a convenience. Once /etc/resolver/<tld> points at our DNS, a
 /// lookup for that TLD goes nowhere else -- so if our server is not running,
@@ -48,9 +57,11 @@ pub fn dns_agent_running() -> bool {
 /// A user agent needs no password, which is why it is not batched into the
 /// admin prompt.
 pub fn install_dns_agent(cli_binary: &std::path::Path) -> Result<()> {
+    // An agent from the app's earlier name would answer the same port.
+    crate::legacy::remove_old_dns_agent();
     if !cli_binary.exists() {
         return Err(Error::other(format!(
-            "The quickwp binary is missing at {}. The DNS agent would have nothing to run.",
+            "The nexora binary is missing at {}. The DNS agent would have nothing to run.",
             cli_binary.display()
         )));
     }
@@ -106,6 +117,7 @@ pub fn install_dns_agent(cli_binary: &std::path::Path) -> Result<()> {
 }
 
 pub fn remove_dns_agent() {
+    crate::legacy::remove_old_dns_agent();
     let uid = unsafe { libc::getuid() };
     let _ = std::process::Command::new("/bin/launchctl")
         .args(["bootout", &format!("gui/{uid}/{DNS_AGENT_LABEL}")])
@@ -120,7 +132,7 @@ pub fn daemon_plist_path() -> PathBuf {
 /// Where the edge binary is copied so root runs it from a stable, root-owned
 /// path rather than out of a user-writable build directory.
 pub fn edge_install_path() -> PathBuf {
-    PathBuf::from("/usr/local/libexec/quickwp-edge")
+    PathBuf::from("/usr/local/libexec/nexora-edge")
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -214,7 +226,7 @@ fn run_as_root(script: &str, reason: &str) -> Result<()> {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains("-128") || err.to_lowercase().contains("user canceled") {
             return Err(Error::other(
-                "Cancelled. Nothing was changed — QuickWP will ask again the next \
+                "Cancelled. Nothing was changed — Nexora will ask again the next \
                  time it needs this.",
             ));
         }
@@ -268,27 +280,75 @@ pub fn plist_body(edge: &std::path::Path, certs: &std::path::Path, logs: &std::p
 
 /// The script the admin prompt runs. Returned rather than run, so its syntax
 /// can be checked and a human can read exactly what they are approving.
-pub fn install_script(tld: &str, edge_binary: &std::path::Path) -> String {
+pub fn install_script(tld: &str, edge_binary: &std::path::Path, pause: Option<Rival>) -> String {
     let resolver = resolver_path(tld);
+
+    // Another tool's server, paused so 80 and 443 are free: disabled first, so
+    // launchd's KeepAlive does not bring it straight back, and recorded at
+    // once, so Remove system changes can hand the ports back even if a later
+    // line fails. Its server can outlive its launchd job, so whatever of it
+    // still listens is stopped by pid -- never `pkill -f`, whose pattern would
+    // also match the osascript process carrying this very script, and kill
+    // it. Nothing proceeds until the ports are really free. Its files are left
+    // alone; `launchctl enable` undoes all of it.
+    let pause_block = match pause {
+        Some((label, bin, tool)) => format!(
+            "launchctl disable system/{label}
+printf '%s' {label_q} > {marker}
+chown {user} {marker}
+launchctl bootout system/{label} 2>/dev/null || true
+launchctl bootout system/{ours} 2>/dev/null || true
+for pid in $(lsof -t -nP -iTCP:80 -iTCP:443 -sTCP:LISTEN 2>/dev/null | sort -u); do
+  case \"$(ps -o command= -p \"$pid\")\" in
+    {bin}*) kill \"$pid\" 2>/dev/null || true ;;
+  esac
+done
+i=0
+while lsof -nP -iTCP:80 -iTCP:443 -sTCP:LISTEN >/dev/null 2>&1; do
+  i=$((i+1))
+  if [ $i -gt 40 ]; then echo {msg} >&2; exit 1; fi
+  sleep 0.25
+done
+",
+            ours = DAEMON_LABEL,
+            bin = shell_quote(bin),
+            label_q = shell_quote(label),
+            marker = shell_quote(&paused_marker().to_string_lossy()),
+            user = shell_quote(&current_user()),
+            msg = shell_quote(&format!("Paused {tool}, but ports 80 and 443 are still in use.")),
+        ),
+        None => String::new(),
+    };
+    // A resolver file that is not ours is kept, so removing Nexora's system
+    // changes can put it back rather than leave the TLD resolving nowhere.
+    let backup = resolver_backup(tld);
+    let backup_block = format!(
+        "if [ -f {r} ] && ! grep -q 'port {dns}' {r}; then cp {r} {b}; chown {user} {b}; fi",
+        r = shell_quote(&resolver.to_string_lossy()),
+        dns = ports::DNS,
+        b = shell_quote(&backup.to_string_lossy()),
+        user = shell_quote(&current_user()),
+    );
     let plist = daemon_plist_path();
     let installed_edge = edge_install_path();
     let body = plist_body(&installed_edge, &paths::shared_certs(), &paths::logs());
 
     format!(
         "set -e
-mkdir -p /etc/resolver /usr/local/libexec {certs}
+{legacy_block}{pause_block}mkdir -p /etc/resolver /usr/local/libexec {certs}
 # Handed to the user so issuing a certificate later needs no password. Root
 # only ever READS these; it never executes anything from here.
 chown -R {user} {certs}
 chmod 700 {certs}
+{backup_block}
 printf '%s\\n' 'nameserver 127.0.0.1' 'port {dns}' > {resolver}
 chmod 644 {resolver}
 cp {src_edge} {dst_edge}
 chown root:wheel {dst_edge}
 chmod 755 {dst_edge}
-cat > {plist} <<'QUICKWP_PLIST'
+cat > {plist} <<'NEXORA_PLIST'
 {plist_body}
-QUICKWP_PLIST
+NEXORA_PLIST
 chown root:wheel {plist}
 chmod 644 {plist}
 launchctl bootout system/{label} 2>/dev/null || true
@@ -303,6 +363,9 @@ launchctl enable system/{label}",
         plist = shell_quote(&plist.to_string_lossy()),
         plist_body = body,
         label = DAEMON_LABEL,
+        pause_block = pause_block,
+        backup_block = backup_block,
+        legacy_block = crate::legacy::system_cleanup_script(),
     )
 }
 
@@ -333,12 +396,20 @@ pub fn preflight(tld: &str, edge_binary: &std::path::Path, takeover: bool) -> Ve
         })
     };
 
+    // Taking over can include pausing another tool's server, when it is one
+    // Nexora recognises and it is what holds the ports.
+    let pause = if takeover { pausable_rival() } else { None };
+    // Nexora's own edge holding 80/443 is not in the way: the install
+    // replaces it. Counting it as a conflict blocked every retry after a
+    // successful install with "held by root".
+    let ours_serving = own_edge_serving();
+
     let edge_ok = edge_binary.exists();
     add(
         "edge-binary",
         "The edge binary is present",
         edge_ok,
-        "Build it with `cargo build --release -p quickwp-edge`. Without it the daemon would be installed pointing at nothing.",
+        "Build it with `cargo build --release -p nexora-edge`. Without it the daemon would be installed pointing at nothing.",
         true,
     );
 
@@ -349,7 +420,7 @@ pub fn preflight(tld: &str, edge_binary: &std::path::Path, takeover: bool) -> Ve
         (ports::EDGE_HTTP, "Port 80 is free"),
         (ports::EDGE_HTTPS, "Port 443 is free"),
     ] {
-        let free = crate::ports::is_free(port);
+        let free = crate::ports::is_free(port) || ours_serving;
         if !free {
             taken.push(port);
         }
@@ -358,10 +429,13 @@ pub fn preflight(tld: &str, edge_binary: &std::path::Path, takeover: bool) -> Ve
             label,
             free,
             &format!(
-                "Held by {}.",
-                crate::ports::holder(port).unwrap_or_else(|| "another process".into())
+                "Held by {}.{}",
+                crate::ports::holder(port).unwrap_or_else(|| "another process".into()),
+                pause
+                    .map(|(_, _, t)| format!(" Nexora will pause {t}'s server first."))
+                    .unwrap_or_default()
             ),
-            true,
+            pause.is_none(),
         );
     }
 
@@ -373,12 +447,12 @@ pub fn preflight(tld: &str, edge_binary: &std::path::Path, takeover: bool) -> Ve
         !rival_holds_ports,
         &match (&rival, taken.first()) {
             (Some(t), Some(_)) => format!(
-                "{t} is serving on {}. Quit it first — only one tool can serve https://name.{tld} with no port number.",
+                "{t} is serving on {}. Its server runs as a system service, so quitting the app does not stop it — and only one tool can serve https://name.{tld} with no port number.",
                 taken.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" and ")
             ),
             _ => String::new(),
         },
-        true,
+        pause.is_none(),
     );
 
     let conflict = resolver_conflict(tld);
@@ -415,7 +489,7 @@ pub fn preflight(tld: &str, edge_binary: &std::path::Path, takeover: bool) -> Ve
     add(
         "script-valid",
         "The privileged script parses",
-        script_is_valid(tld, edge_binary),
+        script_is_valid(tld, edge_binary, pause),
         "The generated script has a syntax error. This is a bug — do not proceed.",
         true,
     );
@@ -440,7 +514,7 @@ fn scratch(suffix: &str) -> std::path::PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "quickwp-preflight-{}-{}-{}",
+        "nexora-preflight-{}-{}-{}",
         std::process::id(),
         n,
         suffix
@@ -463,8 +537,8 @@ fn plist_is_valid(edge_binary: &std::path::Path) -> bool {
     ok
 }
 
-fn script_is_valid(tld: &str, edge_binary: &std::path::Path) -> bool {
-    let script = install_script(tld, edge_binary);
+fn script_is_valid(tld: &str, edge_binary: &std::path::Path, pause: Option<Rival>) -> bool {
+    let script = install_script(tld, edge_binary, pause);
     let tmp = scratch("sh");
     if std::fs::write(&tmp, script).is_err() {
         return false;
@@ -478,6 +552,103 @@ fn script_is_valid(tld: &str, edge_binary: &std::path::Path) -> bool {
         .unwrap_or(false);
     let _ = std::fs::remove_file(&tmp);
     ok
+}
+
+/// Another tool's root web server that Nexora knows how to pause: its launchd
+/// label, the binary that serves, and the tool's name.
+type Rival = (&'static str, &'static str, &'static str);
+
+const RIVAL_DAEMONS: &[Rival] = &[(
+    "dev.rexenv.rexenv.edge",
+    "/Library/Application Support/dev.rexenv.rexenv/bin/caddy",
+    "rexenv",
+)];
+
+/// Where Nexora remembers the server it paused, so it can hand the ports back.
+fn paused_marker() -> PathBuf {
+    paths::root().join("paused-daemon")
+}
+
+fn resolver_backup(tld: &str) -> PathBuf {
+    paths::root().join(format!("resolver-backup-{tld}"))
+}
+
+fn process_running(binary: &str) -> bool {
+    std::process::Command::new("/bin/ps")
+        .args(["-axo", "command="])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.starts_with(binary)))
+        .unwrap_or(false)
+}
+
+/// Nexora's own edge is loaded and actually running.
+fn own_edge_serving() -> bool {
+    (daemon_running() && process_running(&edge_install_path().to_string_lossy()))
+        // The edge an earlier build installed is ours too; the install replaces it.
+        || crate::legacy::old_edge_serving()
+}
+
+/// The resolver and the edge daemon are in place and running, and the
+/// installed edge is the one this app ships: nothing to ask a password for.
+pub fn system_install_current(tld: &str, edge_binary: &std::path::Path) -> bool {
+    resolver_is_ours(tld)
+        && own_edge_serving()
+        && match (std::fs::read(edge_install_path()), std::fs::read(edge_binary)) {
+            (Ok(installed), Ok(shipped)) => installed == shipped,
+            _ => false,
+        }
+}
+
+/// The recognised server holding 80/443, if that is what holds them.
+fn pausable_rival() -> Option<Rival> {
+    let taken = !crate::ports::is_free(ports::EDGE_HTTP) || !crate::ports::is_free(ports::EDGE_HTTPS);
+    if !taken {
+        return None;
+    }
+    RIVAL_DAEMONS.iter().copied().find(|(label, bin, _)| {
+        std::path::Path::new(&format!("/Library/LaunchDaemons/{label}.plist")).exists()
+            && process_running(bin)
+    })
+}
+
+/// What stands where Nexora's HTTPS needs to be, for first-run setup to ask
+/// about in plain words instead of failing with a preflight list.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Conflict {
+    /// The other local environment involved, when one is recognised.
+    pub tool: Option<String>,
+    /// 80 and/or 443, when something else listens on them.
+    pub ports: Vec<u16>,
+    /// The TLD's resolver file belongs to someone else.
+    pub resolver_taken: bool,
+    /// One prompt can hand everything to Nexora: no port is taken, or the
+    /// server holding them is one Nexora knows how to pause.
+    pub can_take_over: bool,
+}
+
+pub fn conflict(tld: &str) -> Conflict {
+    // Nexora's own edge on 443 is not a conflict.
+    let taken: Vec<u16> = if own_edge_serving() {
+        Vec::new()
+    } else {
+        [ports::EDGE_HTTP, ports::EDGE_HTTPS]
+            .into_iter()
+            .filter(|p| !crate::ports::is_free(*p))
+            .collect()
+    };
+    let resolver_taken = resolver_conflict(tld).is_some();
+    let pausable = if taken.is_empty() { None } else { pausable_rival() };
+    let tool = match pausable {
+        Some((_, _, t)) => Some(t.to_string()),
+        None if !taken.is_empty() || resolver_taken => crate::ports::running_dev_tool(),
+        None => None,
+    };
+    Conflict {
+        can_take_over: taken.is_empty() || pausable.is_some(),
+        tool,
+        ports: taken,
+        resolver_taken,
+    }
 }
 
 /// Install the resolver file and the edge daemon. One prompt for both.
@@ -498,12 +669,27 @@ pub fn install_system(tld: &str, edge_binary: &std::path::Path, takeover: bool) 
         )));
     }
 
-    run_as_root(
-        &install_script(tld, edge_binary),
-        &format!(
-            "QuickWP needs your password once to route .{tld} to your Mac and let it serve on port 443."
+    let pause = if takeover { pausable_rival() } else { None };
+    let reason = match pause {
+        Some((_, _, tool)) => format!(
+            "Nexora needs your password once to pause {tool}'s server, route .{tld} to your Mac and serve on port 443."
         ),
-    )
+        None => format!(
+            "Nexora needs your password once to route .{tld} to your Mac and let it serve on port 443."
+        ),
+    };
+    if let Err(e) = run_as_root(&install_script(tld, edge_binary, pause), &reason) {
+        // osascript can report failure for a script that ran to its end. What
+        // counts is the measured result -- our resolver in place, our daemon
+        // running. Anything short of that is the failure it says it is.
+        if !(resolver_is_ours(tld) && own_edge_serving()) {
+            return Err(e);
+        }
+        crate::log::write(&format!(
+            "the privileged step reported an error, but the install is in place: {e}"
+        ));
+    }
+    Ok(())
 }
 
 /// Is claiming this TLD a takeover from another tool, rather than a fresh
@@ -525,7 +711,7 @@ chmod 644 {resolver}",
     );
     run_as_root(
         &script,
-        &format!("QuickWP needs your password to route .{tld} to your Mac."),
+        &format!("Nexora needs your password to route .{tld} to your Mac."),
     )
 }
 
@@ -545,20 +731,48 @@ pub fn remove_system_changes(tlds: &[String]) -> Result<()> {
     ];
     for tld in tlds {
         // Only remove a resolver file that is actually ours.
-        let p = resolver_path(tld);
+        let p = shell_quote(&resolver_path(tld).to_string_lossy());
         lines.push(format!(
-            "if grep -q 'port {}' {} 2>/dev/null; then rm -f {}; fi",
-            ports::DNS,
-            shell_quote(&p.to_string_lossy()),
-            shell_quote(&p.to_string_lossy())
+            "if grep -q 'port {}' {p} 2>/dev/null; then rm -f {p}; fi",
+            ports::DNS
+        ));
+        // And put back the one Nexora replaced when it took the TLD over.
+        let backup = resolver_backup(tld);
+        if backup.exists() {
+            lines.push(format!(
+                "if [ ! -f {p} ]; then cp {b} {p}; chown root:wheel {p}; chmod 644 {p}; fi",
+                b = shell_quote(&backup.to_string_lossy())
+            ));
+        }
+    }
+    // Hand 80 and 443 back to the server Nexora paused, now that ours is gone.
+    // Only a label Nexora itself knows is ever run.
+    // And whatever an earlier build of the app installed.
+    lines.push(crate::legacy::system_cleanup_script());
+    let paused = std::fs::read_to_string(paused_marker())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| RIVAL_DAEMONS.iter().any(|(l, _, _)| l == s));
+    if let Some(label) = &paused {
+        lines.push(format!("launchctl enable system/{label}"));
+        lines.push(format!(
+            "launchctl bootstrap system /Library/LaunchDaemons/{label}.plist 2>/dev/null || true"
         ));
     }
     let script = format!("set -e\n{}", lines.join("\n"));
 
     run_as_root(
         &script,
-        "QuickWP needs your password to remove the DNS resolver and the edge service.",
+        if paused.is_some() {
+            "Nexora needs your password to remove the DNS resolver and the edge service, and to restart the server it paused."
+        } else {
+            "Nexora needs your password to remove the DNS resolver and the edge service."
+        },
     )?;
+    let _ = std::fs::remove_file(paused_marker());
+    for tld in tlds {
+        let _ = std::fs::remove_file(resolver_backup(tld));
+    }
 
     // Both of these are user-level and need no admin.
     remove_dns_agent();
@@ -619,7 +833,7 @@ pub fn verify(tld: &str) -> VerifyReport {
     let resolver_ours = resolver_is_ours(tld);
     add(
         "resolver",
-        &format!("/etc/resolver/{tld} points at QuickWP"),
+        &format!("/etc/resolver/{tld} points at Nexora"),
         resolver_ours,
         if resolver_ours {
             format!("port {}", ports::DNS)
@@ -629,7 +843,7 @@ pub fn verify(tld: &str) -> VerifyReport {
     );
 
     // The file existing is not the same as the name resolving. Ask the system.
-    let probe = format!("verify-quickwp.{tld}");
+    let probe = format!("verify-nexora.{tld}");
     let resolved = resolves_to_loopback(&probe);
     add(
         "dns",
@@ -651,7 +865,7 @@ pub fn verify(tld: &str) -> VerifyReport {
         if agent {
             "loaded in launchd".into()
         } else {
-            "not loaded — .{tld} names will hang whenever QuickWP is closed".replace("{tld}", tld)
+            "not loaded — .{tld} names will hang whenever Nexora is closed".replace("{tld}", tld)
         },
     );
 
@@ -692,13 +906,35 @@ pub fn verify(tld: &str) -> VerifyReport {
 }
 
 fn resolves_to_loopback(host: &str) -> bool {
-    let Ok(out) = std::process::Command::new("/usr/bin/dscacheutil")
+    use std::io::Read;
+    // Bounded: with the resolver file in place and nothing answering, the
+    // system lookup waits a full minute -- and a status check that waits a
+    // minute is a window that stays blank for one.
+    let Ok(mut child) = std::process::Command::new("/usr/bin/dscacheutil")
         .args(["-q", "host", "-a", "name", host])
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
     else {
         return false;
     };
-    String::from_utf8_lossy(&out.stdout).contains("127.0.0.1")
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+    let mut out = String::new();
+    let _ = child.stdout.take().map(|mut s| s.read_to_string(&mut out));
+    out.contains("127.0.0.1")
 }
 
 /// What `remove_system_changes` should leave behind: nothing of ours.
@@ -736,7 +972,7 @@ pub fn verify_removed(tlds: &[String]) -> VerifyReport {
             // A file another tool owns is deliberately left alone, so its
             // presence is not a failure to remove.
             if resolver_path(tld).exists() {
-                "still present, but not pointing at QuickWP — left alone on purpose".into()
+                "still present, but not pointing at Nexora — left alone on purpose".into()
             } else {
                 "removed".into()
             },
@@ -758,24 +994,27 @@ mod artifact_tests {
     fn the_generated_plist_is_valid_property_list() {
         // It gets written to a root-owned path where a normal user cannot
         // repair it, so it must be valid before it is ever installed.
-        assert!(plist_is_valid(std::path::Path::new("/usr/local/libexec/quickwp-edge")));
+        assert!(plist_is_valid(std::path::Path::new("/usr/local/libexec/nexora-edge")));
     }
 
     #[test]
     fn the_privileged_script_parses() {
         // This text runs as root. A syntax error part-way through would leave
         // the system half-configured.
-        assert!(script_is_valid("test", std::path::Path::new("/tmp/quickwp-edge")));
+        assert!(script_is_valid("test", std::path::Path::new("/tmp/nexora-edge"), None));
+        // Pausing another tool's server adds a loop and a quoted path with
+        // spaces; the script must still parse.
+        assert!(script_is_valid("test", std::path::Path::new("/tmp/nexora-edge"), Some(RIVAL_DAEMONS[0])));
     }
 
     #[test]
     fn a_path_with_spaces_survives_the_script() {
-        // QuickWP lives under "Application Support"; an unquoted path there
+        // Nexora lives under "Application Support"; an unquoted path there
         // becomes two arguments and the script does the wrong thing.
-        let weird = std::path::PathBuf::from("/tmp/with space/quickwp-edge");
-        let script = install_script("test", &weird);
-        assert!(script.contains("'/tmp/with space/quickwp-edge'"));
-        assert!(script_is_valid("test", &weird));
+        let weird = std::path::PathBuf::from("/tmp/with space/nexora-edge");
+        let script = install_script("test", &weird, None);
+        assert!(script.contains("'/tmp/with space/nexora-edge'"));
+        assert!(script_is_valid("test", &weird, None));
     }
 
     #[test]

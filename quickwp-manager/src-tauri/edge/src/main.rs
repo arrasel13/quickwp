@@ -1,4 +1,4 @@
-//! QuickWP's privileged edge.
+//! Nexora's privileged edge.
 //!
 //! Runs as root for exactly one reason: on macOS only root may bind a port
 //! below 1024, and `https://yoursite.test` with no port number *means* 443.
@@ -6,14 +6,14 @@
 //! It does the smallest job that requires that privilege and nothing else:
 //!
 //!   * 443 — terminate TLS with the site's certificate, forward the plaintext
-//!     to QuickWP's own router on loopback.
+//!     to Nexora's own router on loopback.
 //!   * 80  — redirect to https.
 //!
 //! It never talks to a database, never reaches the network, and reads nothing
-//! but the certificate directory it is pointed at. Everything else in QuickWP
+//! but the certificate directory it is pointed at. Everything else in Nexora
 //! runs unprivileged.
 //!
-//! Usage: quickwp-edge <certs-dir> <upstream-port> [https-port] [http-port]
+//! Usage: nexora-edge <certs-dir> <upstream-port> [https-port] [http-port]
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -29,7 +29,7 @@ use std::time::{Duration, SystemTime};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: quickwp-edge <certs-dir> <upstream-port> [https-port] [http-port]");
+        eprintln!("usage: nexora-edge <certs-dir> <upstream-port> [https-port] [http-port]");
         std::process::exit(2);
     }
     let certs_dir = PathBuf::from(&args[1]);
@@ -92,7 +92,7 @@ fn serve(mut stream: TcpStream, config: Arc<ServerConfig>, upstream: u16) -> std
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut tls = rustls::Stream::new(&mut conn, &mut stream);
 
-    // Forward the decrypted bytes to QuickWP's router and stream the reply back.
+    // Forward the decrypted bytes to Nexora's router and stream the reply back.
     let mut up = TcpStream::connect(("127.0.0.1", upstream))?;
     up.set_read_timeout(Some(Duration::from_secs(60)))?;
 

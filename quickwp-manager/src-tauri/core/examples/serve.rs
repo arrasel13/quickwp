@@ -2,7 +2,7 @@
 //!
 //!   create site -> start pool -> start edge -> HTTP request -> PHP output
 //!   then: stop the site and prove it answers its OWN 503, not a neighbour's page.
-use quickwp_core as core;
+use nexora_core as core;
 
 fn get(port: u16, host: &str) -> std::io::Result<String> {
     use std::io::{Read, Write};
@@ -16,9 +16,9 @@ fn get(port: u16, host: &str) -> std::io::Result<String> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let minor = "8.3";
-    let app = core::Quickwp::new()?;
+    let app = core::Nexora::new()?;
 
-    println!("QuickWP serving spike\n");
+    println!("Nexora serving spike\n");
 
     print!("[1/6] ensuring PHP {minor} ... ");
     use std::io::Write;

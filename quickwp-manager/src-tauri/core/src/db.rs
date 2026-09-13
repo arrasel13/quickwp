@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS runtimes (
   PRIMARY KEY (component, version, arch)
 );
 
--- Open public shares, recorded so ANY QuickWP process can see and stop one.
+-- Open public shares, recorded so ANY Nexora process can see and stop one.
 -- A share held only in the memory of a process that has since died is a share
 -- nobody can find, which is the state this table exists to prevent.
 CREATE TABLE IF NOT EXISTS tunnels (
@@ -202,7 +202,7 @@ CREATE TABLE IF NOT EXISTS settings (
         })?;
         // Refuse a folder we cannot write into, before it becomes the place
         // every future site fails to be created in.
-        let probe = path.join(".quickwp-write-test");
+        let probe = path.join(".nexora-write-test");
         std::fs::write(&probe, b"ok").map_err(|e| crate::Error::Io {
             path: path.clone(),
             source: e,
@@ -306,7 +306,7 @@ mod tests {
     fn sites_default_somewhere_a_person_can_find() {
         let db = Db::open_in_memory().unwrap();
         let d = db.sites_dir().unwrap();
-        assert!(d.ends_with("QuickWP/Sites"), "got {}", d.display());
+        assert!(d.ends_with("Nexora/Sites"), "got {}", d.display());
         assert!(
             !d.to_string_lossy().contains("Application Support"),
             "a user's own code does not belong buried in Application Support"
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn a_tilde_path_is_expanded_and_created() {
         let db = Db::open_in_memory().unwrap();
-        let p = db.set_sites_dir("~/QuickWP/SitesTest").unwrap();
+        let p = db.set_sites_dir("~/Nexora/SitesTest").unwrap();
         assert!(p.is_absolute());
         assert!(p.exists(), "the folder must exist before sites are put in it");
         let _ = std::fs::remove_dir_all(&p);

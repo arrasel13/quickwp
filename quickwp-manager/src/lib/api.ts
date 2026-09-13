@@ -18,7 +18,7 @@ export interface PhpVersion {
   xdebug_capable: boolean;
 }
 
-/** A Node install already on the machine. QuickWP installs none of its own. */
+/** A Node install already on the machine. Nexora installs none of its own. */
 export interface NodeVersion {
   /** Full version, no leading v: "22.19.0". */
   version: string;
@@ -160,6 +160,9 @@ export interface CertInfo {
   exists: boolean;
 }
 
+/** What a folder holds, as the New site dialog needs to know. */
+export type FolderStatus = "missing" | "not_folder" | "empty" | "wordpress" | "other";
+
 export interface NewSite {
   name: string;
   domain: string;
@@ -210,6 +213,18 @@ export interface PreflightCheck {
   fix: string;
   /** A failed blocking check means the install cannot succeed. */
   blocking: boolean;
+}
+
+/** What stands where Nexora's HTTPS needs to be. */
+export interface HttpsConflict {
+  /** The other local environment involved, when one is recognised. */
+  tool: string | null;
+  /** 80 and/or 443, when something else listens on them. */
+  ports: number[];
+  /** The TLD's resolver file belongs to another tool. */
+  resolver_taken: boolean;
+  /** One password prompt can hand everything to Nexora. */
+  can_take_over: boolean;
 }
 
 export interface VerifyItem {
@@ -296,7 +311,7 @@ export interface Settings {
   sites_dir: string;
   default_sites_dir: string;
   logs_dir: string;
-  /** App bundle path. null when no editor QuickWP knows is installed. */
+  /** App bundle path. null when no editor Nexora knows is installed. */
   editor: string | null;
   /** App bundle path; Terminal.app when nothing was chosen. */
   terminal: string;
@@ -315,7 +330,7 @@ export interface InstalledApp {
   default: boolean;
 }
 
-/** A PHP installed outside QuickWP. Reported, never used by sites. */
+/** A PHP installed outside Nexora. Reported, never used by sites. */
 export interface SystemPhp {
   version: string;
   minor: string;
@@ -325,7 +340,7 @@ export interface SystemPhp {
 
 // Settings live in the backend, but several screens show what they say (the
 // preferred editor's name, say). Saving announces it so they can re-read.
-const SETTINGS_EVENT = "quickwp:settings-changed";
+const SETTINGS_EVENT = "nexora:settings-changed";
 export const notifySettingsChanged = () => window.dispatchEvent(new Event(SETTINGS_EVENT));
 export const onSettingsChanged = (cb: () => void) => {
   window.addEventListener(SETTINGS_EVENT, cb);
@@ -346,7 +361,7 @@ export const hasBackend = typeof window !== "undefined" && "__TAURI_INTERNALS__"
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!hasBackend) {
     throw new Error(
-      "The QuickWP backend is not running. Open the desktop app (npm run tauri dev) — " +
+      "The Nexora backend is not running. Open the desktop app (npm run tauri dev) — " +
         "the browser dev server has no stack behind it.",
     );
   }
@@ -364,6 +379,9 @@ export const api = {
   httpsPreflight: (takeover = false) =>
     call<PreflightCheck[]>("https_preflight", { takeover }),
   httpsTldIsForeign: () => call<boolean>("https_tld_is_foreign"),
+  httpsConflict: () => call<HttpsConflict>("https_conflict"),
+  /** First-run setup's small fixed window (true), or the full app window. */
+  windowSetupMode: (setup: boolean) => call<void>("window_setup_mode", { setup }),
   httpsVerify: () => call<VerifyReport>("https_verify"),
   httpsEnable: (takeover = false) => call<string>("https_enable", { takeover }),
   httpsTrustCa: () => call<string>("https_trust_ca"),
@@ -389,6 +407,7 @@ export const api = {
   nodeList: () => call<NodeVersion[]>("node_list"),
   siteList: () => call<Site[]>("site_list"),
   siteCreate: (n: NewSite) => call<Site>("site_create", { new: n }),
+  folderStatus: (path: string) => call<FolderStatus>("folder_status", { path }),
   siteDelete: (domain: string) => call<void>("site_delete", { domain }),
   siteSetEnabled: (domain: string, enabled: boolean) =>
     call<void>("site_set_enabled", { domain, enabled }),
@@ -518,6 +537,10 @@ export const api = {
     call<string>("wp_set_user_role", { domain, login, role }),
   wpSetUserPassword: (domain: string, login: string, password: string) =>
     call<string>("wp_set_user_password", { domain, login, password }),
+  /** The password Nexora saved for a user in the login keychain -- set at
+   *  install or when it was last changed from here. null when it set none. */
+  wpSavedPassword: (domain: string, login: string) =>
+    call<string | null>("wp_saved_password", { domain, login }),
   wpDeleteUser: (domain: string, login: string, reassignTo: string | null) =>
     call<string>("wp_delete_user", { domain, login, reassignTo }),
   /** `updates: false` answers in a fraction of the time, with every `update`

@@ -177,7 +177,7 @@ export default function MailTab() {
             Not everything can be caught: a Laravel app that has run{" "}
             <code className="bg-gray-100 px-1 rounded">php artisan config:cache</code> reads its
             baked config, a plugin that mails through a provider's HTTP API never touches PHP's
-            mailer, and commands you run in your own terminal are outside QuickWP.
+            mailer, and commands you run in your own terminal are outside Nexora.
           </p>
         </div>
       </div>

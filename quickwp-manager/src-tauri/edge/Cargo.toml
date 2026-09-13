@@ -1,8 +1,8 @@
 [package]
-name = "quickwp-edge"
+name = "nexora-edge"
 version = "0.1.0"
 edition = "2021"
-description = "QuickWP's privileged edge: terminates TLS on 443 and forwards. Nothing else."
+description = "Nexora's privileged edge: terminates TLS on 443 and forwards. Nothing else."
 
 # This binary runs as root, so its dependency surface is kept as small as the
 # job allows: TLS and PEM parsing, and nothing that touches the network, a

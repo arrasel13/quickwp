@@ -153,11 +153,11 @@ function EnvironmentPanel({
           </select>
         </EnvRow>
 
-        {/* Not a picker. QuickWP serves sites from its own edge rather than
+        {/* Not a picker. Nexora serves sites from its own edge rather than
             shipping nginx and Caddy, so there is nothing to choose between
             and a dropdown would imply one. */}
         <EnvRow label="Web server">
-          <span className="text-gray-900">QuickWP edge</span>
+          <span className="text-gray-900">Nexora edge</span>
           <span className="text-[11px] text-gray-400">built in</span>
         </EnvRow>
 
@@ -551,7 +551,7 @@ function CertPanel({ site, setNote }: { site: Site; setNote: SetNote }) {
     <Panel title="HTTPS certificate">
       {!cert?.exists && !cert?.issued_at ? (
         <p className="text-xs text-gray-500">
-          No certificate yet — turn on HTTPS in App settings › General and one
+          No certificate yet — turn on HTTPS in Nexora Settings › General and one
           is issued for this site.
         </p>
       ) : (
@@ -923,7 +923,7 @@ function EnvPanel({ site, setNote }: { site: Site; setNote: SetNote }) {
 
       <p className={hint}>
         Available to PHP via getenv() and $_SERVER. Stored as plain text in
-        QuickWP's database; not for secrets.
+        Nexora's database; not for secrets.
       </p>
     </Panel>
   );

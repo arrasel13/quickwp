@@ -42,7 +42,7 @@ function activeTheme(list: WpItems) {
  *
  * Two columns, because the two halves answer different questions -- the left
  * is facts about the site, the right is somewhere to go. Every value is read
- * from the backend; where QuickWP has no answer the row is absent rather than
+ * from the backend; where Nexora has no answer the row is absent rather than
  * blank.
  *
  * Configuration lives elsewhere: the environment (PHP, SSL, Node) in the
@@ -60,8 +60,8 @@ export default function SiteOverview({ site }: { site: Site }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The admin password is never stored, so copying one means setting one.
-  // Kept for this session once set, so a second copy does not reset it again.
+  // The admin password: the one saved in the login keychain at install, or
+  // the one set from here. Only a site with none saved offers to set one.
   const [password, setPassword] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -124,9 +124,14 @@ export default function SiteOverview({ site }: { site: Site }) {
 
         void api
           .wpUsers(d)
-          .then((list) => {
+          .then(async (list) => {
             putCache(`wp-users:${d}`, list);
-            if (live) setAdmin(pickAdmin(list));
+            const owner = pickAdmin(list);
+            if (!live) return;
+            setAdmin(owner);
+            if (!owner) return;
+            const saved = await api.wpSavedPassword(d, owner.login).catch(() => null);
+            if (live && saved) setPassword(saved);
           })
           .catch(() => {});
       }
@@ -214,10 +219,10 @@ export default function SiteOverview({ site }: { site: Site }) {
               <h2 className="mb-3 text-sm font-semibold text-gray-900">WP Admin</h2>
               <div className="space-y-5 rounded-md border border-gray-200 bg-white px-5 py-4">
                 <CopyField label="Username" value={admin?.login ?? null} />
-                {/* Masked because there is nothing to show: QuickWP never keeps
-                    the admin password and WordPress stores only a hash. So the
-                    first copy sets a new one -- after asking -- and later copies
-                    reuse it for as long as this window is open. */}
+                {/* Masked. Copies the password saved when the site was made.
+                    A site with none saved -- made before Nexora kept them, or
+                    changed outside it -- is offered a new one instead, after
+                    asking. */}
                 <CopyField
                   label="Password"
                   value={admin ? "••••••••••••" : null}
@@ -272,7 +277,7 @@ export default function SiteOverview({ site }: { site: Site }) {
                 label={preferred.terminal ?? "Terminal"}
                 onClick={() => void run("terminal", () => api.siteTerminal(site.domain))}
               />
-              {/* Adminer, not phpMyAdmin: it is the browser QuickWP ships, and
+              {/* Adminer, not phpMyAdmin: it is the browser Nexora ships, and
                   the Database tab has the same thing embedded. */}
               <Tile
                 icon={CircleStackIcon}
@@ -303,8 +308,9 @@ export default function SiteOverview({ site }: { site: Site }) {
         confirmLabel="Set and copy"
         body={
           <span>
-            QuickWP never keeps the admin password — WordPress stores only a hash
-            — so there is none to copy. This sets a new random password for{" "}
+            No password is saved for this site — it was set before Nexora kept
+            them, or changed outside Nexora — so there is none to copy. This
+            sets a new random password for{" "}
             <strong>{admin?.login}</strong> and copies it to the clipboard. The
             current password stops working.
           </span>

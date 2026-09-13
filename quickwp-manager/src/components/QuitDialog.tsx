@@ -8,7 +8,7 @@ type Mode = "keep" | "restart" | "stop";
 const MODES: Mode[] = ["keep", "restart", "stop"];
 
 /**
- * Asked when QuickWP quits with sites up and "When quitting" is "Ask every
+ * Asked when Nexora quits with sites up and "When quitting" is "Ask every
  * time". The backend holds the quit until this answers; Cancel simply leaves
  * the app open.
  */

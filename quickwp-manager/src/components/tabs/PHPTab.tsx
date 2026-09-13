@@ -70,7 +70,7 @@ export default function PHPTab() {
         <div className="border border-amber-200 bg-amber-50 rounded-lg p-5 max-w-xl">
           <h2 className="text-sm font-semibold text-amber-900 mb-1">No backend behind this window</h2>
           <p className="text-xs text-amber-800 leading-relaxed">
-            You are viewing QuickWP in a browser. PHP versions, pools and sites all live in the
+            You are viewing Nexora in a browser. PHP versions, pools and sites all live in the
             Rust backend, so run <code className="bg-amber-100 px-1 rounded">npm run tauri dev</code>{" "}
             to see real data.
           </p>

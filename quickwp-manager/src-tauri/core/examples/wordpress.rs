@@ -2,7 +2,7 @@
 //!
 //!   MySQL installed and initialised -> database + scoped user -> WordPress
 //!   core installed -> served over real HTTPS -> WP-CLI manages it.
-use quickwp_core as core;
+use nexora_core as core;
 use std::io::Write;
 
 fn step(n: &str, s: &str) {
@@ -15,9 +15,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let minor = "8.3";
     let series = "8.4";
     let domain = "wptest.test";
-    let app = core::Quickwp::new()?;
+    let app = core::Nexora::new()?;
 
-    println!("QuickWP WordPress spike\n");
+    println!("Nexora WordPress spike\n");
 
     step("1/9", "PHP + WP-CLI");
     core::runtime::install_php(minor, "fpm", |_| {}).await?;
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let res = core::wordpress::install(
         &site,
         &core::wordpress::WpInstallRequest {
-            title: "QuickWP Test".into(),
+            title: "Nexora Test".into(),
             admin_user: "admin".into(),
             admin_email: "admin@example.test".into(),
             admin_password: None,
@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     step("7/9", "serving it over HTTPS");
     let router = core::server::start(app.db.clone(), core::ports::NGINX)?;
-    let edge_bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug/quickwp-edge");
+    let edge_bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug/nexora-edge");
     let mut edge = std::process::Command::new(&edge_bin)
         .arg(core::ca::certs_dir())
         .arg(core::ports::NGINX.to_string())
@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .output()?;
     let body = String::from_utf8_lossy(&out.stdout);
     let curl_err = String::from_utf8_lossy(&out.stderr);
-    let served = body.contains("QuickWP Test") || body.contains("wp-content") || body.contains("WordPress");
+    let served = body.contains("Nexora Test") || body.contains("wp-content") || body.contains("WordPress");
     println!("{}", if served { "ok  (WordPress rendered over TLS)" } else { "FAILED" });
     if !served {
         println!("--- curl stderr ---\n{}", curl_err.trim());

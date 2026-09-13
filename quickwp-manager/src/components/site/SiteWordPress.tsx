@@ -54,7 +54,7 @@ function canToggleOff(item: WpItem, kind: Kind): boolean {
  * date, who can log in, and the maintenance commands.
  *
  * Read through WP-CLI against the real install, so a site edited outside
- * QuickWP still reports the truth.
+ * Nexora still reports the truth.
  */
 export default function SiteWordPress({
   domain,
@@ -269,7 +269,7 @@ function ItemSection({
   };
 
   // Auto refresh, and again whenever the window comes back to the front --
-  // the usual way this list goes stale is a change made outside QuickWP.
+  // the usual way this list goes stale is a change made outside Nexora.
   //
   // The timer is deliberately slow: every tick spawns WP-CLI, which boots PHP
   // and loads all of WordPress to answer, so on a site with a few hundred

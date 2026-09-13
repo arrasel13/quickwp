@@ -1,4 +1,4 @@
-# QuickWP
+# Nexora
 
 A modern desktop application for managing WordPress development environments, built with Tauri and React.
 
@@ -28,7 +28,7 @@ A modern desktop application for managing WordPress development environments, bu
   `mail()`, SMTP plugins that call `isSMTP()`, and Laravel's env precedence.
 - **Public tunnels**: a Cloudflare quick tunnel per site. They close when the
   app quits, deliberately.
-- **Logs and a terminal**: every log in one place with QuickWP's own first, and
+- **Logs and a terminal**: every log in one place with Nexora's own first, and
   a command runner in the docroot with the site's PHP and `wp` on PATH.
 
 macOS on Apple Silicon today. The platform-specific parts are isolated;
@@ -49,7 +49,7 @@ Before running this project, make sure you have:
 - [Node.js](https://nodejs.org/) (version 18 or higher)
 - [Rust](https://rustup.rs/) (latest stable version)
 
-That is the whole list. **QuickWP owns its own stack** -- it downloads PHP and
+That is the whole list. **Nexora owns its own stack** -- it downloads PHP and
 the rest on demand, verifies each against a checksum compiled into the app, and
 supervises them itself. There is no Laravel Herd, no Docker, no VM, and nothing
 to install through Homebrew.
@@ -62,8 +62,8 @@ version is about 30MB and is fetched once.
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/arrasel13/quickwp.git
-   cd quickwp
+   git clone https://github.com/arrasel13/nexora.git
+   cd nexora
    ```
 
 2. Navigate to the application directory:
@@ -107,29 +107,29 @@ not, and that is not a reason to leave the round trip unproven.
 
 ### Before turning on HTTPS
 
-QuickWP installs three privileged things: a DNS resolver file, a root
+Nexora installs three privileged things: a DNS resolver file, a root
 LaunchDaemon on ports 80/443, and certificate-authority trust in your *login*
 keychain. Check what would happen before any password is asked for:
 
 ```bash
-./src-tauri/target/debug/quickwp system preflight
+./src-tauri/target/debug/nexora system preflight
 ```
 
 Every blocking failure is a reason the install could not succeed, so it is
-refused rather than prompting. Afterwards, `quickwp system verify` measures what
+refused rather than prompting. Afterwards, `nexora system verify` measures what
 is actually installed and serving — not merely that files were written. Settings
 → *Remove system changes* reverses all of it and verifies that too.
 
 ### The CLI
 
-`quickwp` is a second binary over the same core crate, so the app and the
-terminal cannot drift — the New Site dialog and `quickwp site create` are the
+`nexora` is a second binary over the same core crate, so the app and the
+terminal cannot drift — the New Site dialog and `nexora site create` are the
 same code.
 
 ```bash
-cargo build -p quickwp-cli
-./src-tauri/target/debug/quickwp status
-./src-tauri/target/debug/quickwp php list --json
+cargo build -p nexora-cli
+./src-tauri/target/debug/nexora status
+./src-tauri/target/debug/nexora php list --json
 ```
 
 `scripts/pin-runtimes.sh` regenerates the checksums in

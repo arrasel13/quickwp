@@ -1,4 +1,4 @@
-//! Everything QuickWP owns lives under one directory.
+//! Everything Nexora owns lives under one directory.
 //!
 //! Deliberately one tree rather than the platform convention of splitting logs
 //! into ~/Library/Logs: when a service fails to start, the reason is in our own
@@ -7,9 +7,9 @@
 
 use std::path::{Path, PathBuf};
 
-pub const BUNDLE_ID: &str = "com.quickwp.manager";
+pub const BUNDLE_ID: &str = "com.nexora.app";
 
-/// ~/Library/Application Support/com.quickwp.manager
+/// ~/Library/Application Support/com.nexora.app
 pub fn root() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -39,7 +39,7 @@ pub fn downloads_cache() -> PathBuf {
 
 /// Where new sites are provisioned.
 ///
-/// Default is `~/QuickWP/Sites`: somewhere a person can actually find, open in
+/// Default is `~/Nexora/Sites`: somewhere a person can actually find, open in
 /// an editor and back up. Burying a user's own code inside
 /// ~/Library/Application Support is the kind of choice that makes a tool hard
 /// to leave. Configurable, because whose folder this is is not our call.
@@ -53,7 +53,7 @@ pub fn sites() -> PathBuf {
 pub fn default_sites() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("QuickWP")
+        .join("Nexora")
         .join("Sites")
 }
 
@@ -87,7 +87,7 @@ pub fn legacy_sites() -> PathBuf {
 /// Created and handed to the user at install time, so issuing a certificate
 /// later needs no password.
 pub fn shared_certs() -> PathBuf {
-    PathBuf::from("/usr/local/etc/quickwp/certs")
+    PathBuf::from("/usr/local/etc/nexora/certs")
 }
 
 /// Is the shared location present and ours to write?
@@ -96,7 +96,7 @@ pub fn shared_certs_usable() -> bool {
     if !d.is_dir() {
         return false;
     }
-    let probe = d.join(".quickwp-write-test");
+    let probe = d.join(".nexora-write-test");
     match std::fs::write(&probe, b"ok") {
         Ok(_) => {
             let _ = std::fs::remove_file(&probe);
@@ -119,12 +119,12 @@ pub fn run() -> PathBuf {
 }
 
 pub fn db_file() -> PathBuf {
-    root().join("quickwp.sqlite3")
+    root().join("nexora.sqlite3")
 }
 
 /// The app's own log, first in the log viewer's list.
 pub fn app_log() -> PathBuf {
-    logs().join("quickwp.log")
+    logs().join("nexora.log")
 }
 
 pub fn ensure_dirs() -> crate::Result<()> {

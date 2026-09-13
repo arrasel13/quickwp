@@ -1,20 +1,20 @@
 //! Tauri shell.
 //!
-//! Deliberately thin: every command here delegates to `quickwp_core`. The UI
-//! and a future `quickwp` CLI both sit on that crate, so the New Site dialog
-//! and `quickwp site create` cannot drift apart -- they are the same code.
+//! Deliberately thin: every command here delegates to `nexora_core`. The UI
+//! and a future `nexora` CLI both sit on that crate, so the New Site dialog
+//! and `nexora site create` cannot drift apart -- they are the same code.
 
-use quickwp_core as core;
-use quickwp_core::{
+use nexora_core as core;
+use nexora_core::{
     ca, database, exec, log as qlog, mail, migrate, php, ports, privileged, pty, runtime, server,
-    site, tunnel, wordpress, wptools, Finding, Quickwp,
+    site, tunnel, wordpress, wptools, Finding, Nexora,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 struct AppState {
-    app: Quickwp,
+    app: Nexora,
     edge: Mutex<Option<server::Edge>>,
     ptys: pty::Ptys,
     /// Set once a quit has been decided, so the exit it triggers is let through
@@ -69,12 +69,25 @@ fn stack_status(state: State<'_, AppState>) -> Res<StackStatus> {
 
 /// Bring the stack up. Shared by the Start button and by a launch that resumes
 /// what the last quit stopped.
-fn start_stack(app: &Quickwp, edge: &Mutex<Option<server::Edge>>) -> core::Result<()> {
+fn start_stack(app: &Nexora, edge: &Mutex<Option<server::Edge>>) -> core::Result<()> {
     // Start the default pool first: an edge with no PHP behind it serves 502s
     // that look like the edge failing.
     let default = app.db.default_php()?;
     if runtime::is_installed(&default, "fpm") {
         php::start_pool(&app.sup, &default)?;
+    }
+    // MySQL too, so creating a site never stops to start it. Not fatal: a
+    // stack whose database will not start still serves every site's files.
+    let series = app
+        .db
+        .setting("db_series")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string());
+    if database::is_installed(&series) {
+        if let Err(e) = database::start(&app.sup, &series) {
+            qlog::write(&format!("could not start MySQL {series}: {e}"));
+        }
     }
     let mut edge = edge.lock().unwrap();
     if edge.is_none() {
@@ -112,7 +125,7 @@ fn doctor(state: State<'_, AppState>) -> Res<Vec<Finding>> {
 
 // ------------------------------------------------------------------ php
 
-/// Node versions already on this machine. QuickWP installs none of its own:
+/// Node versions already on this machine. Nexora installs none of its own:
 /// a second copy would be the one thing the user's npm scripts do not use.
 #[tauri::command(async)]
 fn node_list() -> Res<Vec<core::node::NodeVersion>> {
@@ -214,31 +227,57 @@ fn php_ini_set(state: State<'_, AppState>, minor: String, key: String, value: St
 /// Resolution is explicit rather than a single guess, because the failure mode
 /// otherwise is an admin prompt followed by "file not found" -- a password
 /// asked for nothing.
-/// The bundled `quickwp` CLI, which the DNS agent and the tunnel guard run.
+/// The bundled `nexora` CLI, which the DNS agent and the tunnel guard run.
 fn cli_binary() -> std::path::PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
     let dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
-    for c in [dir.join("quickwp"), dir.join("../Resources/quickwp")] {
-        if c.exists() {
+    let me = std::fs::canonicalize(&exe).unwrap_or_else(|_| exe.clone());
+    // Bundled first; beside the executable is the dev layout. Never the app
+    // itself: a DNS agent pointed at the app starts a hidden second window
+    // instead of a DNS server, and that window takes the single-instance lock.
+    for c in [dir.join("../Resources/nexora"), dir.join("nexora")] {
+        if c.exists() && std::fs::canonicalize(&c).map_or(true, |p| p != me) {
             return c;
         }
     }
-    dir.join("quickwp")
+    dir.join("../Resources/nexora")
+}
+
+/// Stop copies of this app that launchd started as a DNS agent.
+///
+/// An agent from a build whose app and CLI shared a name runs the app with
+/// `__dns`: a hidden window that never answers DNS and holds the
+/// single-instance lock, so opening the app showed that blank window instead.
+fn stop_stray_app_copies() {
+    let Ok(out) = std::process::Command::new("/bin/ps").args(["-axwwo", "pid=,command="]).output() else {
+        return;
+    };
+    let me = std::process::id();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((pid, command)) = line.trim_start().split_once(' ') else { continue };
+        let Ok(pid) = pid.parse::<u32>() else { continue };
+        let app_as_agent = command.contains(".app/Contents/MacOS/")
+            && command.ends_with(" __dns")
+            && !command.contains("/Contents/Resources/");
+        if pid != me && app_as_agent {
+            core::proc::kill_tree(pid);
+        }
+    }
 }
 
 fn edge_binary() -> std::path::PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
     let dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
     for candidate in [
-        dir.join("quickwp-edge"),                    // dev: target/debug beside the app
-        dir.join("../Resources/quickwp-edge"),       // bundled: Contents/Resources
-        dir.join(format!("quickwp-edge-{}", std::env::consts::ARCH)),
+        dir.join("nexora-edge"),                    // dev: target/debug beside the app
+        dir.join("../Resources/nexora-edge"),       // bundled: Contents/Resources
+        dir.join(format!("nexora-edge-{}", std::env::consts::ARCH)),
     ] {
         if candidate.exists() {
             return candidate;
         }
     }
-    dir.join("quickwp-edge")
+    dir.join("nexora-edge")
 }
 
 /// Turn on real HTTPS.
@@ -252,6 +291,36 @@ fn edge_binary() -> std::path::PathBuf {
 fn https_preflight(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Vec<privileged::Check>> {
     let tld = state.app.db.tld()?;
     Ok(privileged::preflight(&tld, &edge_binary(), takeover.unwrap_or(false)))
+}
+
+/// What a folder holds, for the New site dialog: an empty one is installed
+/// into, one with a WordPress site is linked as it is, anything else is
+/// refused -- installing over it would overwrite someone's files.
+#[tauri::command(async)]
+fn folder_status(path: String) -> Res<String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Ok("missing".into());
+    }
+    if !p.is_dir() {
+        return Ok("not_folder".into());
+    }
+    if p.join("wp-config.php").is_file() || p.join("wp-load.php").is_file() {
+        return Ok("wordpress".into());
+    }
+    let entries = std::fs::read_dir(p).map_err(|e| format!("Could not read {path}: {e}"))?;
+    // Finder leaves these in folders it has shown; they do not make one in use.
+    let busy = entries.flatten().any(|e| {
+        let name = e.file_name();
+        !matches!(name.to_string_lossy().as_ref(), ".DS_Store" | ".localized")
+    });
+    Ok(if busy { "other" } else { "empty" }.into())
+}
+
+/// What stands where HTTPS needs to be: another tool on 80/443, or on the TLD.
+#[tauri::command(async)]
+fn https_conflict(state: State<'_, AppState>) -> Res<privileged::Conflict> {
+    Ok(privileged::conflict(&state.app.db.tld()?))
 }
 
 /// Would claiming the current TLD take it from another tool?
@@ -280,6 +349,11 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
     if !ca::is_trusted() {
         ca::trust()?;
     }
+    // Firefox reads its own certificate store; a failure here is not a reason
+    // to stop routing and serving sites.
+    if let Err(e) = ca::trust_in_firefox() {
+        nexora_core::log::write(&format!("{e}"));
+    }
 
     // DNS first: the resolver file is useless if nothing is answering, and a
     // verify immediately after the install would fail on a race we created.
@@ -291,7 +365,11 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
     }
     drop(edge);
 
-    privileged::install_system(&tld, &edge_binary(), takeover)?;
+    // Already in place -- a retry after a later step failed, say -- needs no
+    // password and no reinstall.
+    if !privileged::system_install_current(&tld, &edge_binary()) {
+        privileged::install_system(&tld, &edge_binary(), takeover)?;
+    }
 
     // A user agent, so no second password. It is installed after the resolver
     // exists, because the resolver is what makes running it necessary: from
@@ -303,7 +381,7 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
     // its handshake.
     let migrated = ca::migrate_to_shared()?;
     if migrated > 0 {
-        quickwp_core::log::write(&format!("migrated {migrated} certificate file(s) to the shared store"));
+        nexora_core::log::write(&format!("migrated {migrated} certificate file(s) to the shared store"));
     }
     state.app.ensure_all_certs()?;
 
@@ -354,8 +432,17 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
 #[tauri::command(async)]
 fn https_trust_ca() -> Res<String> {
     ca::ensure_ca()?;
-    ca::trust()?;
-    Ok("The certificate authority is trusted. Reload any open tab.".into())
+    // Only asks for the login password when there is something to trust, so
+    // running first-run setup again does not prompt a second time.
+    if !ca::is_trusted() {
+        ca::trust()?;
+    }
+    let firefox = ca::trust_in_firefox()?;
+    Ok(if firefox {
+        "The certificate authority is trusted in Safari, Chrome and Firefox. Reload any open tab.".into()
+    } else {
+        "The certificate authority is trusted. Reload any open tab.".into()
+    })
 }
 
 /// Re-issue every site certificate, whatever the cache thinks.
@@ -687,6 +774,9 @@ fn site_change_domain(
 
     site::rename_domain(&state.app.db, &s.domain, &new_domain)?;
     steps.push(format!("Renamed to {new_domain}"));
+    if let Err(e) = core::secrets::rename_site(&s.domain, &new_domain) {
+        steps.push(format!("Saved passwords NOT moved to the new domain: {e}"));
+    }
 
     if let Some(renamed) = site::find(&state.app.db, &new_domain)? {
         state.app.ensure_cert(&renamed)?;
@@ -780,7 +870,7 @@ fn path_open(path: String) -> Res<()> {
     Ok(())
 }
 
-/// The editor chosen in App settings, or else the first installed one QuickWP
+/// The editor chosen in App settings, or else the first installed one Nexora
 /// knows. By bundle, because `code` on PATH is a shell-init detail we cannot
 /// rely on from a GUI process.
 fn preferred_editor(db: &core::db::Db) -> Option<std::path::PathBuf> {
@@ -826,7 +916,7 @@ fn path_open_in_editor(state: State<'_, AppState>, path: String) -> Res<()> {
         return Err(format!("{path} is not there any more."));
     }
     let editor = preferred_editor(&state.app.db)
-        .ok_or("No code editor QuickWP recognises is installed.")?;
+        .ok_or("No code editor Nexora recognises is installed.")?;
     Ok(core::apps::open_in_editor(&editor, std::path::Path::new(&path))?)
 }
 
@@ -1075,6 +1165,49 @@ fn onboarding_done(flag: Option<&str>, has_sites: bool, runtimes_ready: bool) ->
     flag == Some("1") || has_sites || runtimes_ready
 }
 
+/// The same decision as `setup_status`, made before the window has asked.
+fn first_run_done(state: &AppState) -> bool {
+    let db = &state.app.db;
+    let flag = db.setting("onboarding_done").ok().flatten();
+    let php = db.default_php().unwrap_or_else(|_| "8.3".into());
+    let mysql = runtime::MYSQL_SERIES
+        .first()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "8.4".into());
+    onboarding_done(
+        flag.as_deref(),
+        site::list(db).map(|s| !s.is_empty()).unwrap_or(false),
+        runtime::is_installed(&php, "fpm")
+            && runtime::is_installed(&php, "cli")
+            && database::is_installed(&mysql)
+            && wordpress::is_installed(),
+    )
+}
+
+/// First-run setup is a small, fixed window; the app is the full one.
+fn apply_window_mode(w: &tauri::WebviewWindow, setup: bool) -> tauri::Result<()> {
+    use tauri::LogicalSize;
+    if setup {
+        // Sized before resizing is switched off: macOS ignores a size change
+        // on a window that cannot be resized.
+        w.set_min_size(Some(LogicalSize::new(480.0, 600.0)))?;
+        w.set_size(LogicalSize::new(520.0, 720.0))?;
+        w.set_resizable(false)?;
+        w.set_maximizable(false)?;
+    } else {
+        w.set_resizable(true)?;
+        w.set_maximizable(true)?;
+        w.set_min_size(Some(LogicalSize::new(800.0, 600.0)))?;
+        w.set_size(LogicalSize::new(1200.0, 800.0))?;
+    }
+    w.center()
+}
+
+#[tauri::command]
+fn window_setup_mode(window: tauri::WebviewWindow, setup: bool) -> Res<()> {
+    apply_window_mode(&window, setup).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod onboarding_tests {
     use super::onboarding_done;
@@ -1318,6 +1451,14 @@ fn wp_set_user_password(
 ) -> Res<String> {
     let site = site_by_domain(&state, &domain)?;
     Ok(wordpress::set_user_password(&site, &login, &password)?)
+}
+
+/// The password Nexora saved for a user, if it set one -- at install, or
+/// when it was last changed from here. None for anything set elsewhere.
+#[tauri::command(async)]
+fn wp_saved_password(state: State<'_, AppState>, domain: String, login: String) -> Res<Option<String>> {
+    let site = site_by_domain(&state, &domain)?;
+    Ok(core::secrets::password(&site.domain, &login))
 }
 
 #[tauri::command(async)]
@@ -1845,7 +1986,7 @@ fn settings_set(state: State<'_, AppState>, key: String, value: String) -> Res<S
         let path = state.app.db.set_sites_dir(&value)?;
         return Ok(format!(
             "New sites will be created in {}. Existing sites stay where they are — \
-             QuickWP does not move your code because a preference changed.",
+             Nexora does not move your code because a preference changed.",
             path.display()
         ));
     }
@@ -1874,7 +2015,7 @@ async fn apps_installed() -> Res<InstalledApps> {
     .map_err(|e| e.to_string())
 }
 
-/// PHP installed outside QuickWP. Every binary is asked for its version, so
+/// PHP installed outside Nexora. Every binary is asked for its version, so
 /// this runs off the main thread.
 #[tauri::command]
 async fn php_system_list() -> Res<Vec<core::phpscan::SystemPhp>> {
@@ -1908,7 +2049,7 @@ impl QuitMode {
 }
 
 /// Anything worth asking about: the edge, or a pool, database or mail server
-/// QuickWP started.
+/// Nexora started.
 fn anything_running(state: &AppState) -> bool {
     state.edge.lock().unwrap().is_some() || !core::handoff::resumable(&state.app.sup).is_empty()
 }
@@ -2004,23 +2145,41 @@ pub fn run() {
         .worker_threads(32)
         .enable_all()
         .build()
-        .expect("QuickWP could not start its async runtime");
+        .expect("Nexora could not start its async runtime");
     tauri::async_runtime::set(runtime.handle().clone());
 
-    let app = Quickwp::new().expect("QuickWP could not open its data directory");
+    // Before the single-instance check: a stray copy would hold its lock.
+    stop_stray_app_copies();
+
+    // An install from before the rename moves into place first, before
+    // anything opens the data directory.
+    core::legacy::migrate_data_dir();
+
+    let app = Nexora::new().expect("Nexora could not open its data directory");
 
     // Reconcile shares before the window opens. A tunnel left running by a
     // previous crash is exactly the forgotten share this sweeps up.
     if let Err(e) = tunnel::sweep(&app.db, &app.sup) {
-        quickwp_core::log::write(&format!("tunnel sweep failed at launch: {e}"));
+        nexora_core::log::write(&format!("tunnel sweep failed at launch: {e}"));
     }
 
     // If our resolver is installed, .test lookups go to our DNS and nowhere
     // else -- so a machine with the resolver but no server has names that hang.
     // Repair that on launch rather than waiting for someone to press Start.
     if let Ok(tld) = app.db.tld() {
-        if privileged::resolver_is_ours(&tld) && !privileged::dns_agent_running() {
-            let _ = privileged::install_dns_agent(&cli_binary());
+        let cli = cli_binary();
+        // Also repaired when it runs the wrong program: one left by a build
+        // that pointed it at the app would never answer.
+        if privileged::resolver_is_ours(&tld)
+            && (!privileged::dns_agent_running() || !privileged::dns_agent_runs(&cli))
+        {
+            let _ = privileged::install_dns_agent(&cli);
+            for _ in 0..20 {
+                if privileged::dns_agent_running() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             if !privileged::dns_agent_running() {
                 let _ = app.start_dns();
             }
@@ -2071,6 +2230,17 @@ pub fn run() {
             quitting: AtomicBool::new(false),
             down: AtomicBool::new(false),
         })
+        .setup(|app| {
+            use tauri::Manager;
+            // Decided before the first paint, so first-run setup opens in its
+            // own small window instead of visibly shrinking out of the big one.
+            if !first_run_done(app.state::<AppState>().inner()) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = apply_window_mode(&w, true);
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             stack_status,
             stack_start,
@@ -2078,6 +2248,9 @@ pub fn run() {
             doctor,
             https_enable,
             https_preflight,
+            https_conflict,
+            window_setup_mode,
+            folder_status,
             https_tld_is_foreign,
             https_verify,
             https_trust_ca,
@@ -2165,6 +2338,7 @@ pub fn run() {
             wp_roles,
             wp_create_user,
             wp_set_user_password,
+            wp_saved_password,
             wp_set_user_role,
             wp_delete_user,
             wp_update_item,
@@ -2224,7 +2398,7 @@ pub fn run() {
             _ => {}
         })
         .build(tauri::generate_context!())
-        .expect("error while building QuickWP")
+        .expect("error while building Nexora")
         .run(|handle, event| {
             // Cmd+Q, Quit from the Dock, logging out.
             if let tauri::RunEvent::ExitRequested { api, .. } = event {

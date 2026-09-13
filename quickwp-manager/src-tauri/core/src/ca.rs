@@ -1,6 +1,6 @@
 //! The local certificate authority.
 //!
-//! QuickWP generates a CA on your machine and asks, once, for permission to
+//! Nexora generates a CA on your machine and asks, once, for permission to
 //! trust it. Every site then gets a leaf signed by that CA, so the browser
 //! shows a real green lock -- not a bypassed warning, not an exception you
 //! clicked through.
@@ -32,10 +32,10 @@ pub fn ca_dir() -> PathBuf {
     paths::config().join("ca")
 }
 pub fn ca_cert_path() -> PathBuf {
-    ca_dir().join("quickwp-ca.pem")
+    ca_dir().join("nexora-ca.pem")
 }
 pub fn ca_key_path() -> PathBuf {
-    ca_dir().join("quickwp-ca.key")
+    ca_dir().join("nexora-ca.key")
 }
 /// Where leaf certificates live.
 ///
@@ -110,8 +110,8 @@ pub fn ensure_ca() -> Result<()> {
     let mut params = CertificateParams::new(Vec::<String>::new())
         .map_err(|e| Error::other(format!("CA params: {e}")))?;
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, "QuickWP Local CA");
-    dn.push(DnType::OrganizationName, "QuickWP");
+    dn.push(DnType::CommonName, "Nexora Local CA");
+    dn.push(DnType::OrganizationName, "Nexora");
     params.distinguished_name = dn;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![
@@ -282,6 +282,40 @@ pub fn trust() -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Let Firefox trust the CA as well.
+///
+/// Firefox keeps its own certificate store and ignores the macOS keychain
+/// unless told otherwise. Its supported enterprise policy, `Certificates` ->
+/// `ImportEnterpriseRoots`, tells it to import the roots trusted in the
+/// keychain. Written to the user's own `org.mozilla.firefox` preferences: no
+/// admin rights, and nothing inside the Firefox app is touched. Returns false
+/// when Firefox is not installed, which is not an error.
+pub fn trust_in_firefox() -> Result<bool> {
+    let installed = ["/Applications/Firefox.app", "/Applications/Firefox Developer Edition.app"]
+        .iter()
+        .any(|p| std::path::Path::new(p).is_dir())
+        || dirs::home_dir().map_or(false, |h| h.join("Applications/Firefox.app").is_dir());
+    if !installed {
+        return Ok(false);
+    }
+    for args in [
+        vec!["write", "org.mozilla.firefox", "EnterprisePoliciesEnabled", "-bool", "true"],
+        vec!["write", "org.mozilla.firefox", "Certificates", "-dict", "ImportEnterpriseRoots", "-bool", "true"],
+    ] {
+        let out = std::process::Command::new("/usr/bin/defaults")
+            .args(&args)
+            .output()
+            .map_err(|e| Error::Io { path: "/usr/bin/defaults".into(), source: e })?;
+        if !out.status.success() {
+            return Err(Error::other(format!(
+                "Could not set Firefox to trust the certificate authority: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+    }
+    Ok(true)
 }
 
 /// Remove the CA trust. Part of "Remove system changes".

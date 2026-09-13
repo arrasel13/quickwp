@@ -2,13 +2,13 @@
 //!
 //! Deliberately does NOT open a tunnel: that publishes this machine to the
 //! internet, which is a decision for the person at the keyboard.
-use quickwp_core as core;
+use nexora_core as core;
 use std::io::Write;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = core::Quickwp::new()?;
-    println!("QuickWP tools spike\n");
+    let app = core::Nexora::new()?;
+    println!("Nexora tools spike\n");
 
     print!("[1/4] mailpit: fetch + verify ... ");
     std::io::stdout().flush().ok();

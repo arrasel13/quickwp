@@ -1,18 +1,18 @@
-//! The `quickwp` CLI.
+//! The `nexora` CLI.
 //!
-//! A thin shell over `quickwp-core` -- the same crate the app's Tauri commands
-//! sit on. That is the point: `quickwp site create` and the New Site dialog run
+//! A thin shell over `nexora-core` -- the same crate the app's Tauri commands
+//! sit on. That is the point: `nexora site create` and the New Site dialog run
 //! the same code, so the two cannot drift and the documented defaults are the
 //! real ones.
 //!
 //! Exit codes: 0 ok, 1 the command failed, 2 bad usage.
 
-use quickwp_core as core;
+use nexora_core as core;
 
-const USAGE: &str = r#"quickwp — a native local WordPress environment
+const USAGE: &str = r#"nexora — a native local WordPress environment
 
 USAGE
-  quickwp <command> [args]
+  nexora <command> [args]
 
 STACK
   status                       Services, sites and HTTPS state
@@ -51,7 +51,7 @@ MAIL / TUNNELS
   tunnel stop <domain>
 
 LOGS
-  logs                         Every log QuickWP can show
+  logs                         Every log Nexora can show
   logs <id> [--lines N]        Tail one
 
 Every command accepts --json for machine-readable output.
@@ -67,7 +67,7 @@ fn main() {
         std::process::exit(if args.is_empty() { 2 } else { 0 });
     }
     if args[0] == "--version" || args[0] == "-v" {
-        println!("quickwp {}", env!("CARGO_PKG_VERSION"));
+        println!("nexora {}", env!("CARGO_PKG_VERSION"));
         return;
     }
 
@@ -78,14 +78,14 @@ fn main() {
     // running". The app spawns it on the way out and stops it on the next
     // launch; see core::handoff.
     if args[0] == "__serve" {
-        let app = match core::Quickwp::new() {
+        let app = match core::Nexora::new() {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("serve: {e}");
                 std::process::exit(1);
             }
         };
-        eprintln!("serve: keeping sites up on port {} until QuickWP opens again", core::ports::NGINX);
+        eprintln!("serve: keeping sites up on port {} until Nexora opens again", core::ports::NGINX);
         if let Err(e) = core::handoff::serve(&app) {
             eprintln!("serve: {e}");
             std::process::exit(1);
@@ -95,7 +95,7 @@ fn main() {
     // Hidden: the DNS server itself, run by the LaunchAgent. Not in USAGE
     // because nobody runs it by hand.
     if args[0] == "__dns" {
-        let app = match core::Quickwp::new() {
+        let app = match core::Nexora::new() {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("dns: {e}");
@@ -161,7 +161,7 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 fn need(args: &[String], i: usize, what: &str) -> Result<String, String> {
     args.get(i)
         .cloned()
-        .ok_or_else(|| format!("missing <{what}>. Run `quickwp help`."))
+        .ok_or_else(|| format!("missing <{what}>. Run `nexora help`."))
 }
 
 fn out<T: serde::Serialize>(json: bool, value: &T, plain: impl FnOnce() -> String) -> String {
@@ -173,7 +173,7 @@ fn out<T: serde::Serialize>(json: bool, value: &T, plain: impl FnOnce() -> Strin
 }
 
 fn run(args: &[String], json: bool) -> Result<String, String> {
-    let app = core::Quickwp::new().map_err(|e| e.to_string())?;
+    let app = core::Nexora::new().map_err(|e| e.to_string())?;
     let a = |i: usize| args.get(i).map(|s| s.as_str()).unwrap_or("");
 
     match (a(0), a(1)) {
@@ -213,7 +213,7 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
             let tld = app.db.tld().map_err(|e| e.to_string())?;
             let edge = std::env::current_exe()
                 .ok()
-                .and_then(|e| e.parent().map(|d| d.join("quickwp-edge")))
+                .and_then(|e| e.parent().map(|d| d.join("nexora-edge")))
                 .unwrap_or_default();
             let takeover = args.iter().any(|a| a == "--takeover");
             let checks = core::privileged::preflight(&tld, &edge, takeover);
@@ -232,7 +232,7 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
                     .collect::<Vec<_>>()
                     .join("\n");
                 s.push_str(if blocks {
-                    "\n\nNot ready: fix the STOP lines first. QuickWP will not ask for your \
+                    "\n\nNot ready: fix the STOP lines first. Nexora will not ask for your \
                      password for an install that cannot succeed."
                 } else {
                     "\n\nReady. Turn on HTTPS from the app's General tab."
@@ -269,7 +269,7 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
             // so names keep resolving after any one process exits. A CLI that
             // started it would take it down again on the next line.
             Ok(format!(
-                "Pools started. The edge and DNS are owned by the app — open QuickWP to serve on {}.",
+                "Pools started. The edge and DNS are owned by the app — open Nexora to serve on {}.",
                 core::ports::NGINX
             ))
         }
@@ -350,7 +350,7 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
         }
         ("site", "domains") => {
             let d = need(args, 2, "domain")?;
-            let add = flag(args, "--add").ok_or("usage: quickwp site domains <domain> --add <name>")?;
+            let add = flag(args, "--add").ok_or("usage: nexora site domains <domain> --add <name>")?;
             core::site::add_domain(&app.db, &d, &add).map_err(|e| e.to_string())?;
             if let Some(s) = core::site::find(&app.db, &d).map_err(|e| e.to_string())? {
                 app.ensure_cert(&s).map_err(|e| e.to_string())?;
@@ -478,7 +478,7 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
                 return Err(format!("no site answers on `{d}`"));
             }
             if !core::tunnel::is_installed() {
-                return Err("cloudflared is not installed. Run `quickwp tunnel install`.".into());
+                return Err("cloudflared is not installed. Run `nexora tunnel install`.".into());
             }
             // The CLI exits immediately, so it cannot be the owner. The share
             // carries a deadline instead, and a guard process enforces it --
@@ -488,7 +488,7 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
             let mins = core::tunnel::CLI_TUNNEL_SECONDS / 60;
             Ok(format!(
                 "{url}\n\n{d} is PUBLIC. Anyone with that link reaches it.\n\
-                 It closes automatically in {mins} minutes, or now with:\n  quickwp tunnel stop {d}"
+                 It closes automatically in {mins} minutes, or now with:\n  nexora tunnel stop {d}"
             ))
         }
         ("tunnel", "install") => {
@@ -548,7 +548,7 @@ fn run(args: &[String], json: bool) -> Result<String, String> {
             core::log::tail(id, lines).map_err(|e| e.to_string())
         }
 
-        (cmd, _) => Err(format!("unknown command `{cmd}`. Run `quickwp help`.")),
+        (cmd, _) => Err(format!("unknown command `{cmd}`. Run `nexora help`.")),
     }
 }
 

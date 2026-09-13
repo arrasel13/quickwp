@@ -22,6 +22,8 @@ const KNOWN_CONSTANTS: &[&str] = &[
     "WP_CACHE",
     "DISALLOW_FILE_EDIT",
     "WP_ENVIRONMENT_TYPE",
+    // Off for a site created on a chosen WordPress version, so it stays there.
+    "WP_AUTO_UPDATE_CORE",
 ];
 
 fn check_constant(key: &str) -> Result<()> {
@@ -29,7 +31,7 @@ fn check_constant(key: &str) -> Result<()> {
         Ok(())
     } else {
         Err(Error::other(format!(
-            "{key} is not one of the constants QuickWP will edit."
+            "{key} is not one of the constants Nexora will edit."
         )))
     }
 }
@@ -65,7 +67,7 @@ pub fn config_set_bool(site: &Site, key: &str, on: bool) -> Result<String> {
 
 // ----------------------------------------------------------------- options
 
-/// The options QuickWP will edit.
+/// The options Nexora will edit.
 ///
 /// Curated on purpose. Site URLs are excluded because changing one without the
 /// matching search-replace leaves a site that redirects to an address it no
@@ -93,7 +95,7 @@ fn check_option(key: &str) -> Result<()> {
         Ok(())
     } else {
         Err(Error::other(format!(
-            "{key} is not one of the options QuickWP will edit."
+            "{key} is not one of the options Nexora will edit."
         )))
     }
 }

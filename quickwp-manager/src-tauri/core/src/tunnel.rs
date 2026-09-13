@@ -8,7 +8,7 @@
 //! not consent to, so a tunnel is never left with nobody watching it:
 //!
 //! * Open state lives in the database, not in one process's memory, so any
-//!   QuickWP process -- the app or the CLI -- can see and stop a share.
+//!   Nexora process -- the app or the CLI -- can see and stop a share.
 //! * A small guard process watches the owner and stops the tunnel the moment
 //!   it goes. macOS cannot signal a child when its parent dies, so the guard
 //!   polls -- matching on the parent's *start time* as well as its pid, because
@@ -105,15 +105,14 @@ fn forget(db: &Db, domain: &str) -> Result<()> {
     })
 }
 
-/// Where the `quickwp` binary lives, for spawning a guard.
+/// Where the `nexora` binary lives, for spawning a guard.
 fn guard_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    for c in [
-        dir.join("quickwp"),
-        dir.join("../Resources/quickwp"),
-    ] {
-        if c.exists() {
+    let me = std::fs::canonicalize(&exe).unwrap_or_else(|_| exe.clone());
+    // Bundled first, and never the app itself.
+    for c in [dir.join("../Resources/nexora"), dir.join("nexora")] {
+        if c.exists() && std::fs::canonicalize(&c).map_or(true, |p| p != me) {
             return Some(c);
         }
     }
@@ -182,7 +181,7 @@ pub fn start(
     let guard_pid = spawn_guard(&t, owner_pid);
     record(db, &t, guard_pid)?;
 
-    // A public share is the only thing QuickWP does that is visible from
+    // A public share is the only thing Nexora does that is visible from
     // outside this machine, so starting one always leaves a line behind.
     crate::log::write(&format!(
         "tunnel started: {domain} -> {url} (pid {pid}, owner {}, guard {})",
@@ -340,7 +339,7 @@ mod tests {
 
     #[test]
     fn the_public_url_is_read_from_the_log_not_guessed() {
-        let p = std::env::temp_dir().join("quickwp-tunnel-log-test.log");
+        let p = std::env::temp_dir().join("nexora-tunnel-log-test.log");
         std::fs::write(
             &p,
             "INF +------------------+\n|  https://odd-cat-42.trycloudflare.com  |\n",
@@ -351,7 +350,7 @@ mod tests {
 
     #[test]
     fn no_url_yet_is_none_rather_than_a_wrong_guess() {
-        let p = std::env::temp_dir().join("quickwp-tunnel-empty.log");
+        let p = std::env::temp_dir().join("nexora-tunnel-empty.log");
         std::fs::write(&p, "starting...\n").unwrap();
         assert!(read_public_url(&p).is_none());
     }

@@ -2,8 +2,8 @@
 //! version managers.
 //!
 //! Listed so the settings can show everything that is on the machine. Sites
-//! still run on QuickWP's own pinned builds -- a Homebrew PHP has its own ini,
-//! its own extensions and its own upgrade schedule, none of which QuickWP
+//! still run on Nexora's own pinned builds -- a Homebrew PHP has its own ini,
+//! its own extensions and its own upgrade schedule, none of which Nexora
 //! controls -- so these are reported, never used.
 
 use std::collections::BTreeMap;

@@ -565,7 +565,7 @@ function Permalinks({
         }
         className={field}
       >
-        {/* A structure set outside QuickWP is kept and shown rather than
+        {/* A structure set outside Nexora is kept and shown rather than
             silently snapped to one of ours. */}
         {structure !== null && !known && (
           <option value={structure}>Custom — {structure || "(empty)"}</option>
