@@ -2,6 +2,25 @@
 @tailwind components;
 @tailwind utilities;
 
+/* No rubber-band scrolling. macOS lets a web view bounce past the top or the
+   bottom of anything that scrolls, and the page behind it showed through as
+   a white band above the window. Every screen scrolls inside its own panes,
+   so the document itself never needs to move: it is pinned to the window,
+   painted the frame's colour, and nothing bounces. */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  background-color: #1e1e1e;
+}
+
+*,
+*::before,
+*::after {
+  overscroll-behavior: none;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
