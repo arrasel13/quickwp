@@ -1,6 +1,8 @@
 import { Fragment } from "react";
 import { Dialog, Transition } from "@headlessui/react";
 import { ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import { unlessWindowDrag } from "../../lib/windowDrag";
+import WindowDragStrip from "../WindowDragStrip";
 
 /**
  * An in-app confirmation.
@@ -33,7 +35,7 @@ export default function ConfirmDialog({
       <Dialog
         as="div"
         className="relative z-[60]"
-        onClose={busy ? () => {} : onCancel}
+        onClose={busy ? () => {} : unlessWindowDrag(onCancel)}
       >
         <Transition.Child
           as={Fragment}
@@ -102,6 +104,7 @@ export default function ConfirmDialog({
             </Transition.Child>
           </div>
         </div>
+        <WindowDragStrip />
       </Dialog>
     </Transition>
   );

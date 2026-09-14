@@ -76,7 +76,7 @@ export default function AppSettings({ open, onClose, sidebarCollapsed, onSidebar
 
             {/* The sheet covers the window's own drag strip, so it carries one. */}
             <div
-              data-tauri-drag-region
+              data-tauri-drag-region="deep"
               className="relative flex h-12 flex-shrink-0 items-stretch justify-center border-b border-gray-200 bg-white"
             >
               <div role="tablist" className="flex items-stretch">

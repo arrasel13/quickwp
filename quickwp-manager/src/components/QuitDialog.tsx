@@ -3,6 +3,8 @@ import { Dialog, Transition } from "@headlessui/react";
 import clsx from "clsx";
 import { api, errorText } from "../lib/api";
 import { useT } from "../lib/i18n";
+import { unlessWindowDrag } from "../lib/windowDrag";
+import WindowDragStrip from "./WindowDragStrip";
 
 type Mode = "keep" | "restart" | "stop";
 const MODES: Mode[] = ["keep", "restart", "stop"];
@@ -45,7 +47,7 @@ export default function QuitDialog() {
 
   return (
     <Transition appear show={open} as={Fragment}>
-      <Dialog as="div" className="relative z-[70]" onClose={busy ? () => {} : () => setOpen(false)}>
+      <Dialog as="div" className="relative z-[70]" onClose={busy ? () => {} : unlessWindowDrag(() => setOpen(false))}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-150"
@@ -133,6 +135,7 @@ export default function QuitDialog() {
             </Dialog.Panel>
           </Transition.Child>
         </div>
+        <WindowDragStrip />
       </Dialog>
     </Transition>
   );

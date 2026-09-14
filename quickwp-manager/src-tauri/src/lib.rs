@@ -85,8 +85,11 @@ fn start_stack(app: &Nexora, edge: &Mutex<Option<server::Edge>>) -> core::Result
         .flatten()
         .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string());
     if database::is_installed(&series) {
-        if let Err(e) = database::start(&app.sup, &series) {
-            qlog::write(&format!("could not start MySQL {series}: {e}"));
+        match database::start(&app.sup, &series) {
+            // A site listed again after its data folder was lost has no
+            // database: recreate it empty, so the site loads at all.
+            Ok(_) => app.ensure_site_databases(&series),
+            Err(e) => qlog::write(&format!("could not start MySQL {series}: {e}")),
         }
     }
     let mut edge = edge.lock().unwrap();
@@ -228,7 +231,24 @@ fn php_ini_set(state: State<'_, AppState>, minor: String, key: String, value: St
 /// otherwise is an admin prompt followed by "file not found" -- a password
 /// asked for nothing.
 /// The bundled `nexora` CLI, which the DNS agent and the tunnel guard run.
+/// The `nexora` tool the background helpers run: the DNS agent, the
+/// keep-running server. A copy outside the app bundle (see `core::helper`),
+/// so nothing keeps Nexora.app in use once its window is closed and Finder can
+/// replace it with a newer one. Falls back to the app's own copy if the copy
+/// cannot be made.
 fn cli_binary() -> std::path::PathBuf {
+    let bundled = bundled_cli();
+    match core::helper::install(&bundled) {
+        Ok((path, _)) => path,
+        Err(e) => {
+            nexora_core::log::write(&format!("could not install the background helper: {e}"));
+            bundled
+        }
+    }
+}
+
+/// The `nexora` tool inside the app bundle.
+fn bundled_cli() -> std::path::PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
     let dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
     let me = std::fs::canonicalize(&exe).unwrap_or_else(|_| exe.clone());
@@ -2157,6 +2177,17 @@ pub fn run() {
 
     let app = Nexora::new().expect("Nexora could not open its data directory");
 
+    // A site whose folder is in the sites directory but whose record is gone
+    // -- the data folder deleted and set up again -- is listed again rather
+    // than left on disk where nothing shows it.
+    match app.recover_sites() {
+        Ok(listed) if !listed.is_empty() => {
+            let _ = app.reload_dns();
+        }
+        Ok(_) => {}
+        Err(e) => nexora_core::log::write(&format!("could not look for unlisted sites: {e}")),
+    }
+
     // Reconcile shares before the window opens. A tunnel left running by a
     // previous crash is exactly the forgotten share this sweeps up.
     if let Err(e) = tunnel::sweep(&app.db, &app.sup) {
@@ -2167,11 +2198,20 @@ pub fn run() {
     // else -- so a machine with the resolver but no server has names that hang.
     // Repair that on launch rather than waiting for someone to press Start.
     if let Ok(tld) = app.db.tld() {
-        let cli = cli_binary();
+        // The helper copy is refreshed from this app first. An agent running
+        // from inside the app bundle -- which kept the app "in use" so Finder
+        // could not replace it -- or one running an older copy after an
+        // update, is reinstalled onto it.
+        let (cli, helper_changed) = match core::helper::install(&bundled_cli()) {
+            Ok(installed) => installed,
+            Err(_) => (bundled_cli(), false),
+        };
         // Also repaired when it runs the wrong program: one left by a build
         // that pointed it at the app would never answer.
         if privileged::resolver_is_ours(&tld)
-            && (!privileged::dns_agent_running() || !privileged::dns_agent_runs(&cli))
+            && (!privileged::dns_agent_running()
+                || !privileged::dns_agent_runs(&cli)
+                || helper_changed)
         {
             let _ = privileged::install_dns_agent(&cli);
             for _ in 0..20 {

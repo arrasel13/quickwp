@@ -26,6 +26,8 @@ import SiteSettings from "../site/SiteSettings";
 import TerminalTab from "./TerminalTab";
 import MailTab from "./MailTab";
 import SiteAvatar from "../SiteAvatar";
+import WindowDragStrip from "../WindowDragStrip";
+import { unlessWindowDrag } from "../../lib/windowDrag";
 import { useSites } from "../../lib/sites";
 
 interface WordPressSite {
@@ -664,7 +666,7 @@ export default function SitesTab() {
       {selectedSite ? (
         <>
       {/* Header: the site in view, named the way the sidebar names it. */}
-      <div className="flex flex-shrink-0 items-center gap-3 px-6 pt-5 pb-3">
+      <div data-tauri-drag-region="deep" className="flex flex-shrink-0 items-center gap-3 px-6 pt-5 pb-3">
         <div className="inline-flex min-w-0 max-w-full items-center gap-3 rounded-md bg-gray-900 py-1.5 pl-1.5 pr-4 text-white">
           <SiteAvatar
             name={selectedBackendSite?.name || selectedSite.name}
@@ -708,7 +710,7 @@ export default function SitesTab() {
             selectedIndex={siteTab}
             onChange={openSiteTab}
           >
-            <Tab.List className="flex flex-shrink-0 gap-1 border-b border-gray-200 bg-white px-4">
+            <Tab.List data-tauri-drag-region="deep" className="flex flex-shrink-0 gap-1 border-b border-gray-200 bg-white px-4">
               {siteDetailTabs.map((tab) => (
                 <Tab
                   key={tab.id}
@@ -805,7 +807,7 @@ export default function SitesTab() {
 
         </>
       ) : (
-        <div className="flex-1 overflow-y-auto bg-gradient-to-b from-gray-50 to-white">
+        <div data-tauri-drag-region="deep" className="flex-1 overflow-y-auto bg-gradient-to-b from-gray-50 to-white">
           <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-8 py-12">
             {/* Hero */}
             <div className="text-center">
@@ -841,7 +843,7 @@ export default function SitesTab() {
           // Escape and backdrop clicks are ignored mid-install: closing would
           // hide a running installation, not stop it -- and would take the
           // one-time admin password with it.
-          onClose={isInstalling ? () => {} : closeModal}
+          onClose={isInstalling ? () => {} : unlessWindowDrag(closeModal)}
         >
           <Transition.Child
             as={Fragment}
@@ -1319,6 +1321,8 @@ export default function SitesTab() {
               </Transition.Child>
             </div>
           </div>
+          {/* The dialog covers the window's drag areas; this keeps it movable. */}
+          <WindowDragStrip />
         </Dialog>
       </Transition>
     </div>

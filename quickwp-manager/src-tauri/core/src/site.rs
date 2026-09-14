@@ -132,6 +132,92 @@ pub fn create(db: &Db, new: &NewSite) -> Result<Site> {
     Ok(find_by_id(db, id)?.ok_or_else(|| Error::other("site vanished after insert"))?)
 }
 
+/// A site folder in the sites directory that has no record.
+///
+/// Nexora made it, then lost track of it -- its data folder was deleted and
+/// set up again, say. The folder is the site, so it is listed again rather
+/// than left on disk where nothing shows it.
+#[derive(Debug, Clone)]
+pub struct Unlisted {
+    pub name: String,
+    pub domain: String,
+    pub docroot: std::path::PathBuf,
+    /// "wordpress" when it has a wp-config.php, otherwise "php".
+    pub kind: String,
+}
+
+/// Site folders in `sites_dir` that no site record points at.
+///
+/// Only folders that are recognisably sites count: a wp-config.php, or an
+/// index.php or index.html. Hidden folders, and names that cannot be a
+/// hostname under the TLD, are left alone.
+pub fn unlisted(db: &Db, sites_dir: &std::path::Path, tld: &str) -> Result<Vec<Unlisted>> {
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let known = list(db)?;
+    let known_roots: Vec<std::path::PathBuf> =
+        known.iter().map(|s| canon(std::path::Path::new(&s.docroot))).collect();
+    let Ok(entries) = std::fs::read_dir(sites_dir) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(folder) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        if folder.starts_with('.') || !path.is_dir() {
+            continue;
+        }
+        if folder.is_empty() || !folder.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            continue;
+        }
+        let kind = if path.join("wp-config.php").is_file() {
+            "wordpress"
+        } else if path.join("index.php").is_file() || path.join("index.html").is_file() {
+            "php"
+        } else {
+            continue;
+        };
+        let domain = normalise_domain(&format!("{folder}.{tld}"));
+        let claimed = known_roots.contains(&canon(&path))
+            || known.iter().any(|s| s.domain == domain || s.aliases.contains(&domain));
+        if claimed {
+            continue;
+        }
+        out.push(Unlisted { name: folder, domain, docroot: path, kind: kind.into() });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Record a site whose folder already exists in the sites directory.
+///
+/// Unlike `create`, nothing in the folder is written -- no placeholder index
+/// over a site's own. And it is not linked: the folder is Nexora's, so
+/// deleting the site removes it, as it would any other.
+pub fn adopt(db: &Db, found: &Unlisted, php_minor: &str) -> Result<Site> {
+    let id = db.with(|c| {
+        c.execute(
+            "INSERT INTO sites (name, domain, docroot, kind, php_minor, is_linked)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            params![
+                found.name,
+                found.domain,
+                found.docroot.to_string_lossy(),
+                found.kind,
+                php_minor
+            ],
+        )?;
+        let id = c.last_insert_rowid();
+        c.execute(
+            "INSERT INTO site_domains (site_id, hostname, is_primary) VALUES (?1, ?2, 1)",
+            params![id, found.domain],
+        )?;
+        Ok(id)
+    })?;
+    Ok(find_by_id(db, id)?.ok_or_else(|| Error::other("site vanished after insert"))?)
+}
+
 pub fn find_by_id(db: &Db, id: i64) -> Result<Option<Site>> {
     Ok(list(db)?.into_iter().find(|s| s.id == id))
 }
@@ -360,6 +446,53 @@ never overwritten by Nexora.</p>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn site_folders_without_a_record_are_found_and_listed_again_untouched() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = std::env::temp_dir().join(format!("nexora-unlisted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let make = |name: &str, file: &str, body: &str| {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            if !file.is_empty() {
+                std::fs::write(dir.join(name).join(file), body).unwrap();
+            }
+        };
+        make("testone", "wp-config.php", "<?php define( 'DB_NAME', 'testone_test' );");
+        std::fs::write(dir.join("testone/index.php"), "<?php // WordPress").unwrap();
+        make("plain", "index.html", "hello");
+        make("empty", "", "");
+        make(".hidden", "index.php", "x");
+        make("has space", "index.php", "x");
+        make("known", "index.php", "x");
+        create(
+            &db,
+            &NewSite {
+                name: "Known".into(),
+                domain: "known.test".into(),
+                kind: "php".into(),
+                php_minor: "8.3".into(),
+                link_path: Some(dir.join("known").to_string_lossy().into()),
+            },
+        )
+        .unwrap();
+
+        let found = unlisted(&db, &dir, "test").unwrap();
+        let names: Vec<_> = found.iter().map(|f| (f.name.as_str(), f.kind.as_str())).collect();
+        assert_eq!(names, vec![("plain", "php"), ("testone", "wordpress")]);
+
+        let wp = found.iter().find(|f| f.name == "testone").unwrap();
+        let site = adopt(&db, wp, "8.3").unwrap();
+        assert_eq!(site.domain, "testone.test");
+        assert!(!site.is_linked, "a folder in the sites directory is Nexora's, not linked");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("testone/index.php")).unwrap(),
+            "<?php // WordPress",
+            "listing a site again must not write into its folder"
+        );
+        assert_eq!(unlisted(&db, &dir, "test").unwrap().len(), 1, "a listed site is not found twice");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn domains_normalise_and_cannot_be_claimed_twice() {

@@ -271,7 +271,7 @@ export default function Onboarding({
   const onDecide = (c: Choice) => decide.current?.(c);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-white">
+    <div data-tauri-drag-region="deep" className="flex h-screen flex-col overflow-hidden bg-white">
       {/* The window has no title bar on macOS; this strip drags it and clears
           the traffic lights. */}
       <div data-tauri-drag-region className="h-11 flex-shrink-0" />

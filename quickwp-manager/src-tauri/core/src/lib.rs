@@ -14,6 +14,7 @@ pub mod error;
 pub mod exec;
 pub mod fastcgi;
 pub mod handoff;
+pub mod helper;
 pub mod log;
 pub mod mail;
 pub mod node;
@@ -121,6 +122,68 @@ impl Nexora {
             self.start_dns()?;
         }
         Ok(())
+    }
+
+    /// The MySQL series sites are created on.
+    pub fn db_series(&self) -> String {
+        self.db
+            .setting("db_series")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string())
+    }
+
+    /// List again every site whose folder is in the sites directory but whose
+    /// record is gone, with the database its wp-config.php names.
+    pub fn recover_sites(&self) -> Result<Vec<site::Site>> {
+        let tld = self.db.tld()?;
+        let php = self.db.default_php()?;
+        let series = self.db_series();
+        let mut listed = Vec::new();
+        for found in site::unlisted(&self.db, &paths::sites(), &tld)? {
+            match site::adopt(&self.db, &found, &php) {
+                Ok(s) => {
+                    if let Some((name, ..)) = migrate::read_connection(&found.docroot) {
+                        let _ = site::set_database(&self.db, s.id, &series, &name);
+                    }
+                    log::write(&format!(
+                        "listed {} again: its folder {} had no record",
+                        s.domain, s.docroot
+                    ));
+                    listed.push(s);
+                }
+                Err(e) => log::write(&format!("could not list {} again: {e}", found.domain)),
+            }
+        }
+        Ok(listed)
+    }
+
+    /// Create, empty, any database a WordPress site's wp-config.php expects
+    /// on Nexora's MySQL and cannot find. The site then loads WordPress's
+    /// installer instead of a database connection error. Databases that
+    /// exist are never touched. Needs MySQL running.
+    pub fn ensure_site_databases(&self, series: &str) {
+        let (Ok(sites), Ok(existing)) = (site::list(&self.db), database::databases(series)) else {
+            return;
+        };
+        for s in sites.iter().filter(|s| s.kind == "wordpress") {
+            let Some((name, user, password, host, port)) =
+                migrate::read_connection(std::path::Path::new(&s.docroot))
+            else {
+                continue;
+            };
+            let local = host == "127.0.0.1" || host == "localhost";
+            if !local || port != ports::MYSQL || existing.contains(&name) {
+                continue;
+            }
+            match database::ensure_database(series, &name, &user, &password) {
+                Ok(()) => log::write(&format!(
+                    "created the missing database {name} for {}; it starts empty",
+                    s.domain
+                )),
+                Err(e) => log::write(&format!("could not create the database for {}: {e}", s.domain)),
+            }
+        }
     }
 
     /// Delete a site: its record, its docroot, its database and its certificate.

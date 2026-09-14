@@ -170,9 +170,40 @@ pub fn adopt_if_ours(series: &str) -> bool {
             let ours = data_dir(series);
             let ours = ours.to_string_lossy();
             let ours = ours.trim_end_matches('/');
-            reported == ours
+            // Same path is not enough: a MySQL left running after its data
+            // directory was deleted still reports that path, and everything
+            // written to it goes nowhere. Ours means the directory is there.
+            reported == ours && data_dir(series).join("mysql").is_dir()
         }
         Err(_) => false,
+    }
+}
+
+/// Stop a MySQL still serving our data directory's path after the directory
+/// itself was deleted -- an install removed while its database ran. It writes
+/// every site's tables into nothing, and holds the port a real one needs.
+fn stop_orphan(series: &str) {
+    if std::net::TcpStream::connect(("127.0.0.1", ports::MYSQL)).is_err()
+        || data_dir(series).join("mysql").is_dir()
+    {
+        return;
+    }
+    let Ok(out) = sql(series, "SELECT @@datadir;") else {
+        return;
+    };
+    let ours = data_dir(series);
+    if out.trim().trim_end_matches('/') != ours.to_string_lossy().trim_end_matches('/') {
+        return; // someone else's MySQL: the port gate reports it, nothing is stopped
+    }
+    if let Some(pid) = ports::holder_pid(ports::MYSQL) {
+        crate::log::write(&format!("stopping MySQL (pid {pid}): its data directory was deleted"));
+        crate::proc::kill_tree(pid);
+    }
+    for _ in 0..50 {
+        if std::net::TcpStream::connect(("127.0.0.1", ports::MYSQL)).is_err() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -185,6 +216,7 @@ pub fn start(sup: &Supervisor, series: &str) -> Result<u16> {
     if adopt_if_ours(series) {
         return Ok(ports::MYSQL);
     }
+    stop_orphan(series);
     initialize(series)?;
 
     let dir = data_dir(series);
@@ -302,6 +334,25 @@ pub fn create_for_site(series: &str, domain: &str) -> Result<DbCredentials> {
         host: "127.0.0.1".into(),
         port: ports::MYSQL,
     })
+}
+
+/// Create a site's database and user as its wp-config.php names them, when
+/// the database is missing. Nothing that exists is changed: not a database,
+/// not a user's password.
+pub fn ensure_database(series: &str, name: &str, user: &str, password: &str) -> Result<()> {
+    // Only names that need no quoting reach SQL; anything else is left alone.
+    let plain = |v: &str| !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !plain(name) || !plain(user) {
+        return Err(Error::other(format!("`{name}` / `{user}` is not a name Nexora will create")));
+    }
+    let quoted = password.replace('\\', "\\\\").replace('\'', "''");
+    sql(series, &format!("CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"))?;
+    if user != "root" {
+        sql(series, &format!("CREATE USER IF NOT EXISTS '{user}'@'%' IDENTIFIED BY '{quoted}';"))?;
+        sql(series, &format!("GRANT ALL PRIVILEGES ON `{name}`.* TO '{user}'@'%';"))?;
+        sql(series, "FLUSH PRIVILEGES;")?;
+    }
+    Ok(())
 }
 
 pub fn drop_for_site(series: &str, db_name: &str) -> Result<()> {

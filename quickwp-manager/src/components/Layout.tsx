@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FolderOpenIcon, PlayIcon, PlusIcon, StopIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import { getVersion } from "@tauri-apps/api/app";
 import clsx from "clsx";
 import { api, errorText, hasBackend, type Site } from "../lib/api";
 import { setLanguage, useT } from "../lib/i18n";
@@ -56,13 +55,11 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
       requestNewSite();
     }
   }, [openNewSite]);
-  const [version, setVersion] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     if (!hasBackend) return;
-    void getVersion().then(setVersion).catch(() => {});
     // The saved language wins over the cached one the first paint used.
     void api.settingsGet().then((s) => setLanguage(s.language)).catch(() => {});
   }, []);
@@ -76,8 +73,9 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
   }, [collapsed]);
 
   return (
-    <div className="h-screen bg-chrome overflow-hidden">
-      <div className="flex h-full">
+    <div data-tauri-drag-region className="h-screen bg-chrome overflow-hidden">
+      {/* The frame around the content sheet moves the window too. */}
+      <div data-tauri-drag-region className="flex h-full">
         {/* Sidebar. Collapsed, each site becomes its initial rather than
             disappearing, so every site stays one click away. w-20 still
             clears the three traffic lights. */}
@@ -108,11 +106,6 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
           <SiteList collapsed={collapsed} />
 
           <div className="flex-shrink-0 px-3 pb-3 pt-2">
-            {version && !collapsed && (
-              <span className="mb-3 ml-2 inline-block rounded-full bg-wp-blue px-3 py-1 text-[11px] font-medium text-white tabular-nums">
-                v{version}
-              </span>
-            )}
             <div
               className={clsx(
                 "flex items-center",

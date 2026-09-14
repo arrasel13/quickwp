@@ -111,12 +111,12 @@ fn guard_binary() -> Option<PathBuf> {
     let dir = exe.parent()?;
     let me = std::fs::canonicalize(&exe).unwrap_or_else(|_| exe.clone());
     // Bundled first, and never the app itself.
-    for c in [dir.join("../Resources/nexora"), dir.join("nexora")] {
-        if c.exists() && std::fs::canonicalize(&c).map_or(true, |p| p != me) {
-            return Some(c);
-        }
-    }
-    None
+    let bundled = [dir.join("../Resources/nexora"), dir.join("nexora")]
+        .into_iter()
+        .find(|c| c.exists() && std::fs::canonicalize(c).map_or(true, |p| p != me))?;
+    // A guard runs the copy outside the app, so it never keeps Nexora.app in
+    // use while a share is open.
+    Some(crate::helper::install(&bundled).map(|(path, _)| path).unwrap_or(bundled))
 }
 
 /// Start a share and return its public URL.
