@@ -7,8 +7,8 @@ import {
   DocumentDuplicateIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
-import { api, errorText, hasBackend, Site } from "../../lib/api";
-import { useAsync } from "../../lib/useAsync";
+import { api, errorText, hasBackend, Site, SiteDatabaseInfo } from "../../lib/api";
+import { peekCache, putCache } from "../../lib/useAsync";
 
 /**
  * The database behind one site: Adminer on it, and the facts about it.
@@ -16,41 +16,53 @@ import { useAsync } from "../../lib/useAsync";
  * Adminer is the tab rather than a link out of it. Looking at a table is the
  * thing people came here to do, and a page that only tells you the port makes
  * you go find a client to do it with.
+ *
+ * One backend call gets it ready -- MySQL started if it was not, the database
+ * there, Adminer's address -- and the answer is kept, so a second visit shows
+ * Adminer at once while that call confirms it underneath.
  */
 export default function SiteDatabase({ site }: { site: Site }) {
-  const { data: engines, loading } = useAsync(() => api.dbList(), [], "db-list");
+  const cacheKey = `site-db:${site.domain}`;
+  const hasDb = Boolean(site.db_name && site.db_engine);
+
+  const [info, setInfo] = useState<SiteDatabaseInfo | null>(
+    () => peekCache<SiteDatabaseInfo>(cacheKey) ?? null,
+  );
+  const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [frameReady, setFrameReady] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const [url, setUrl] = useState<string | null>(null);
-  const [urlError, setUrlError] = useState<string | null>(null);
-  const [preparing, setPreparing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
 
-  const engine = engines?.find((e) => e.engine === site.db_engine);
-  const running = Boolean(engine?.running);
-  const hasDb = Boolean(site.db_name && site.db_engine);
+  const url = info?.url ?? null;
 
-  // Built by the backend, because the URL carries the token that gates Adminer
-  // and the first call is also what fetches it.
-  const prepare = useCallback(async () => {
-    if (!hasBackend || !hasDb || !running) return;
-    setPreparing(true);
-    setUrlError(null);
+  const load = useCallback(async () => {
+    if (!hasBackend || !hasDb) return;
+    setLoading(true);
+    setFailure(null);
     try {
-      setUrl(await api.siteAdminerUrl(site.domain));
+      const next = await api.siteDatabase(site.domain);
+      putCache(cacheKey, next);
+      setInfo(next);
+      setFailure(next.url ? null : next.error);
     } catch (e) {
-      setUrlError(errorText(e));
-      setUrl(null);
+      setFailure(errorText(e));
     } finally {
-      setPreparing(false);
+      setLoading(false);
     }
-  }, [site.domain, hasDb, running]);
+  }, [site.domain, hasDb, cacheKey]);
 
   useEffect(() => {
-    void prepare();
-  }, [prepare]);
+    void load();
+  }, [load]);
+
+  // A new address is a new page to wait for; the same one is left alone.
+  useEffect(() => {
+    setFrameReady(false);
+  }, [url]);
 
   const copy = () => {
     if (!url) return;
@@ -69,14 +81,18 @@ export default function SiteDatabase({ site }: { site: Site }) {
     // Re-assigning src rather than calling location.reload(): the frame is a
     // different origin, so its document is not ours to touch.
     const f = frameRef.current;
-    if (f && url) f.src = url;
+    if (f && url) {
+      setFrameReady(false);
+      f.src = url;
+    }
   };
 
   const exportNow = async () => {
+    if (!info) return;
     setExporting(true);
     setNote(null);
     try {
-      const path = await api.dbExport(engine?.series ?? "", site.db_name!);
+      const path = await api.dbExport(info.series, info.name);
       setNote(`Exported to ${path}`);
     } catch (e) {
       setNote(errorText(e));
@@ -84,10 +100,6 @@ export default function SiteDatabase({ site }: { site: Site }) {
       setExporting(false);
     }
   };
-
-  if (loading) {
-    return <p className="p-4 text-xs text-gray-500">Reading engines…</p>;
-  }
 
   if (!hasDb) {
     return (
@@ -104,16 +116,15 @@ export default function SiteDatabase({ site }: { site: Site }) {
     );
   }
 
+  const running = Boolean(info?.running);
+
   return (
     <div className="flex h-full flex-col gap-3 p-4">
       {/* The address bar. Present even before Adminer is ready, so the pane
           does not change shape the moment it loads. */}
       <div className="flex flex-shrink-0 items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm">
-        <span
-          className="flex-1 truncate font-mono text-xs text-gray-600"
-          title={url ?? undefined}
-        >
-          {url ?? (preparing ? "Preparing the database browser…" : "—")}
+        <span className="flex-1 truncate font-mono text-xs text-gray-600" title={url ?? undefined}>
+          {url ?? (loading ? "Starting the database…" : "—")}
         </span>
         <button
           onClick={copy}
@@ -133,9 +144,7 @@ export default function SiteDatabase({ site }: { site: Site }) {
           Reload
         </button>
         <button
-          onClick={() =>
-            void api.siteAdminerOpen(site.domain).catch((e) => setUrlError(errorText(e)))
-          }
+          onClick={() => void api.siteAdminerOpen(site.domain).catch((e) => setFailure(errorText(e)))}
           disabled={!url}
           className="inline-flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-40"
         >
@@ -145,50 +154,43 @@ export default function SiteDatabase({ site }: { site: Site }) {
       </div>
 
       {/* Adminer itself. */}
-      <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-        {url ? (
+      <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+        {url && (
           <iframe
             ref={frameRef}
             src={url}
             title={`Adminer — ${site.db_name}`}
+            onLoad={() => setFrameReady(true)}
             className="h-full w-full border-0"
           />
-        ) : (
-          <div className="flex h-full items-center justify-center p-6">
-            <div className="max-w-sm text-center">
-              {!running ? (
-                <>
-                  <h3 className="text-sm font-semibold text-gray-900">
-                    The {site.db_engine} engine is stopped
-                  </h3>
-                  <p className="mt-1 text-xs leading-relaxed text-gray-500">
-                    Start it from Nexora Settings › Services and this page will connect.
-                  </p>
-                </>
-              ) : urlError ? (
-                <>
-                  <h3 className="text-sm font-semibold text-gray-900">
-                    The database browser did not open
-                  </h3>
-                  <p className="mt-1 break-words text-xs leading-relaxed text-gray-500">
-                    {urlError}
-                  </p>
-                  <button
-                    onClick={() => void prepare()}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
-                  >
-                    <ArrowPathIcon className="h-4 w-4" />
-                    Try again
-                  </button>
-                </>
-              ) : (
-                <p className="text-xs text-gray-500">
-                  {preparing
-                    ? "Fetching the database browser…"
-                    : "Preparing…"}
-                </p>
-              )}
-            </div>
+        )}
+
+        {/* Over the frame until its first page arrives, so the wait reads as
+            loading rather than as a blank box. */}
+        {(!url || !frameReady) && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white p-6">
+            {failure && !url ? (
+              <div className="max-w-sm text-center">
+                <h3 className="text-sm font-semibold text-gray-900">The database did not open</h3>
+                <p className="mt-1 break-words text-xs leading-relaxed text-gray-500">{failure}</p>
+                <button
+                  onClick={() => void load()}
+                  disabled={loading}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                >
+                  <ArrowPathIcon className={clsx("h-4 w-4", loading && "animate-spin")} />
+                  Try again
+                </button>
+              </div>
+            ) : (
+              <p className="flex items-center gap-2 text-xs text-gray-500">
+                <span
+                  aria-hidden
+                  className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-500"
+                />
+                {url ? "Loading Adminer…" : "Starting the database…"}
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -208,16 +210,18 @@ export default function SiteDatabase({ site }: { site: Site }) {
             Connection and export
           </span>
           <span className="flex items-center gap-2">
-            <span className="font-mono text-[11px] text-gray-500">
-              {site.db_name}
-            </span>
+            <span className="font-mono text-[11px] text-gray-500">{site.db_name}</span>
             <span
               className={clsx(
                 "rounded px-1.5 py-0.5 text-[10px] font-medium",
-                running ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500",
+                running
+                  ? "bg-green-100 text-green-700"
+                  : info
+                    ? "bg-gray-100 text-gray-500"
+                    : "bg-amber-50 text-amber-700",
               )}
             >
-              {running ? "running" : "stopped"}
+              {running ? "running" : info ? "stopped" : "starting"}
             </span>
           </span>
         </button>
@@ -226,13 +230,9 @@ export default function SiteDatabase({ site }: { site: Site }) {
           <div className="border-t border-gray-200">
             <dl className="divide-y divide-gray-100">
               <Row label="Name" value={site.db_name!} mono />
-              <Row label="Engine" value={site.db_engine!} />
-              {engine && (
-                <>
-                  <Row label="Version" value={engine.version} mono />
-                  <Row label="Host" value={`127.0.0.1:${engine.port}`} mono />
-                </>
-              )}
+              <Row label="Engine" value={`MySQL ${info?.version || site.db_engine}`} />
+              {info && <Row label="Host" value={`127.0.0.1:${info.port}`} mono />}
+              <Row label="User" value="root (no password)" mono />
             </dl>
             <div className="px-4 py-3">
               <button
@@ -240,21 +240,10 @@ export default function SiteDatabase({ site }: { site: Site }) {
                 disabled={exporting || !running}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <ArrowPathIcon
-                  className={clsx("h-4 w-4", exporting && "animate-spin")}
-                />
+                <ArrowPathIcon className={clsx("h-4 w-4", exporting && "animate-spin")} />
                 {exporting ? "Exporting…" : "Export database"}
               </button>
-              {!running && (
-                <p className="mt-2 text-[11px] text-gray-500">
-                  The engine is stopped — start it from Nexora Settings › Services first.
-                </p>
-              )}
-              {note && (
-                <p className="mt-2 break-all font-mono text-[11px] text-gray-600">
-                  {note}
-                </p>
-              )}
+              {note && <p className="mt-2 break-all font-mono text-[11px] text-gray-600">{note}</p>}
             </div>
           </div>
         )}
@@ -263,24 +252,11 @@ export default function SiteDatabase({ site }: { site: Site }) {
   );
 }
 
-function Row({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
+function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex items-baseline justify-between gap-4 px-4 py-2.5">
       <dt className="text-xs font-medium text-gray-600">{label}</dt>
-      <dd
-        className={clsx(
-          "break-all text-right text-xs text-gray-900",
-          mono && "font-mono",
-        )}
-      >
+      <dd className={clsx("break-all text-right text-xs text-gray-900", mono && "font-mono")}>
         {value}
       </dd>
     </div>

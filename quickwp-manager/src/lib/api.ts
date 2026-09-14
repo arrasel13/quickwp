@@ -29,6 +29,19 @@ export interface NodeVersion {
   source: string;
 }
 
+/** What the Database tab shows: see `site_database`. */
+export interface SiteDatabaseInfo {
+  name: string;
+  series: string;
+  version: string;
+  port: number;
+  running: boolean;
+  /** Adminer on this database, already logged in. */
+  url: string | null;
+  /** Why there is no url, when there is not. */
+  error: string | null;
+}
+
 export interface EngineStatus {
   engine: string;
   series: string;
@@ -449,6 +462,8 @@ export const api = {
   /** Adminer, already logged in to this site's database. Fetches it on first use. */
   siteAdminerUrl: (domain: string) => call<string>("site_adminer_url", { domain }),
   siteAdminerOpen: (domain: string) => call<void>("site_adminer_open", { domain }),
+  /** Starts the site's MySQL if needed and returns everything the Database tab shows. */
+  siteDatabase: (domain: string) => call<SiteDatabaseInfo>("site_database", { domain }),
   /** Bytes under the docroot. Walked, so it is a measurement, not an estimate. */
   siteDiskUsage: (domain: string) => call<number>("site_disk_usage", { domain }),
   /** Files + database in one zip in ~/Downloads. Returns where it landed. */

@@ -324,6 +324,7 @@ export default function SitesTab() {
 
   /** Overview opens first: what the site is, and where to go from it. */
   const DEFAULT_SITE_TAB = 0;
+  const DATABASE_TAB = siteDetailTabs.findIndex((t) => t.id === "database");
   // Controlled rather than defaultIndex, so switching sites can put the
   // selection back on Overview instead of wherever the last site was left.
   const [siteTab, setSiteTab] = useState(DEFAULT_SITE_TAB);
@@ -338,6 +339,13 @@ export default function SitesTab() {
   useEffect(() => {
     setSiteTab(DEFAULT_SITE_TAB);
     setVisited(new Set([DEFAULT_SITE_TAB]));
+    // The Database tab is the slow one to open cold -- MySQL, then Adminer in
+    // a frame -- so it loads quietly behind Overview and is ready when clicked.
+    const timer = setTimeout(
+      () => setVisited((v) => (v.has(DATABASE_TAB) ? v : new Set(v).add(DATABASE_TAB))),
+      600,
+    );
+    return () => clearTimeout(timer);
   }, [selectedId]);
 
   // Fetched lazily: opening the dialog is the first moment the list matters,

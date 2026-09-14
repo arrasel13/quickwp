@@ -945,6 +945,77 @@ fn path_open_in_editor(state: State<'_, AppState>, path: String) -> Res<()> {
 /// The URL is rebuilt here rather than passed in from the webview: it carries
 /// the token that gates Adminer, and a command that opens whatever URL it is
 /// handed is a wider door than this feature needs.
+/// What the Database tab shows, in one call.
+#[derive(serde::Serialize)]
+struct SiteDatabaseInfo {
+    name: String,
+    series: String,
+    version: String,
+    port: u16,
+    running: bool,
+    /// Adminer on this database, already logged in.
+    url: Option<String>,
+    /// Why there is no `url`, when there is not.
+    error: Option<String>,
+}
+
+/// Everything the Database tab needs, ready to show: the site's MySQL started
+/// if it was not, its database there, and Adminer's address. One call rather
+/// than a status check, a start and a URL, so opening the tab is one wait --
+/// and nobody is sent to Settings to start a service first.
+#[tauri::command]
+async fn site_database(state: State<'_, AppState>, domain: String) -> Res<SiteDatabaseInfo> {
+    let site = site_by_domain(&state, &domain)?;
+    let (Some(series), Some(name)) = (
+        site.db_engine.clone().filter(|s| !s.is_empty()),
+        site.db_name.clone().filter(|s| !s.is_empty()),
+    ) else {
+        return Err(format!("{domain} has no database recorded"));
+    };
+    let app = state.app.clone();
+
+    let (a, s) = (app.clone(), series.clone());
+    let started = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        if !database::is_installed(&s) {
+            return Err(format!(
+                "MySQL {s} is not installed. Install it from Nexora Settings › Services."
+            ));
+        }
+        database::start(&a.sup, &s).map_err(|e| format!("MySQL {s} did not start: {e}"))?;
+        a.ensure_site_databases(&s);
+        // A certificate made just now reaches the HTTPS edge on its next look.
+        if a.ensure_adminer_cert().unwrap_or(false) {
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let status = database::status(&app.sup, &series);
+    let mut error = started.err();
+    let url = if status.running {
+        match app.adminer_url(&domain).await {
+            Ok(u) => Some(u),
+            Err(e) => {
+                error = Some(e.to_string());
+                None
+            }
+        }
+    } else {
+        None
+    };
+    Ok(SiteDatabaseInfo {
+        name,
+        series,
+        version: status.version,
+        port: status.port,
+        running: status.running,
+        url,
+        error,
+    })
+}
+
 #[tauri::command]
 async fn site_adminer_open(state: State<'_, AppState>, domain: String) -> Res<()> {
     let app = state.app.clone();
@@ -2310,6 +2381,17 @@ pub fn run() {
         Err(e) => nexora_core::log::write(&format!("could not look for unlisted sites: {e}")),
     }
 
+    // Adminer's certificate is made ahead of the first Database tab, so the
+    // tab never waits for the HTTPS edge to notice a new one.
+    {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = app.ensure_adminer_cert() {
+                nexora_core::log::write(&format!("could not make the database browser's certificate: {e}"));
+            }
+        });
+    }
+
     // Reconcile shares before the window opens. A tunnel left running by a
     // previous crash is exactly the forgotten share this sweeps up.
     if let Err(e) = tunnel::sweep(&app.db, &app.sup) {
@@ -2453,6 +2535,7 @@ pub fn run() {
             site_url,
             site_adminer_url,
             site_adminer_open,
+            site_database,
             site_disk_usage,
             site_export_all,
             wp_open_admin,

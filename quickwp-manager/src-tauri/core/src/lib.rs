@@ -38,6 +38,13 @@ pub mod wptools;
 
 pub use error::{Error, Result};
 
+/// Whether sites are served over HTTPS: names resolve here, the helper that
+/// listens on 443 runs, and the browser trusts Nexora's certificates.
+pub fn https_ready(tld: &str) -> bool {
+    let sys = privileged::state(tld);
+    sys.resolver_installed && sys.daemon_running && sys.ca_trusted
+}
+
 use std::sync::{Arc, Mutex};
 use supervisor::Supervisor;
 
@@ -273,16 +280,40 @@ impl Nexora {
 
         let tld = self.db.tld()?;
         let host = adminer::host(&tld);
-        let names = vec![host.clone()];
-        if !ca::covers(&host, &names) {
-            ca::issue_for(&host, &names)?;
-        }
+        self.ensure_adminer_cert()?;
 
         let port = match site.db_engine.as_deref() {
             Some(e) => database::Engine::parse(e)?.port(),
             None => ports::MYSQL,
         };
-        Ok(adminer::url(&tld, port, &db_name, &adminer::token()?))
+        let url = adminer::url(&tld, port, &db_name, &adminer::token()?);
+        if https_ready(&tld) {
+            return Ok(url);
+        }
+        // Without the HTTPS helper nothing answers on 443, and an https link
+        // fails its handshake. The edge Nexora runs itself always answers.
+        Ok(url.replacen(
+            &format!("https://{host}/"),
+            &format!("http://{host}:{}/", ports::NGINX),
+            1,
+        ))
+    }
+
+    /// Make Adminer's certificate if HTTPS is set up and it has none. True
+    /// when one was made just now: the HTTPS edge looks for new certificates
+    /// every two seconds, so a page loaded straight after cannot use it yet.
+    pub fn ensure_adminer_cert(&self) -> Result<bool> {
+        let tld = self.db.tld()?;
+        if !https_ready(&tld) {
+            return Ok(false);
+        }
+        let host = adminer::host(&tld);
+        let names = vec![host.clone()];
+        if ca::covers(&host, &names) {
+            return Ok(false);
+        }
+        ca::issue_for(&host, &names)?;
+        Ok(true)
     }
 
     /// Everything needed to rebuild this site elsewhere: its files and its
