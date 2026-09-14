@@ -1049,6 +1049,63 @@ fn wp_open_admin(
     Ok(link)
 }
 
+/// Browsers to open a site in, each with what it calls a private window.
+/// Off the main thread: finding browsers asks macOS.
+#[tauri::command]
+async fn browser_choices() -> Res<Vec<core::apps::Browser>> {
+    tauri::async_runtime::spawn_blocking(core::apps::browser_choices)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Open `url` in the browser picked from the list, in a normal or a private
+/// window; with none picked, in the preferred browser. Only a browser Nexora
+/// found itself is accepted: a command that launches whatever app path it is
+/// handed would be a wider door than this needs.
+fn open_in_browser(state: &AppState, browser: Option<&str>, private: bool, url: &str) -> Res<()> {
+    let Some(path) = browser else {
+        return open_url(state, url);
+    };
+    if !core::apps::browsers().iter().any(|b| b.path == path) {
+        return Err(format!("{path} is not a browser Nexora found on this Mac."));
+    }
+    let app = std::path::Path::new(path);
+    if private {
+        Ok(core::apps::open_url_private(app, url)?)
+    } else {
+        Ok(core::apps::open_url(Some(app), url)?)
+    }
+}
+
+/// Open the site itself in a chosen browser.
+#[tauri::command(async)]
+fn site_open_in_browser(
+    state: State<'_, AppState>,
+    domain: String,
+    browser: Option<String>,
+    private: bool,
+) -> Res<String> {
+    let site = site_by_domain(&state, &domain)?;
+    let url = canonical_url(&state, &site.domain)?;
+    open_in_browser(&state, browser.as_deref(), private, &url)?;
+    Ok(url)
+}
+
+/// Log in to wp-admin as the administrator, without a password, in a chosen
+/// browser. The one-time link is made here and never handed to the webview.
+#[tauri::command(async)]
+fn wp_magic_login_in(
+    state: State<'_, AppState>,
+    domain: String,
+    browser: Option<String>,
+    private: bool,
+) -> Res<()> {
+    let site = site_by_domain(&state, &domain)?;
+    let url = canonical_url(&state, &site.domain)?;
+    let link = wordpress::magic_login_to(&site, &url, "", None)?;
+    open_in_browser(&state, browser.as_deref(), private, &link)
+}
+
 // ------------------------------------------------------------ onboarding
 
 /// One component the first run offers to install.
@@ -1475,6 +1532,69 @@ fn wp_set_user_password(
 
 /// The password Nexora saved for a user, if it set one -- at install, or
 /// when it was last changed from here. None for anything set elsewhere.
+/// WP-CLI reads a site's database, so a stopped site's theme and users need
+/// its MySQL up. Starting it is idempotent, and quick when it already runs.
+fn ensure_database_for(state: &State<'_, AppState>, site: &site::Site) {
+    if let Some(series) = site.db_engine.as_deref() {
+        if database::is_installed(series) {
+            let _ = database::start(&state.app.sup, series);
+        }
+    }
+}
+
+/// Whether WordPress is set up in the site's database -- see
+/// `wordpress::install_state`. A database its wp-config.php names and MySQL
+/// lacks is created first, empty, so the answer is about WordPress rather
+/// than a connection error.
+#[tauri::command(async)]
+fn wp_install_state(state: State<'_, AppState>, domain: String) -> Res<String> {
+    let site = site_by_domain(&state, &domain)?;
+    if let Some(series) = site.db_engine.as_deref() {
+        if database::is_installed(series) && database::start(&state.app.sup, series).is_ok() {
+            state.app.ensure_site_databases(series);
+        }
+    }
+    Ok(wordpress::install_state(&site)?)
+}
+
+/// The logins with a password saved for this site. Names only, never passwords.
+#[tauri::command(async)]
+fn wp_saved_logins(state: State<'_, AppState>, domain: String) -> Res<Vec<String>> {
+    let site = site_by_domain(&state, &domain)?;
+    Ok(core::secrets::logins(&site.domain))
+}
+
+/// Set WordPress up again in a site whose files are here but whose database
+/// is empty. Uses the saved admin login and password, so what the user already
+/// has still works; posts and pages that were in the lost database are gone.
+/// Returns the admin login.
+#[tauri::command(async)]
+fn wp_set_up_again(state: State<'_, AppState>, domain: String) -> Res<String> {
+    let site = site_by_domain(&state, &domain)?;
+    let series = site.db_engine.clone().unwrap_or_else(|| default_db_series(&state));
+    if !database::is_installed(&series) {
+        return Err(format!("MySQL {series} is not installed."));
+    }
+    database::start(&state.app.sup, &series)?;
+    state.app.ensure_site_databases(&series);
+    if wordpress::install_state(&site)? == "installed" {
+        return Err("WordPress is already set up on this site.".into());
+    }
+
+    let logins = core::secrets::logins(&site.domain);
+    let login = if logins.iter().any(|l| l == "admin") {
+        "admin".to_string()
+    } else {
+        logins.into_iter().next().unwrap_or_else(|| "admin".into())
+    };
+    let password = core::secrets::password(&site.domain, &login)
+        .unwrap_or_else(database::generate_password);
+    let url = canonical_url(&state, &site.domain)?;
+    let title = if site.name.is_empty() { site.domain.clone() } else { site.name.clone() };
+    wordpress::install_existing(&site, &url, &title, &login, "admin@localhost.com", &password)?;
+    Ok(login)
+}
+
 #[tauri::command(async)]
 fn wp_saved_password(state: State<'_, AppState>, domain: String, login: String) -> Res<Option<String>> {
     let site = site_by_domain(&state, &domain)?;
@@ -1591,6 +1711,7 @@ fn site_terminal_at(state: State<'_, AppState>, domain: String, path: String) ->
 #[tauri::command(async)]
 fn wp_users(state: State<'_, AppState>, domain: String) -> Res<Vec<wordpress::WpUser>> {
     let site = site_by_domain(&state, &domain)?;
+    ensure_database_for(&state, &site);
     Ok(wordpress::users(&site)?)
 }
 
@@ -1604,6 +1725,7 @@ fn wp_items(
     updates: Option<bool>,
 ) -> Res<Vec<wordpress::WpItem>> {
     let site = site_by_domain(&state, &domain)?;
+    ensure_database_for(&state, &site);
     let kind = if kind == "theme" { "theme" } else { "plugin" };
     Ok(wordpress::items(&site, kind, updates.unwrap_or(true))?)
 }
@@ -2334,6 +2456,9 @@ pub fn run() {
             site_disk_usage,
             site_export_all,
             wp_open_admin,
+            browser_choices,
+            site_open_in_browser,
+            wp_magic_login_in,
             setup_status,
             setup_install_adminer,
             setup_finish,
@@ -2379,6 +2504,9 @@ pub fn run() {
             wp_create_user,
             wp_set_user_password,
             wp_saved_password,
+            wp_install_state,
+            wp_saved_logins,
+            wp_set_up_again,
             wp_set_user_role,
             wp_delete_user,
             wp_update_item,

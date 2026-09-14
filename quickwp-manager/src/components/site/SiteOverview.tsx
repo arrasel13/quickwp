@@ -64,6 +64,14 @@ export default function SiteOverview({ site }: { site: Site }) {
   // the one set from here. Only a site with none saved offers to set one.
   const [password, setPassword] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  // Whether WordPress is set up in the site's database. A site whose database
+  // was lost has its files and nothing to read: no theme, no users.
+  const [installState, setInstallState] = useState<
+    "installed" | "not_installed" | "no_database" | null
+  >(null);
+  const [settingUp, setSettingUp] = useState(false);
+  // Bumped to read everything again, after setting WordPress up.
+  const [refresh, setRefresh] = useState(0);
   const [resetting, setResetting] = useState(false);
 
   // All requested at once -- the backend runs them in parallel -- and each
@@ -74,6 +82,7 @@ export default function SiteOverview({ site }: { site: Site }) {
     const d = site.domain;
     // A password set for the last site is not this site's password.
     setPassword(null);
+    setInstallState(null);
 
     // Paint what is already known -- from an earlier visit, or from the
     // WordPress tab, which shares these keys -- then refresh underneath.
@@ -133,6 +142,22 @@ export default function SiteOverview({ site }: { site: Site }) {
             const saved = await api.wpSavedPassword(d, owner.login).catch(() => null);
             if (live && saved) setPassword(saved);
           })
+          // The user list needs WordPress in the database. Without it, the
+          // login and password saved when the site was made are still known.
+          .catch(async () => {
+            const logins = await api.wpSavedLogins(d).catch(() => [] as string[]);
+            if (!live || logins.length === 0) return;
+            const login = logins.includes("admin") ? "admin" : logins[0];
+            setAdmin({ login, email: "" });
+            const saved = await api.wpSavedPassword(d, login).catch(() => null);
+            if (live && saved) setPassword(saved);
+          });
+
+        void api
+          .wpInstallState(d)
+          .then((state) => {
+            if (live) setInstallState(state);
+          })
           .catch(() => {});
       }
     }
@@ -140,7 +165,7 @@ export default function SiteOverview({ site }: { site: Site }) {
     return () => {
       live = false;
     };
-  }, [site.domain, isWordPress]);
+  }, [site.domain, isWordPress, refresh]);
 
   const run = useCallback(
     async (id: string, fn: () => Promise<unknown>, success?: (r: unknown) => string) => {
@@ -159,6 +184,21 @@ export default function SiteOverview({ site }: { site: Site }) {
     [],
   );
 
+  const setUpAgain = async () => {
+    setSettingUp(true);
+    setError(null);
+    setNote(null);
+    try {
+      const login = await api.wpSetUpAgain(site.domain);
+      setNote(`WordPress is set up again. Log in as ${login} with the saved password.`);
+      setRefresh((n) => n + 1);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSettingUp(false);
+    }
+  };
+
   // One wp-admin launch at a time: each one mints a login token, and a
   // double-clicked shortcut would otherwise open two tabs.
   const openAdmin = (path?: string) => {
@@ -171,6 +211,33 @@ export default function SiteOverview({ site }: { site: Site }) {
       <div className="mx-auto grid max-w-6xl gap-x-10 gap-y-8 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
         {/* ---------------------------------------------- left: the facts */}
         <div className="space-y-8">
+          {isWordPress && installState === "not_installed" && (
+            <section className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm font-semibold text-amber-900">
+                WordPress isn't set up in this site's database
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-amber-900">
+                The site's files are here, but its database is empty — likely removed along with
+                Nexora's data folder — so there is no theme, preview or admin account to show.
+                Setting it up again brings those back with the saved admin login. Posts and pages
+                from before can't be recovered.
+              </p>
+              <button
+                onClick={() => void setUpAgain()}
+                disabled={settingUp}
+                className="mt-3 inline-flex items-center gap-2 rounded-md bg-wp-blue px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-wp-blue-dark disabled:cursor-wait disabled:opacity-70"
+              >
+                {settingUp && (
+                  <span
+                    aria-hidden
+                    className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                  />
+                )}
+                {settingUp ? "Setting up…" : "Set up WordPress again"}
+              </button>
+            </section>
+          )}
+
           <section>
             <h2 className="mb-3 text-sm font-semibold text-gray-900">About</h2>
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -232,7 +299,7 @@ export default function SiteOverview({ site }: { site: Site }) {
                     return null;
                   }}
                 />
-                <CopyField label="Email" value={admin?.email ?? null} />
+                <CopyField label="Email" value={admin?.email || null} />
               </div>
             </section>
           )}

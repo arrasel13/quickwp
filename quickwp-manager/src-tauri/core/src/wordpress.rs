@@ -439,6 +439,55 @@ pub struct WpUser {
 }
 
 /// The site's users, as WordPress itself sees them.
+/// Whether WordPress is set up in this site's database.
+///
+/// "installed"; "not_installed" when the files and wp-config.php are there
+/// but the database has no WordPress tables -- a database lost with Nexora's
+/// data folder and recreated empty; "no_database" when it cannot be reached.
+pub fn install_state(site: &Site) -> Result<String> {
+    let mut c = wp(site)?;
+    c.args(["core", "is-installed"]);
+    let out = c.output().map_err(|e| Error::Io {
+        path: "wp core is-installed".into(),
+        source: e,
+    })?;
+    if out.status.success() {
+        return Ok("installed".into());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    let unreachable = stderr.contains("database connection") || stderr.contains("unknown database");
+    Ok(if unreachable { "no_database" } else { "not_installed" }.into())
+}
+
+/// Set WordPress up in an empty database, for a site whose files and
+/// wp-config.php are already in place. Nothing is downloaded and
+/// wp-config.php is left as it is: only `wp core install` runs.
+pub fn install_existing(
+    site: &Site,
+    url: &str,
+    title: &str,
+    admin_user: &str,
+    admin_email: &str,
+    admin_password: &str,
+) -> Result<()> {
+    let mut c = wp(site)?;
+    c.args([
+        "core",
+        "install",
+        &format!("--url={url}"),
+        &format!("--title={title}"),
+        &format!("--admin_user={admin_user}"),
+        &format!("--admin_email={admin_email}"),
+        "--skip-email",
+    ]);
+    c.arg(format!("--admin_password={admin_password}"));
+    run(c, "Setting up WordPress")?;
+    if let Err(e) = crate::secrets::remember(&site.domain, admin_user, admin_password) {
+        crate::log::write(&format!("could not save the admin password for {}: {e}", site.domain));
+    }
+    Ok(())
+}
+
 pub fn users(site: &Site) -> Result<Vec<WpUser>> {
     let mut c = wp(site)?;
     c.args([
@@ -666,7 +715,7 @@ pub fn item_screenshot(site: &Site, kind: &str, name: &str) -> Result<Option<Str
 }
 
 /// Base64 without pulling in a crate for one call site.
-fn b64(bytes: &[u8]) -> String {
+pub(crate) fn b64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

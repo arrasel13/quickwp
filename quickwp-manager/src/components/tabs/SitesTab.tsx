@@ -19,6 +19,7 @@ import {
 import clsx from "clsx";
 import { Fragment } from "react";
 import SiteOverview from "../site/SiteOverview";
+import OpenSiteMenu from "../site/OpenSiteMenu";
 import SiteWordPress from "../site/SiteWordPress";
 import SiteDatabase from "../site/SiteDatabase";
 import SiteLogs from "../site/SiteLogs";
@@ -650,7 +651,9 @@ export default function SitesTab() {
     );
   }
 
-  if (sitesLoading) {
+  // Only the very first load has nothing to show. A reload keeps the screen
+  // it has -- replacing it with "Loading" and back is what made it shake.
+  if (sitesLoading && backendSites.length === 0) {
     return (
       <div className="p-8 text-xs text-gray-500">Loading sites…</div>
     );
@@ -683,7 +686,7 @@ export default function SitesTab() {
         </div>
         <span
           className={clsx(
-            "inline-flex flex-shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium",
+            "inline-flex flex-shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors duration-300",
             selectedSite.status === "running"
               ? "bg-green-50 text-green-700"
               : "bg-gray-100 text-gray-500",
@@ -697,6 +700,11 @@ export default function SitesTab() {
           />
           {selectedSite.status === "running" ? "Running" : "Stopped"}
         </span>
+        {selectedBackendSite && (
+          <div className="ml-auto flex-shrink-0">
+            <OpenSiteMenu site={selectedBackendSite} />
+          </div>
+        )}
       </div>
 
       {/* Main Content */}

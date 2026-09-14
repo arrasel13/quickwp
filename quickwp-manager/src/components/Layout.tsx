@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FolderOpenIcon, PlayIcon, PlusIcon, StopIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { PlayIcon as PlaySolidIcon, StopIcon as StopSolidIcon } from "@heroicons/react/24/solid";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import clsx from "clsx";
 import { api, errorText, hasBackend, type Site } from "../lib/api";
@@ -176,13 +177,15 @@ function NewSiteButton() {
 
 function SiteList({ collapsed }: { collapsed: boolean }) {
   const t = useT();
-  const { sites, selected, select, loading, error, reload } = useSites();
+  const { sites, selected, select, loading, error, reload, setSites } = useSites();
   // The site a right-click opened the menu for, and where it was clicked.
   const [menu, setMenu] = useState<{ site: Site; x: number; y: number } | null>(null);
   const [toDelete, setToDelete] = useState<Site | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // The site being started or stopped.
+  const [toggling, setToggling] = useState<number | null>(null);
 
   useEffect(() => {
     if (!actionError) return;
@@ -191,7 +194,14 @@ function SiteList({ collapsed }: { collapsed: boolean }) {
   }, [actionError]);
 
   const toggle = async (site: Site) => {
+    if (toggling !== null) return;
     setActionError(null);
+    setToggling(site.id);
+    // Shown as done at once -- the dot changes colour in place -- and put
+    // right by the reload below if the backend could not do it.
+    setSites((list) =>
+      list ? list.map((s) => (s.id === site.id ? { ...s, enabled: !site.enabled } : s)) : list,
+    );
     try {
       await api.siteSetEnabled(site.domain, !site.enabled);
       // A started site should load straight away, not wait for the stack.
@@ -200,6 +210,7 @@ function SiteList({ collapsed }: { collapsed: boolean }) {
       setActionError(errorText(e));
     } finally {
       await reload();
+      setToggling(null);
     }
   };
 
@@ -246,10 +257,12 @@ function SiteList({ collapsed }: { collapsed: boolean }) {
               )}
             />
           );
+          const pending = toggling === s.id;
           return (
-            <button
+            // A row holds two buttons side by side -- the site, and its status
+            // control -- because a button cannot contain another.
+            <div
               key={s.id}
-              onClick={() => select(String(s.id))}
               onContextMenu={(e) => {
                 e.preventDefault();
                 // The context-menu key and Shift+F10 report no pointer
@@ -262,32 +275,88 @@ function SiteList({ collapsed }: { collapsed: boolean }) {
                   y: fromKeyboard ? row.bottom : e.clientY,
                 });
               }}
-              aria-haspopup="menu"
-              aria-current={active ? "page" : undefined}
-              title={collapsed ? `${label} — ${s.domain}` : s.domain}
               className={clsx(
-                "flex w-full items-center rounded-md text-left text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30",
-                collapsed ? "justify-center p-1.5" : "gap-2 px-3 py-2",
-                active || menu?.site.id === s.id
-                  ? "bg-white/10 text-white"
-                  : "text-gray-300 hover:bg-white/5 hover:text-white",
+                "group relative flex w-full items-center rounded-md transition-colors",
+                active || menu?.site.id === s.id ? "bg-white/10" : "hover:bg-white/5",
               )}
             >
-              {collapsed ? (
-                <span className="relative">
-                  <SiteAvatar name={label} className="h-8 w-8 text-xs" />
-                  <span className="absolute -bottom-0.5 -right-0.5 rounded-full ring-2 ring-chrome">
-                    {dot}
+              <button
+                onClick={() => select(String(s.id))}
+                aria-haspopup="menu"
+                aria-current={active ? "page" : undefined}
+                title={collapsed ? `${label} — ${s.domain}` : s.domain}
+                className={clsx(
+                  "flex w-full min-w-0 items-center rounded-md text-left text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30",
+                  collapsed ? "justify-center p-1.5" : "gap-2 py-2 pl-3 pr-9",
+                  active || menu?.site.id === s.id
+                    ? "text-white"
+                    : "text-gray-300 group-hover:text-white",
+                )}
+              >
+                {collapsed ? (
+                  <span className="relative">
+                    <SiteAvatar name={label} className="h-8 w-8 text-xs" />
+                    <span className="absolute -bottom-0.5 -right-0.5 rounded-full ring-2 ring-chrome">
+                      {dot}
+                    </span>
+                    <span className="sr-only">{label}</span>
                   </span>
-                  <span className="sr-only">{label}</span>
-                </span>
-              ) : (
-                <>
+                ) : (
                   <span className="min-w-0 flex-1 truncate">{label}</span>
-                  {dot}
-                </>
+                )}
+              </button>
+
+              {/* The status dot is also the switch: pointing at the row turns
+                  it into play or stop, and a click starts or stops the site
+                  without opening it. The dot and both icons are always there,
+                  stacked, and only fade -- nothing is swapped in or out, so a
+                  click never makes the row blink. While the change is under
+                  way the dot, already in its new colour, pulses. */}
+              {!collapsed && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // A mouse click lets go of focus, or the icon would stay
+                    // up after the pointer leaves; the keyboard keeps it.
+                    if (e.detail > 0) e.currentTarget.blur();
+                    void toggle(s);
+                  }}
+                  aria-busy={pending || undefined}
+                  aria-label={`${s.enabled ? t("site.stop") : t("site.start")}: ${label}`}
+                  title={`Site status: ${s.enabled ? "Running" : "Stopped"}`}
+                  className="absolute right-1.5 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded text-gray-300 transition-colors duration-200 hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
+                >
+                  <span
+                    aria-hidden
+                    data-status-dot
+                    className={clsx(
+                      "col-start-1 row-start-1 h-2 w-2 rounded-full transition-[background-color,opacity,transform] duration-200",
+                      s.enabled ? "bg-green-500" : "bg-gray-600",
+                      pending
+                        ? "animate-pulse"
+                        : "group-hover:scale-50 group-hover:opacity-0 group-focus-within:scale-50 group-focus-within:opacity-0",
+                    )}
+                  />
+                  <StopSolidIcon
+                    aria-hidden
+                    data-status-icon="stop"
+                    className={clsx(
+                      "col-start-1 row-start-1 h-3.5 w-3.5 opacity-0 transition-opacity duration-200",
+                      s.enabled && !pending && "group-hover:opacity-100 group-focus-within:opacity-100",
+                    )}
+                  />
+                  <PlaySolidIcon
+                    aria-hidden
+                    data-status-icon="play"
+                    className={clsx(
+                      "col-start-1 row-start-1 h-3.5 w-3.5 opacity-0 transition-opacity duration-200",
+                      !s.enabled && !pending && "group-hover:opacity-100 group-focus-within:opacity-100",
+                    )}
+                  />
+                </button>
               )}
-            </button>
+            </div>
           );
         })}
         {actionError && (

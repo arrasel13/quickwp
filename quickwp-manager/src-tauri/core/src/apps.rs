@@ -183,6 +183,171 @@ pub fn open_url(browser: Option<&Path>, url: &str) -> Result<()> {
     spawn(cmd.arg(url), Path::new("/usr/bin/open"))
 }
 
+/// How a browser opens a private window from the command line: its flag,
+/// and what it calls that window. None for a browser with no such switch --
+/// Safari, Arc, Orion -- which then offers only a normal window.
+pub fn private_window(app: &Path) -> Option<(&'static str, &'static str)> {
+    match name_of(app).as_str() {
+        "Google Chrome" | "Google Chrome Beta" | "Google Chrome Canary" | "Chromium"
+        | "Brave Browser" | "Vivaldi" => Some(("--incognito", "Incognito window")),
+        "Microsoft Edge" => Some(("--inprivate", "InPrivate window")),
+        "Firefox" | "Firefox Developer Edition" | "Firefox Nightly" | "LibreWolf" | "Zen"
+        | "Zen Browser" | "Tor Browser" => Some(("--private-window", "Private window")),
+        "Opera" | "Opera GX" => Some(("--private", "Private window")),
+        _ => None,
+    }
+}
+
+/// A browser to open a site in.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Browser {
+    pub name: String,
+    pub path: String,
+    pub default: bool,
+    /// What it calls a private window ("Incognito window"), when Nexora can
+    /// open one in it.
+    pub private_window: Option<String>,
+    /// The browser's own icon, as a PNG data URI.
+    pub icon: Option<String>,
+}
+
+/// Every browser installed, the default first, with its private window.
+pub fn browser_choices() -> Vec<Browser> {
+    browsers()
+        .into_iter()
+        .map(|b| Browser {
+            private_window: private_window(Path::new(&b.path)).map(|(_, label)| label.to_string()),
+            icon: icon_data_uri(Path::new(&b.path)),
+            name: b.name,
+            path: b.path,
+            default: b.default,
+        })
+        .collect()
+}
+
+/// An app's own icon as a small PNG data URI, for showing it in a list.
+///
+/// Read from the bundle's .icns, which every browser ships. An app that keeps
+/// its icon only in an asset catalog gets none and is shown with a generic
+/// one: asking macOS to draw the icon from outside a running app hands back an
+/// empty outline, which is worse than no icon.
+///
+/// Kept on disk, keyed by the app's Info.plist modification time, so an app
+/// update refreshes it and every other time it is a file read. A conversion
+/// that fails leaves nothing behind, so the next look tries again.
+pub fn icon_data_uri(app: &Path) -> Option<String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    let info = app.join("Contents/Info.plist");
+    let stamp = std::fs::metadata(&info)
+        .and_then(|m| m.modified())
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let dir = crate::paths::downloads_cache().join("icons");
+    let key: String = name_of(app)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    // "-64" marks icons read from the .icns alone; names without it may hold
+    // the empty outlines an earlier fallback saved.
+    let png = dir.join(format!("{key}-{stamp}-64.png"));
+    if !png.is_file() {
+        std::fs::create_dir_all(&dir).ok()?;
+        // Written aside and moved into place, so two windows asking at once
+        // never read a half-written file.
+        let part = dir.join(format!(
+            ".{key}-{}-{}.png",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        if !icon_from_icns(app, &part) || std::fs::rename(&part, &png).is_err() {
+            let _ = std::fs::remove_file(&part);
+            return None;
+        }
+    }
+    let bytes = std::fs::read(&png).ok()?;
+    Some(format!("data:image/png;base64,{}", crate::wordpress::b64(&bytes)))
+}
+
+/// Convert any image macOS can read to a 64-pixel PNG, keeping transparency.
+fn sips_png(src: &Path, out: &Path) -> bool {
+    Command::new("/usr/bin/sips")
+        .args(["-s", "format", "png", "-Z", "64"])
+        .arg(src)
+        .arg("--out")
+        .arg(out)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+        && out.is_file()
+}
+
+fn icon_from_icns(app: &Path, out: &Path) -> bool {
+    let named = Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleIconFile", "raw"])
+        .arg(app.join("Contents/Info.plist"))
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if named.is_empty() {
+        return false;
+    }
+    let file = if named.ends_with(".icns") { named } else { format!("{named}.icns") };
+    let icns = app.join("Contents/Resources").join(file);
+    icns.is_file() && sips_png(&icns, out)
+}
+
+/// Open a page in a private window of `app`.
+///
+/// The browser's own executable is run with its private flag, not `open`:
+/// `open` drops the arguments when the browser is already running. A running
+/// browser hands the request to itself and opens the window there.
+pub fn open_url_private(app: &Path, url: &str) -> Result<()> {
+    check(app)?;
+    let (flag, _) = private_window(app).ok_or_else(|| {
+        Error::other(format!("{} cannot open a private window from Nexora.", name_of(app)))
+    })?;
+    let exe = executable_of(app)?;
+    let mut cmd = Command::new(&exe);
+    cmd.arg(flag)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // Its own session, so a browser Nexora started outlives Nexora.
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    spawn(&mut cmd, &exe)
+}
+
+/// The executable inside an app bundle, as its Info.plist names it.
+fn executable_of(app: &Path) -> Result<PathBuf> {
+    let info = app.join("Contents/Info.plist");
+    let named = Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleExecutable", "raw"])
+        .arg(&info)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let name = if named.is_empty() { name_of(app) } else { named };
+    let exe = app.join("Contents/MacOS").join(name);
+    if exe.is_file() {
+        Ok(exe)
+    } else {
+        Err(Error::other(format!("{} has no executable at {}.", name_of(app), exe.display())))
+    }
+}
+
 /// The bundle's name without `.app`: "Cursor", "iTerm".
 pub fn name_of(app: &Path) -> String {
     app.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
@@ -291,6 +456,33 @@ mod tests {
         eprintln!("terminals: {found:?}\neditors: {:?}", editors());
         if cfg!(target_os = "macos") {
             assert!(found.iter().any(|a| a.path == TERMINAL_APP && a.commands));
+        }
+    }
+
+    #[test]
+    fn installed_browsers_show_their_own_icons() {
+        for b in browsers() {
+            let uri = icon_data_uri(Path::new(&b.path))
+                .unwrap_or_else(|| panic!("no icon for {}", b.name));
+            assert!(uri.starts_with("data:image/png;base64,") && uri.len() > 200, "{}", b.name);
+        }
+    }
+
+    #[test]
+    fn private_windows_use_each_browsers_own_switch() {
+        let flag = |app: &str| private_window(Path::new(app)).map(|(f, _)| f);
+        assert_eq!(flag("/Applications/Google Chrome.app"), Some("--incognito"));
+        assert_eq!(flag("/Applications/Brave Browser.app"), Some("--incognito"));
+        assert_eq!(flag("/Applications/Firefox.app"), Some("--private-window"));
+        assert_eq!(flag("/Applications/Microsoft Edge.app"), Some("--inprivate"));
+        assert_eq!(flag("/Applications/Safari.app"), None, "Safari has no private-window switch");
+    }
+
+    #[test]
+    fn installed_browsers_have_an_executable_to_run() {
+        for b in browser_choices().into_iter().filter(|b| b.private_window.is_some()) {
+            let exe = executable_of(Path::new(&b.path)).expect("an executable");
+            assert!(exe.is_file(), "{} -> {}", b.name, exe.display());
         }
     }
 

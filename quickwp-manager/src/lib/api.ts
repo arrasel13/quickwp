@@ -330,6 +330,17 @@ export interface InstalledApp {
   default: boolean;
 }
 
+/** A browser to open a site in. */
+export interface BrowserChoice {
+  name: string;
+  path: string;
+  default: boolean;
+  /** What it calls a private window ("Incognito window"), when Nexora can open one. */
+  private_window: string | null;
+  /** The browser's own icon, as a PNG data URI. */
+  icon: string | null;
+}
+
 /** A PHP installed outside Nexora. Reported, never used by sites. */
 export interface SystemPhp {
   version: string;
@@ -541,6 +552,13 @@ export const api = {
    *  install or when it was last changed from here. null when it set none. */
   wpSavedPassword: (domain: string, login: string) =>
     call<string | null>("wp_saved_password", { domain, login }),
+  /** "installed"; "not_installed" (the files, but no WordPress in the database); "no_database". */
+  wpInstallState: (domain: string) =>
+    call<"installed" | "not_installed" | "no_database">("wp_install_state", { domain }),
+  /** Logins with a password saved for this site: names only. */
+  wpSavedLogins: (domain: string) => call<string[]>("wp_saved_logins", { domain }),
+  /** Set WordPress up again in a site whose database was lost. Returns the admin login. */
+  wpSetUpAgain: (domain: string) => call<string>("wp_set_up_again", { domain }),
   wpDeleteUser: (domain: string, login: string, reassignTo: string | null) =>
     call<string>("wp_delete_user", { domain, login, reassignTo }),
   /** `updates: false` answers in a fraction of the time, with every `update`
@@ -632,6 +650,13 @@ export const api = {
       "apps_installed",
     ),
   phpSystemList: () => call<SystemPhp[]>("php_system_list"),
+  browserChoices: () => call<BrowserChoice[]>("browser_choices"),
+  /** Open the site in a chosen browser, in a normal or private window. */
+  siteOpenInBrowser: (domain: string, browser: string | null, privateWindow: boolean) =>
+    call<string>("site_open_in_browser", { domain, browser, private: privateWindow }),
+  /** Log in to wp-admin without a password, in a chosen browser. */
+  wpMagicLoginIn: (domain: string, browser: string | null, privateWindow: boolean) =>
+    call<void>("wp_magic_login_in", { domain, browser, private: privateWindow }),
   /** Answer the quit prompt. The app exits; the promise may never settle. */
   appQuit: (mode: Exclude<QuitBehavior, "ask">, remember: boolean) =>
     call<void>("app_quit", { mode, remember }),

@@ -85,6 +85,11 @@ fn write_map(domain: &str, map: &BTreeMap<String, String>) -> Result<()> {
     Ok(())
 }
 
+/// The logins with a password saved for a site. Names only.
+pub fn logins(domain: &str) -> Vec<String> {
+    read_map(domain).into_keys().collect()
+}
+
 /// The password Nexora saved for `login` on `domain`, if it set one.
 pub fn password(domain: &str, login: &str) -> Option<String> {
     read_map(domain).remove(login)
