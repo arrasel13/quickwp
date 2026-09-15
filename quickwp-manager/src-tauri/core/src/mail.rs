@@ -49,7 +49,7 @@ pub struct MailStatus {
 pub fn status(sup: &Supervisor, catch_all: bool) -> MailStatus {
     MailStatus {
         installed: is_installed(),
-        running: sup.is_running(SERVICE),
+        running: sup.is_running(SERVICE) || running_unsupervised().is_some(),
         smtp_port: ports::MAILPIT_SMTP,
         ui_port: ports::MAILPIT_UI,
         ui_url: format!("http://127.0.0.1:{}", ports::MAILPIT_UI),
@@ -62,8 +62,31 @@ pub async fn install(on_progress: impl Fn(runtime::Progress) + Send + 'static) -
     runtime::install_tool("mailpit", pin, on_progress).await
 }
 
+/// A Mailpit this Nexora did not start but can use: this install's own binary
+/// listening on this install's inbox port. A Nexora that quit or was replaced
+/// without stopping it leaves one behind, and refusing to start next to it
+/// showed "Mailpit stopped" over a Mailpit that was running fine. Its pid.
+pub fn running_unsupervised() -> Option<u32> {
+    if !ports::is_listening(ports::MAILPIT_UI) {
+        return None;
+    }
+    let pid = ports::holder_pid(ports::MAILPIT_UI)?;
+    let bin = binary().ok()?;
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .contains(&*bin.to_string_lossy())
+        .then_some(pid)
+}
+
 pub fn start(sup: &Supervisor) -> Result<u16> {
     if sup.is_running(SERVICE) {
+        return Ok(ports::MAILPIT_UI);
+    }
+    if let Some(pid) = running_unsupervised() {
+        crate::log::info("mail", &format!("Mailpit already running (pid {pid}); using it"));
         return Ok(ports::MAILPIT_UI);
     }
     let db = paths::root().join("mailpit.db");
@@ -98,8 +121,16 @@ pub fn start(sup: &Supervisor) -> Result<u16> {
     ))
 }
 
+/// Stop Mailpit: the one this Nexora started, or one it is using that an
+/// earlier Nexora left running.
 pub fn stop(sup: &Supervisor) -> Result<bool> {
-    sup.stop(SERVICE)
+    let stopped = sup.stop(SERVICE)?;
+    if let Some(pid) = running_unsupervised() {
+        crate::proc::kill_tree(pid);
+        crate::log::info("mail", &format!("stopped the Mailpit an earlier Nexora left running (pid {pid})"));
+        return Ok(true);
+    }
+    Ok(stopped)
 }
 
 /// The `sendmail_path` a pool uses when the catch-all is on.

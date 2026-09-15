@@ -2543,6 +2543,11 @@ fn shutdown(state: &AppState, mode: QuitMode) {
         },
     };
     state.app.sup.stop_all();
+    // A Mailpit this Nexora took over from an earlier one is not the
+    // supervisor's to stop, so it is stopped here -- or it outlives "stop".
+    if let Some(pid) = mail::running_unsupervised() {
+        core::proc::kill_tree(pid);
+    }
     match record {
         Some(h) if h.edge || !h.services.is_empty() => {
             let _ = core::handoff::save(&h);
