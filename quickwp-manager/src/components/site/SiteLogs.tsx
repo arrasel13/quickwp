@@ -11,6 +11,7 @@ import {
 import clsx from "clsx";
 import { api, errorText, hasBackend, SiteLog } from "../../lib/api";
 import ConfirmDialog from "../ui/ConfirmDialog";
+import WpDebugPanel from "./WpDebugPanel";
 
 const TAIL_LINES = 1000;
 
@@ -103,7 +104,10 @@ export default function SiteLogs({ domain }: { domain: string }) {
   };
 
   const fileName = current?.path.split("/").pop() ?? "—";
-  const loggingOff = current?.id === "wp-debug" && current.logging === false;
+  const isWpDebug = current?.id === "wp-debug";
+  // Only a WordPress site reports whether it logs; the panel is for those.
+  const wordpress = isWpDebug && current?.logging !== null && current?.logging !== undefined;
+  const loggingOff = isWpDebug && current?.logging === false;
 
   return (
     <div className="flex h-full flex-col p-4">
@@ -131,11 +135,6 @@ export default function SiteLogs({ domain }: { domain: string }) {
           <DocumentTextIcon className="h-4 w-4 flex-shrink-0 text-gray-400" />
           <span className="font-mono text-sm text-gray-900">{fileName}</span>
 
-          {loggingOff && (
-            <span className="rounded-full bg-gray-100 px-2 py-0.5 font-mono text-[11px] text-gray-500">
-              logging off
-            </span>
-          )}
           {current?.exists && (
             <span className="text-[11px] text-gray-400">
               {human(current.bytes)}
@@ -201,16 +200,30 @@ export default function SiteLogs({ domain }: { domain: string }) {
           </span>
         </div>
 
+        {wordpress && (
+          <WpDebugPanel
+            domain={domain}
+            onChanged={() => void Promise.all([loadStreams(), loadBody()])}
+          />
+        )}
+
         {/* Body */}
         {error ? (
           <p className="p-4 text-xs text-red-700">{error}</p>
         ) : loggingOff && !body ? (
-          <DebugOff path={current?.path ?? ""} />
+          <EmptyLog
+            title="Debug logging is off"
+            text="Enable the debug log above, then load a page of the site. Notices, warnings and errors show up here as they happen."
+          />
         ) : !current?.exists && !body ? (
-          <p className="p-4 font-mono text-xs leading-relaxed text-gray-500">
-            This log has not been written to yet — nothing has had anything to
-            say.
-          </p>
+          <EmptyLog
+            title={isWpDebug ? "Nothing logged yet" : "This log is empty"}
+            text={
+              isWpDebug
+                ? "Debug logging is on. Load a page of the site, and anything PHP reports appears here."
+                : "Nothing has written to this log yet."
+            }
+          />
         ) : (
           <pre
             ref={boxRef}
@@ -273,19 +286,15 @@ function ToolbarButton({
   );
 }
 
-/** What to do about it, not just that it is off. */
-function DebugOff({ path }: { path: string }) {
+/** A quiet, centred note for a log with nothing in it. */
+function EmptyLog({ title, text }: { title: string; text: string }) {
   return (
-    <div className="flex-1 overflow-auto p-4 font-mono text-xs leading-relaxed text-gray-700">
-      <p>WordPress debug logging is off — nothing is being written to {path.split("/").pop()}.</p>
-      <p className="mt-4">
-        Turn on <span className="font-semibold">WP_DEBUG</span> from the{" "}
-        <span className="font-semibold">WordPress → Tools</span> tab, which
-        writes this into wp-config.php for you:
-      </p>
-      <pre className="mt-3 inline-block rounded-lg bg-gray-100 p-3 text-xs">
-        {`define( 'WP_DEBUG', true );\ndefine( 'WP_DEBUG_LOG', true );`}
-      </pre>
+    <div className="flex flex-1 items-center justify-center p-8">
+      <div className="max-w-sm text-center">
+        <DocumentTextIcon className="mx-auto h-8 w-8 text-gray-300" />
+        <p className="mt-2 text-sm font-semibold text-gray-700">{title}</p>
+        <p className="mt-1 text-xs leading-relaxed text-gray-500">{text}</p>
+      </div>
     </div>
   );
 }

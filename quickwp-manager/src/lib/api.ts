@@ -42,6 +42,20 @@ export interface SiteDatabaseInfo {
   error: string | null;
 }
 
+/** A site's WordPress debug logging, read from its wp-config.php. */
+export interface WpDebugState {
+  /** Whether WordPress writes a debug log now, however it was set up. */
+  logging: boolean;
+  /** Nexora's two standard lines are in wp-config.php. */
+  standard: boolean;
+  /** The custom code is in wp-config.php. */
+  custom_active: boolean;
+  /** The custom code in the file, or the last one saved for the site. */
+  custom_code: string;
+  standard_code: string;
+  config_path: string;
+}
+
 export interface EngineStatus {
   engine: string;
   series: string;
@@ -637,6 +651,12 @@ export const api = {
     call<string>("site_log_clear", { domain, id }),
   siteLogDownload: (domain: string, id: string) =>
     call<string>("site_log_download", { domain, id }),
+  wpDebugState: (domain: string) => call<WpDebugState>("wp_debug_state", { domain }),
+  wpDebugSet: (domain: string, on: boolean) => call<WpDebugState>("wp_debug_set", { domain, on }),
+  wpDebugCustomInsert: (domain: string, code: string) =>
+    call<WpDebugState>("wp_debug_custom_insert", { domain, code }),
+  wpDebugCustomRemove: (domain: string) =>
+    call<WpDebugState>("wp_debug_custom_remove", { domain }),
   logsSources: () => call<LogSource[]>("logs_sources"),
   logsTail: (id: string, lines?: number) => call<string>("logs_tail", { id, lines }),
 

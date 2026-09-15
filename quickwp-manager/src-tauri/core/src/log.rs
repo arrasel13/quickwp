@@ -180,7 +180,7 @@ pub fn site_log_path(site: &crate::site::Site, id: &str) -> Option<std::path::Pa
 pub fn for_site(site: &crate::site::Site, wp_logging: Option<bool>) -> Vec<SiteLog> {
     let mut out = Vec::new();
     for (id, label) in [
-        ("wp-debug", "WordPress debug log"),
+        ("wp-debug", "WP Debug Log"),
         ("app", "Nexora (app)"),
         ("server", "Server (edge/PHP)"),
         ("database", "Database"),
@@ -295,13 +295,29 @@ pub fn tail(id: &str, lines: usize) -> crate::Result<String> {
 /// The last `lines` of a file named directly, for logs that do not live in
 /// Nexora's own directory -- a site's wp-content/debug.log, say.
 pub fn tail_path(path: &std::path::Path, lines: usize) -> crate::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
     // A log that does not exist yet is not an error: nothing has written to it.
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(mut file) = std::fs::File::open(path) else {
         return Ok(String::new());
     };
-    let all: Vec<&str> = text.lines().collect();
-    let start = all.len().saturating_sub(lines);
-    Ok(all[start..].join("\n"))
+    // Only the end is read. A debug.log can grow to hundreds of megabytes, and
+    // the tab reads it every few seconds while following.
+    const WINDOW: u64 = 1024 * 1024;
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(WINDOW);
+    let mut buf = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut buf).is_err() {
+        return Ok(String::new());
+    }
+    // Lossy: read strictly as UTF-8, one byte that is not -- a binary value in
+    // a query log -- failed the read, and the tab showed nothing at all.
+    let text = String::from_utf8_lossy(&buf);
+    let mut all: Vec<&str> = text.lines().collect();
+    if start > 0 && !all.is_empty() {
+        all.remove(0); // begins mid-line
+    }
+    let from = all.len().saturating_sub(lines);
+    Ok(all[from..].join("\n"))
 }
 
 #[cfg(test)]
@@ -378,6 +394,18 @@ mod tests {
         let t = Stamp::now();
         assert!(t.year >= 2024 && (1..=12).contains(&t.month) && (1..=31).contains(&t.day));
         assert!(t.hour < 24 && t.minute < 60 && t.second < 61);
+    }
+
+    #[test]
+    fn a_log_with_bytes_that_are_not_utf8_still_shows() {
+        let dir = std::env::temp_dir().join(format!("nexora-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("mixed.log");
+        std::fs::write(&p, b"first\n\xff\xfe binary\nlast line\n").unwrap();
+        let out = tail_path(&p, 10).unwrap();
+        assert!(out.starts_with("first") && out.ends_with("last line"), "{out:?}");
+        assert_eq!(tail_path(&p, 1).unwrap(), "last line");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -34,6 +34,7 @@ pub mod runtime;
 pub mod supervisor;
 pub mod tunnel;
 pub mod wordpress;
+pub mod wpdebug;
 pub mod wptools;
 
 pub use error::{Error, Result};

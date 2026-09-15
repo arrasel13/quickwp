@@ -606,11 +606,10 @@ fn site_logs(state: State<'_, AppState>, domain: String) -> Res<Vec<qlog::SiteLo
     let s = site_by_domain(&state, &domain)?;
     // Only asked for a WordPress site: `wp config get` on a plain PHP folder
     // spawns a process to answer a question that does not apply.
+    // Read from wp-config.php directly: asking WP-CLI spawned PHP and loaded
+    // WordPress every time the tab refreshed.
     let wp_logging = if wordpress::is_wordpress(&s) {
-        Some(matches!(
-            wptools::config_get(&s, "WP_DEBUG_LOG").ok().flatten().as_deref(),
-            Some("true") | Some("1")
-        ))
+        Some(core::wpdebug::logging(&s))
     } else {
         None
     };
@@ -659,6 +658,37 @@ fn site_log_download(state: State<'_, AppState>, domain: String, id: String) -> 
         .join(format!("{}-{id}-{stamp}.log", s.domain));
     std::fs::copy(&path, &target).map_err(|e| e.to_string())?;
     Ok(target.to_string_lossy().to_string())
+}
+
+/// A site's WordPress debug logging: whether it is on, Nexora's lines, the
+/// custom code.
+#[tauri::command(async)]
+fn wp_debug_state(state: State<'_, AppState>, domain: String) -> Res<core::wpdebug::DebugState> {
+    let s = site_by_domain(&state, &domain)?;
+    Ok(core::wpdebug::state(&state.app.db, &s)?)
+}
+
+/// "Enable debug log" and "Disable": Nexora's two lines in wp-config.php, or not.
+#[tauri::command(async)]
+fn wp_debug_set(state: State<'_, AppState>, domain: String, on: bool) -> Res<core::wpdebug::DebugState> {
+    let s = site_by_domain(&state, &domain)?;
+    Ok(core::wpdebug::set_logging(&state.app.db, &s, on)?)
+}
+
+#[tauri::command(async)]
+fn wp_debug_custom_insert(
+    state: State<'_, AppState>,
+    domain: String,
+    code: String,
+) -> Res<core::wpdebug::DebugState> {
+    let s = site_by_domain(&state, &domain)?;
+    Ok(core::wpdebug::insert_custom(&state.app.db, &s, &code)?)
+}
+
+#[tauri::command(async)]
+fn wp_debug_custom_remove(state: State<'_, AppState>, domain: String) -> Res<core::wpdebug::DebugState> {
+    let s = site_by_domain(&state, &domain)?;
+    Ok(core::wpdebug::remove_custom(&state.app.db, &s)?)
 }
 
 #[derive(serde::Serialize)]
@@ -2628,6 +2658,10 @@ pub fn run() {
             site_log_tail,
             site_log_clear,
             site_log_download,
+            wp_debug_state,
+            wp_debug_set,
+            wp_debug_custom_insert,
+            wp_debug_custom_remove,
             site_cert_info,
             site_regenerate_cert,
             site_set_name,
