@@ -28,6 +28,7 @@ pub mod pty;
 pub mod privileged;
 pub mod legacy;
 pub mod secrets;
+pub mod selfupdate;
 pub mod server;
 pub mod site;
 pub mod runtime;

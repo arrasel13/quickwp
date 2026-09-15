@@ -8,6 +8,7 @@ import { setLanguage, useT } from "../lib/i18n";
 import { SitesProvider, useSites } from "../lib/sites";
 import AppSettings from "./AppSettings";
 import QuitDialog from "./QuitDialog";
+import UpdateOverlay from "./UpdateOverlay";
 import SiteAvatar from "./SiteAvatar";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import markUrl from "../assets/nexora-mark.svg";
@@ -156,6 +157,7 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
         onSidebarCollapsedChange={setCollapsed}
       />
       <QuitDialog />
+      <UpdateOverlay />
     </div>
   );
 }

@@ -2446,6 +2446,59 @@ fn shutdown(state: &AppState, mode: QuitMode) {
     }
 }
 
+/// Install a newer Nexora over this one when its installer is opened.
+///
+/// Finder refuses to copy over a running app, so this copy watches for a
+/// Nexora installer being mounted and, when one holds a newer build, lets the
+/// window say so, starts the script that swaps the new app in once this one
+/// has quit, and quits keeping the sites running. The new launch takes them
+/// back.
+fn watch_for_update(handle: AppHandle) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    // A development build runs from target/, not from an app to replace.
+    let Some(bundle) = core::selfupdate::bundle_of(&exe) else { return };
+    std::thread::spawn(move || {
+        let mut watcher = core::selfupdate::Watcher::default();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let Some(installer) = watcher.newer_installer(&exe, std::path::Path::new("/Volumes")) else {
+                continue;
+            };
+            if !core::selfupdate::can_replace(&bundle) {
+                qlog::warn(
+                    "update",
+                    &format!("a newer Nexora is open, but {} cannot be replaced from here", bundle.display()),
+                );
+                let _ = handle.emit(
+                    "update-failed",
+                    format!("A newer Nexora is open, but {} can't be replaced from here. Quit Nexora, then copy it over.", bundle.display()),
+                );
+                return;
+            }
+            qlog::info(
+                "update",
+                &format!("a newer Nexora was opened from {}; installing it", installer.volume.display()),
+            );
+            let _ = handle.emit("update-installing", ());
+            // Long enough to read what is happening before the window goes.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            match core::selfupdate::start_install(std::process::id(), &installer, &bundle) {
+                Ok(()) => {
+                    // "Keep sites running", whatever the quit setting: an update
+                    // should not stop a single site.
+                    finish_quit(&handle, QuitMode::Keep);
+                }
+                Err(e) => {
+                    qlog::warn("update", &format!("could not start installing the update: {e}"));
+                    let _ = handle.emit("update-failed", e.to_string());
+                }
+            }
+            return;
+        }
+    });
+}
+
 /// The answer to "quit-requested", from the window's dialog.
 #[tauri::command]
 fn app_quit(app: AppHandle, state: State<'_, AppState>, mode: String, remember: bool) -> Res<()> {
@@ -2618,6 +2671,7 @@ pub fn run() {
                     }
                 });
             }
+            watch_for_update(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

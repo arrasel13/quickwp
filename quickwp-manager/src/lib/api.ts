@@ -701,6 +701,17 @@ export const api = {
     return listen("quit-requested", () => cb());
   },
 
+  /** A newer Nexora was opened: this one is about to close and update. */
+  onUpdateInstalling: (cb: () => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen("update-installing", () => cb());
+  },
+
+  onUpdateFailed: (cb: (message: string) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<string>("update-failed", (e) => cb(e.payload));
+  },
+
   onInstallProgress: (cb: (p: InstallProgress) => void) => {
     if (!hasBackend) return Promise.resolve(() => {});
     return listen<InstallProgress>("php-install-progress", (e) => cb(e.payload));
