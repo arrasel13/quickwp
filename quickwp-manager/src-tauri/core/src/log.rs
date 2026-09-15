@@ -12,8 +12,46 @@ use std::io::Write;
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 const KEEP: usize = 3;
 
-/// Append a line to the app log, rotating at 2MB.
+/// How much a line matters, shown in the log so warnings stand out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warn,
+    Error,
+}
+
+impl Level {
+    fn as_str(self) -> &'static str {
+        match self {
+            Level::Info => "INFO",
+            Level::Warn => "WARN",
+            Level::Error => "ERROR",
+        }
+    }
+}
+
+/// Something Nexora did: a service started, a site stopped.
+pub fn info(area: &str, message: &str) {
+    line(Level::Info, area, message);
+}
+
+/// Something that went wrong without stopping Nexora.
+pub fn warn(area: &str, message: &str) {
+    line(Level::Warn, area, message);
+}
+
+/// Something that failed outright.
+pub fn error(area: &str, message: &str) {
+    line(Level::Error, area, message);
+}
+
+/// A line from a caller that has not said how serious it is.
 pub fn write(message: &str) {
+    info("nexora", message);
+}
+
+/// Append a line to the app log, rotating at 2MB.
+fn line(level: Level, area: &str, message: &str) {
     // Unit tests must not write into the real app log: a test asserting on
     // tunnel sweeping was leaving `ghost.test` in a user's diagnostics.
     if cfg!(test) {
@@ -33,17 +71,59 @@ pub fn write(message: &str) {
         let _ = std::fs::rename(&path, path.with_extension("log.1"));
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{} {message}", timestamp());
+        // One write per line, so lines from two threads never interleave.
+        let text = format!("{}\n", format_line(&Stamp::now(), level, area, message));
+        let _ = f.write_all(text.as_bytes());
     }
 }
 
-fn timestamp() -> String {
-    // Seconds since the epoch is enough to order events and needs no dependency.
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("[{secs}]")
+/// `[2026-09-15][08:42:36][WARN][mysql] message` -- the date and time a
+/// person reads, then how much it matters, then which part of Nexora spoke.
+/// A message spanning lines is kept to one, so every entry is one line.
+fn format_line(t: &Stamp, level: Level, area: &str, message: &str) -> String {
+    let message = message.replace(['\r', '\n'], " ");
+    format!(
+        "[{:04}-{:02}-{:02}][{:02}:{:02}:{:02}][{}][{area}] {}",
+        t.year,
+        t.month,
+        t.day,
+        t.hour,
+        t.minute,
+        t.second,
+        level.as_str(),
+        message.trim()
+    )
+}
+
+/// Local wall-clock time, split into fields.
+struct Stamp {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+}
+
+impl Stamp {
+    fn now() -> Self {
+        // localtime_r, because the log is read by a person in their own time
+        // zone, and it is thread-safe where localtime is not.
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as libc::time_t)
+            .unwrap_or(0);
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::localtime_r(&secs, &mut tm) };
+        Stamp {
+            year: tm.tm_year + 1900,
+            month: (tm.tm_mon + 1) as u32,
+            day: tm.tm_mday as u32,
+            hour: tm.tm_hour as u32,
+            minute: tm.tm_min as u32,
+            second: tm.tm_sec as u32,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -277,6 +357,27 @@ mod tests {
         let s = sources();
         assert!(s[0].is_app);
         assert_eq!(s[0].id, "nexora");
+    }
+
+    #[test]
+    fn a_line_reads_date_time_level_area_and_message() {
+        let t = Stamp { year: 2026, month: 9, day: 5, hour: 8, minute: 2, second: 36 };
+        assert_eq!(
+            format_line(&t, Level::Warn, "mysql", "port 13316 is taken"),
+            "[2026-09-05][08:02:36][WARN][mysql] port 13316 is taken"
+        );
+        assert_eq!(
+            format_line(&t, Level::Info, "stack", "first\nsecond"),
+            "[2026-09-05][08:02:36][INFO][stack] first second",
+            "one entry is one line"
+        );
+    }
+
+    #[test]
+    fn the_clock_reads_a_real_date() {
+        let t = Stamp::now();
+        assert!(t.year >= 2024 && (1..=12).contains(&t.month) && (1..=31).contains(&t.day));
+        assert!(t.hour < 24 && t.minute < 60 && t.second < 61);
     }
 
     #[test]

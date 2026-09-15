@@ -89,7 +89,7 @@ fn start_stack(app: &Nexora, edge: &Mutex<Option<server::Edge>>) -> core::Result
             // A site listed again after its data folder was lost has no
             // database: recreate it empty, so the site loads at all.
             Ok(_) => app.ensure_site_databases(&series),
-            Err(e) => qlog::write(&format!("could not start MySQL {series}: {e}")),
+            Err(e) => qlog::warn("app", &format!("could not start MySQL {series}: {e}")),
         }
     }
     let mut edge = edge.lock().unwrap();
@@ -100,8 +100,25 @@ fn start_stack(app: &Nexora, edge: &Mutex<Option<server::Edge>>) -> core::Result
 
     // DNS is ours and unprivileged, so it starts with the stack rather than
     // waiting on an admin prompt.
-    let _ = app.start_dns();
-    let _ = app.ensure_all_certs();
+    if let Err(e) = app.start_dns() {
+        qlog::warn("dns", &format!("DNS did not start: {e}"));
+    }
+    if let Err(e) = app.ensure_all_certs() {
+        qlog::warn("https", &format!("could not issue certificates: {e}"));
+    }
+    qlog::info(
+        "stack",
+        &format!("serving sites on 127.0.0.1:{} with PHP {default}", ports::NGINX),
+    );
+    Ok(())
+}
+
+/// Start the stack if Nexora's web server is not up, so a site opened from
+/// here loads instead of failing to connect.
+fn ensure_serving(state: &AppState) -> Res<()> {
+    if state.edge.lock().unwrap().is_none() {
+        start_stack(&state.app, &state.edge)?;
+    }
     Ok(())
 }
 
@@ -118,6 +135,7 @@ fn stack_stop(state: State<'_, AppState>) -> Res<()> {
     }
     state.app.stop_dns();
     state.app.sup.stop_all();
+    qlog::info("stack", "stopped the web server, PHP, MySQL and DNS");
     Ok(())
 }
 
@@ -161,6 +179,7 @@ async fn php_install(app: tauri::AppHandle, minor: String) -> Res<String> {
         })
         .await?;
     }
+    qlog::info("php", &format!("PHP {minor} installed"));
     Ok(format!("PHP {minor} installed"))
 }
 
@@ -181,7 +200,9 @@ fn php_start(state: State<'_, AppState>, minor: String) -> Res<u16> {
 
 #[tauri::command(async)]
 fn php_stop(state: State<'_, AppState>, minor: String) -> Res<bool> {
-    Ok(php::stop_pool(&state.app.sup, &minor)?)
+    let stopped = php::stop_pool(&state.app.sup, &minor)?;
+    qlog::info("php", &format!("PHP {minor} pool stopped"));
+    Ok(stopped)
 }
 
 /// The honest health check: ask the pool to execute PHP and report what it says.
@@ -241,7 +262,7 @@ fn cli_binary() -> std::path::PathBuf {
     match core::helper::install(&bundled) {
         Ok((path, _)) => path,
         Err(e) => {
-            nexora_core::log::write(&format!("could not install the background helper: {e}"));
+            nexora_core::log::warn("app", &format!("could not install the background helper: {e}"));
             bundled
         }
     }
@@ -372,7 +393,7 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
     // Firefox reads its own certificate store; a failure here is not a reason
     // to stop routing and serving sites.
     if let Err(e) = ca::trust_in_firefox() {
-        nexora_core::log::write(&format!("{e}"));
+        nexora_core::log::warn("https", &format!("could not trust the certificate authority in Firefox: {e}"));
     }
 
     // DNS first: the resolver file is useless if nothing is answering, and a
@@ -401,7 +422,7 @@ fn https_enable(state: State<'_, AppState>, takeover: Option<bool>) -> Res<Strin
     // its handshake.
     let migrated = ca::migrate_to_shared()?;
     if migrated > 0 {
-        nexora_core::log::write(&format!("migrated {migrated} certificate file(s) to the shared store"));
+        nexora_core::log::info("https", &format!("migrated {migrated} certificate file(s) to the shared store"));
     }
     state.app.ensure_all_certs()?;
 
@@ -533,6 +554,7 @@ fn site_create(state: State<'_, AppState>, new: site::NewSite) -> Res<site::Site
         new.domain = format!("{}.{}", new.domain, state.app.db.tld()?);
     }
     let s = site::create(&state.app.db, &new)?;
+    qlog::info("sites", &format!("site created: {} (PHP {})", s.domain, s.php_minor));
     // A site is useless without its pool up.
     if runtime::is_installed(&s.php_minor, "fpm") {
         let _ = php::start_pool(&state.app.sup, &s.php_minor);
@@ -553,7 +575,9 @@ fn site_delete(state: State<'_, AppState>, domain: String) -> Res<Vec<String>> {
 
 #[tauri::command(async)]
 fn site_set_enabled(state: State<'_, AppState>, domain: String, enabled: bool) -> Res<()> {
-    Ok(site::set_enabled(&state.app.db, &domain, enabled)?)
+    site::set_enabled(&state.app.db, &domain, enabled)?;
+    qlog::info("sites", &format!("{domain} {}", if enabled { "started" } else { "stopped" }));
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -650,10 +674,12 @@ struct SiteInfo {
 #[tauri::command(async)]
 fn site_info(state: State<'_, AppState>, domain: String) -> Res<SiteInfo> {
     let s = site_by_domain(&state, &domain)?;
-    let db_host = s.db_engine.as_ref().and_then(|e| {
+    // `db_engine` holds the MySQL series ("8.4"), not the engine's name, so it
+    // is matched against the series: matched against "mysql" it never was.
+    let db_host = s.db_engine.as_ref().and_then(|series| {
         database::list(&state.app.sup)
             .into_iter()
-            .find(|x| &x.engine == e)
+            .find(|x| &x.series == series)
             .map(|x| format!("127.0.0.1:{}", x.port))
     });
     // Multisite is a wp-config constant; a site without WordPress has none.
@@ -964,7 +990,8 @@ struct SiteDatabaseInfo {
 /// than a status check, a start and a URL, so opening the tab is one wait --
 /// and nobody is sent to Settings to start a service first.
 #[tauri::command]
-async fn site_database(state: State<'_, AppState>, domain: String) -> Res<SiteDatabaseInfo> {
+async fn site_database(handle: AppHandle, domain: String) -> Res<SiteDatabaseInfo> {
+    let state = handle.state::<AppState>();
     let site = site_by_domain(&state, &domain)?;
     let (Some(series), Some(name)) = (
         site.db_engine.clone().filter(|s| !s.is_empty()),
@@ -974,8 +1001,14 @@ async fn site_database(state: State<'_, AppState>, domain: String) -> Res<SiteDa
     };
     let app = state.app.clone();
 
-    let (a, s) = (app.clone(), series.clone());
+    let (h, s) = (handle.clone(), series.clone());
     let started = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let st = h.state::<AppState>();
+        let a = &st.app;
+        // Adminer is served like a site: through Nexora's web server and the
+        // default PHP pool. With MySQL alone running -- after a quit that
+        // stopped everything -- the frame had nothing to load and stayed blank.
+        start_stack(a, &st.edge).map_err(|e| format!("Nexora's web server did not start: {e}"))?;
         if !database::is_installed(&s) {
             return Err(format!(
                 "MySQL {s} is not installed. Install it from Nexora Settings › Services."
@@ -994,17 +1027,34 @@ async fn site_database(state: State<'_, AppState>, domain: String) -> Res<SiteDa
 
     let status = database::status(&app.sup, &series);
     let mut error = started.err();
-    let url = if status.running {
+    let mut url = None;
+    if status.running && error.is_none() {
         match app.adminer_url(&domain).await {
-            Ok(u) => Some(u),
-            Err(e) => {
-                error = Some(e.to_string());
-                None
+            Ok(u) => {
+                // Only an address that answers is handed to the frame: a frame
+                // pointed at nothing shows an empty white box and no reason.
+                let host = core::adminer::host(&app.db.tld().unwrap_or_else(|_| "test".into()));
+                let answers = tauri::async_runtime::spawn_blocking(move || adminer_answers(&host))
+                    .await
+                    .unwrap_or(false);
+                if answers {
+                    url = Some(u);
+                } else {
+                    error = Some(
+                        "Nexora's web server is running but the database browser did not answer. \
+                         Try again, or restart Nexora."
+                            .into(),
+                    );
+                }
             }
+            Err(e) => error = Some(e.to_string()),
         }
-    } else {
-        None
-    };
+    }
+    match (&url, &error) {
+        (Some(_), _) => qlog::info("database", &format!("Adminer ready for {domain}")),
+        (None, Some(e)) => qlog::warn("database", &format!("the Database tab for {domain} did not open: {e}")),
+        (None, None) => {}
+    }
     Ok(SiteDatabaseInfo {
         name,
         series,
@@ -1014,6 +1064,29 @@ async fn site_database(state: State<'_, AppState>, domain: String) -> Res<SiteDa
         url,
         error,
     })
+}
+
+/// Whether Adminer answers through Nexora's web server, allowing a moment for
+/// a PHP pool that has only just started. Its gate turns a request without the
+/// key away with 403 -- which means PHP ran it, which is all this asks.
+fn adminer_answers(host: &str) -> bool {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], ports::NGINX));
+    for _ in 0..20 {
+        if let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300)) {
+            let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let ask = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+            let mut head = [0u8; 12];
+            if s.write_all(ask.as_bytes()).is_ok() && s.read_exact(&mut head).is_ok() {
+                let status = String::from_utf8_lossy(&head[9..12]).to_string();
+                if status == "200" || status == "403" {
+                    return true;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    false
 }
 
 #[tauri::command]
@@ -1055,6 +1128,7 @@ async fn db_install(app: tauri::AppHandle, series: String) -> Res<String> {
         );
     })
     .await?;
+    qlog::info("mysql", &format!("MySQL {series} installed"));
     Ok(format!("MySQL {series} installed"))
 }
 
@@ -1065,7 +1139,9 @@ fn db_start(state: State<'_, AppState>, series: String) -> Res<u16> {
 
 #[tauri::command(async)]
 fn db_stop(state: State<'_, AppState>, series: String) -> Res<bool> {
-    Ok(database::stop(&state.app.sup, &series)?)
+    let stopped = database::stop(&state.app.sup, &series)?;
+    qlog::info("mysql", &format!("MySQL {series} stopped"));
+    Ok(stopped)
 }
 
 #[tauri::command(async)]
@@ -1157,6 +1233,7 @@ fn site_open_in_browser(
     private: bool,
 ) -> Res<String> {
     let site = site_by_domain(&state, &domain)?;
+    ensure_serving(&state)?;
     let url = canonical_url(&state, &site.domain)?;
     open_in_browser(&state, browser.as_deref(), private, &url)?;
     Ok(url)
@@ -1172,6 +1249,7 @@ fn wp_magic_login_in(
     private: bool,
 ) -> Res<()> {
     let site = site_by_domain(&state, &domain)?;
+    ensure_serving(&state)?;
     let url = canonical_url(&state, &site.domain)?;
     let link = wordpress::magic_login_to(&site, &url, "", None)?;
     open_in_browser(&state, browser.as_deref(), private, &link)
@@ -2311,6 +2389,7 @@ fn shutdown(state: &AppState, mode: QuitMode) {
     tunnel::stop_all(&state.app.db, &state.app.sup);
     state.app.stop_dns();
 
+    qlog::info("app", "quitting");
     let services = core::handoff::resumable(&state.app.sup);
     let record = match mode {
         QuitMode::Stop => None,
@@ -2319,10 +2398,11 @@ fn shutdown(state: &AppState, mode: QuitMode) {
             // The services stay up: that is the choice.
             Ok(h) => {
                 let _ = core::handoff::save(&h);
+                qlog::info("app", "sites keep running in the background after quit");
                 return;
             }
             Err(e) => {
-                qlog::write(&format!("could not keep sites running, stopping them instead: {e}"));
+                qlog::warn("app", &format!("could not keep sites running, stopping them instead: {e}"));
                 Some(core::handoff::Handoff { services, edge: serving, orphans: vec![] })
             }
         },
@@ -2369,6 +2449,14 @@ pub fn run() {
     core::legacy::migrate_data_dir();
 
     let app = Nexora::new().expect("Nexora could not open its data directory");
+    qlog::info(
+        "app",
+        &format!(
+            "Nexora {} starting; data in {}",
+            env!("CARGO_PKG_VERSION"),
+            core::paths::root().display()
+        ),
+    );
 
     // A site whose folder is in the sites directory but whose record is gone
     // -- the data folder deleted and set up again -- is listed again rather
@@ -2378,7 +2466,7 @@ pub fn run() {
             let _ = app.reload_dns();
         }
         Ok(_) => {}
-        Err(e) => nexora_core::log::write(&format!("could not look for unlisted sites: {e}")),
+        Err(e) => nexora_core::log::warn("app", &format!("could not look for unlisted sites: {e}")),
     }
 
     // Adminer's certificate is made ahead of the first Database tab, so the
@@ -2387,7 +2475,7 @@ pub fn run() {
         let app = app.clone();
         std::thread::spawn(move || {
             if let Err(e) = app.ensure_adminer_cert() {
-                nexora_core::log::write(&format!("could not make the database browser's certificate: {e}"));
+                nexora_core::log::warn("app", &format!("could not make the database browser's certificate: {e}"));
             }
         });
     }
@@ -2395,7 +2483,7 @@ pub fn run() {
     // Reconcile shares before the window opens. A tunnel left running by a
     // previous crash is exactly the forgotten share this sweeps up.
     if let Err(e) = tunnel::sweep(&app.db, &app.sup) {
-        nexora_core::log::write(&format!("tunnel sweep failed at launch: {e}"));
+        nexora_core::log::warn("app", &format!("tunnel sweep failed at launch: {e}"));
     }
 
     // If our resolver is installed, .test lookups go to our DNS and nowhere
@@ -2437,7 +2525,7 @@ pub fn run() {
         core::handoff::reclaim(&h);
         for name in &h.services {
             if let Err(e) = core::handoff::start_service(&app.sup, name) {
-                qlog::write(&format!("could not resume {name}: {e}"));
+                qlog::warn("app", &format!("could not resume {name}: {e}"));
             }
         }
         if h.edge {
@@ -2445,7 +2533,7 @@ pub fn run() {
             for attempt in 0..10 {
                 match start_stack(&app, &edge) {
                     Ok(()) => break,
-                    Err(e) if attempt == 9 => qlog::write(&format!("could not resume the stack: {e}")),
+                    Err(e) if attempt == 9 => qlog::warn("app", &format!("could not resume the stack: {e}")),
                     Err(_) => std::thread::sleep(std::time::Duration::from_millis(200)),
                 }
             }
@@ -2482,6 +2570,23 @@ pub fn run() {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = apply_window_mode(&w, true);
                 }
+            } else {
+                // A site marked running is served from launch. A quit that
+                // stopped everything left sites with a green dot and nothing
+                // behind them: they would not load, and the Database tab had
+                // no Adminer. Started behind the window, which opens at once.
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let st = handle.state::<AppState>();
+                    let any_running = site::list(&st.app.db)
+                        .map(|list| list.iter().any(|s| s.enabled))
+                        .unwrap_or(false);
+                    if any_running && st.edge.lock().unwrap().is_none() {
+                        if let Err(e) = start_stack(&st.app, &st.edge) {
+                            qlog::warn("app", &format!("could not start serving sites at launch: {e}"));
+                        }
+                    }
+                });
             }
             Ok(())
         })

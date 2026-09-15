@@ -185,7 +185,7 @@ pub fn install(
     // Saved so "copy password" can copy it later. A keychain that refuses is
     // not a failed install: the password is still returned and shown once.
     if let Err(e) = crate::secrets::remember(&site.domain, &req.admin_user, &password) {
-        crate::log::write(&format!("could not save the admin password for {}: {e}", site.domain));
+        crate::log::warn("wordpress", &format!("could not save the admin password for {}: {e}", site.domain));
     }
 
     Ok(WpInstallResult {
@@ -483,7 +483,7 @@ pub fn install_existing(
     c.arg(format!("--admin_password={admin_password}"));
     run(c, "Setting up WordPress")?;
     if let Err(e) = crate::secrets::remember(&site.domain, admin_user, admin_password) {
-        crate::log::write(&format!("could not save the admin password for {}: {e}", site.domain));
+        crate::log::warn("wordpress", &format!("could not save the admin password for {}: {e}", site.domain));
     }
     Ok(())
 }
@@ -823,7 +823,7 @@ pub fn set_user_password(site: &Site, login: &str, password: &str) -> Result<Str
     run_with_secret(c, password, "wp user update")?;
     // Keep the saved copy in step, so "copy password" never hands out an old one.
     if let Err(e) = crate::secrets::remember(&site.domain, login, password) {
-        crate::log::write(&format!("could not save the new password for {login}: {e}"));
+        crate::log::warn("wordpress", &format!("could not save the new password for {login}: {e}"));
     }
     Ok(format!("Password changed for {login}."))
 }

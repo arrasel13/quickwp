@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged by Tauri into the app's Info.plist.
+
+  App Transport Security blocks plain-http pages inside the app's webview for
+  every host except localhost. The Database tab frames Adminer at
+  http://adminer.nexora.<tld>:18089 -- Nexora's own local web server -- so the
+  frame never loaded and the tab showed "Loading Adminer…" forever, while the
+  same address opened fine in a browser. NSAllowsArbitraryLoadsInWebContent
+  lets web content load it; Nexora's own network code is unaffected. The
+  localhost exception from tauri.conf.json is repeated so it survives the
+  merge either way.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>

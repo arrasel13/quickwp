@@ -101,6 +101,7 @@ impl Nexora {
         }
         let server = dns::start(ports::DNS, self.tlds()?)?;
         let port = server.port;
+        log::info("dns", &format!("DNS serving on port {port}"));
         *guard = Some(server);
         Ok(port)
     }
@@ -153,13 +154,13 @@ impl Nexora {
                     if let Some((name, ..)) = migrate::read_connection(&found.docroot) {
                         let _ = site::set_database(&self.db, s.id, &series, &name);
                     }
-                    log::write(&format!(
+                    log::info("sites", &format!(
                         "listed {} again: its folder {} had no record",
                         s.domain, s.docroot
                     ));
                     listed.push(s);
                 }
-                Err(e) => log::write(&format!("could not list {} again: {e}", found.domain)),
+                Err(e) => log::warn("sites", &format!("could not list {} again: {e}", found.domain)),
             }
         }
         Ok(listed)
@@ -184,11 +185,11 @@ impl Nexora {
                 continue;
             }
             match database::ensure_database(series, &name, &user, &password) {
-                Ok(()) => log::write(&format!(
+                Ok(()) => log::info("sites", &format!(
                     "created the missing database {name} for {}; it starts empty",
                     s.domain
                 )),
-                Err(e) => log::write(&format!("could not create the database for {}: {e}", s.domain)),
+                Err(e) => log::warn("sites", &format!("could not create the database for {}: {e}", s.domain)),
             }
         }
     }
@@ -245,7 +246,7 @@ impl Nexora {
         // Its saved passwords go with it, so a later site on the same domain
         // does not inherit them.
         secrets::forget_site(&s.domain);
-        log::write(&format!("site deleted: {} ({})", s.domain, removed.join("; ")));
+        log::info("sites", &format!("site deleted: {} ({})", s.domain, removed.join("; ")));
         Ok(removed)
     }
 
@@ -282,10 +283,10 @@ impl Nexora {
         let host = adminer::host(&tld);
         self.ensure_adminer_cert()?;
 
-        let port = match site.db_engine.as_deref() {
-            Some(e) => database::Engine::parse(e)?.port(),
-            None => ports::MYSQL,
-        };
+        // A site records the MySQL series it runs on ("8.4"), not an engine
+        // name, and every series Nexora runs answers on the one MySQL port.
+        // Parsing that series as an engine refused every site.
+        let port = ports::MYSQL;
         let url = adminer::url(&tld, port, &db_name, &adminer::token()?);
         if https_ready(&tld) {
             return Ok(url);
@@ -410,7 +411,7 @@ impl Nexora {
             }
         }
 
-        log::write(&format!("site exported: {} -> {}", site.domain, dest.display()));
+        log::info("sites", &format!("site exported: {} -> {}", site.domain, dest.display()));
         Ok(dest)
     }
 

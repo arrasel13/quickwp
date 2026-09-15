@@ -44,6 +44,7 @@ pub fn start(db: Db, port: u16) -> Result<Edge> {
         path: format!("127.0.0.1:{port}").into(),
         source: e,
     })?;
+    crate::log::info("edge", &format!("web server listening on 127.0.0.1:{port}"));
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = stop.clone();
@@ -258,7 +259,7 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
     match fastcgi::request(&format!("127.0.0.1:{pool_port}"), &params, &body) {
         Ok(resp) => {
             let raw = cgi_to_http(&resp.stdout);
-            stream.write_all(raw.as_bytes())?;
+            stream.write_all(&raw)?;
             stream.flush()
         }
         Err(e) => respond(
@@ -283,16 +284,24 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
 /// page was fine locally. So every header is normalised to CRLF here, and the
 /// CGI `Status:` header becomes the status line rather than being sent on as a
 /// header nobody reads.
-fn cgi_to_http(stdout: &str) -> String {
-    let (head, body) = match stdout.find("\r\n\r\n") {
+///
+/// Bytes in, bytes out. Only the header block is text; the body goes through
+/// untouched. Read as a string, every byte that is not UTF-8 became U+FFFD --
+/// so a gzipped page (Adminer compresses whenever the browser accepts gzip, as
+/// every browser does), an image or a download served through PHP arrived
+/// corrupt, and the browser showed nothing.
+fn cgi_to_http(stdout: &[u8]) -> Vec<u8> {
+    let find = |needle: &[u8]| stdout.windows(needle.len()).position(|w| w == needle);
+    let (head, body) = match find(b"\r\n\r\n") {
         Some(i) => (&stdout[..i], &stdout[i + 4..]),
-        None => match stdout.find("\n\n") {
+        None => match find(b"\n\n") {
             Some(i) => (&stdout[..i], &stdout[i + 2..]),
             // No header block at all: treat the whole thing as a body rather
             // than sending headerless bytes and letting the client guess.
-            None => ("", stdout),
+            None => (&stdout[..0], stdout),
         },
     };
+    let head = String::from_utf8_lossy(head);
 
     let mut status = "200 OK".to_string();
     let mut headers: Vec<String> = Vec::new();
@@ -331,7 +340,9 @@ fn cgi_to_http(stdout: &str) -> String {
     headers.push(format!("Content-Length: {}", body.len()));
     headers.push("Connection: close".into());
 
-    format!("HTTP/1.1 {status}\r\n{}\r\n\r\n{body}", headers.join("\r\n"))
+    let mut out = format!("HTTP/1.1 {status}\r\n{}\r\n\r\n", headers.join("\r\n")).into_bytes();
+    out.extend_from_slice(body);
+    out
 }
 
 fn mime_for(p: &std::path::Path) -> &'static str {
@@ -433,7 +444,7 @@ mod tests {
         // php-fpm emits bare LF. A response mixing CRLF and LF is tolerated by
         // curl and rejected by a strict proxy -- a tunnel served an empty body
         // for exactly this.
-        let out = cgi_to_http("Content-type: text/html\nX-Powered-By: PHP\n\n<h1>hi</h1>");
+        let out = text(cgi_to_http(b"Content-type: text/html\nX-Powered-By: PHP\n\n<h1>hi</h1>"));
         assert!(out.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(!out.trim_end().contains("\n\n"), "no bare LF may survive");
         for line in out.split("\r\n").take_while(|l| !l.is_empty()) {
@@ -445,7 +456,7 @@ mod tests {
 
     #[test]
     fn a_cgi_status_header_becomes_the_status_line() {
-        let out = cgi_to_http("Status: 404 Not Found\nContent-type: text/html\n\nnope");
+        let out = text(cgi_to_http(b"Status: 404 Not Found\nContent-type: text/html\n\nnope"));
         assert!(out.starts_with("HTTP/1.1 404 Not Found\r\n"));
         assert!(!out.contains("Status:"), "Status is a CGI header, not an HTTP one");
     }
@@ -454,15 +465,33 @@ mod tests {
     fn a_stale_content_length_from_php_is_not_forwarded() {
         // Forwarding PHP's own length truncates the body when anything else
         // has touched it.
-        let out = cgi_to_http("Content-type: text/html\nContent-Length: 99999\n\nshort");
+        let out = text(cgi_to_http(b"Content-type: text/html\nContent-Length: 99999\n\nshort"));
         assert!(out.contains("Content-Length: 5"));
         assert!(!out.contains("99999"));
     }
 
     #[test]
     fn a_body_with_no_headers_still_gets_a_content_type() {
-        let out = cgi_to_http("just bytes");
+        let out = text(cgi_to_http(b"just bytes"));
         assert!(out.contains("Content-Type: text/html"));
         assert!(out.ends_with("just bytes"));
+    }
+
+    fn text(bytes: Vec<u8>) -> String {
+        String::from_utf8(bytes).expect("a text response stays valid UTF-8")
+    }
+
+    #[test]
+    fn a_binary_body_passes_through_byte_for_byte() {
+        // The start of a gzip stream: 0x8b and 0xff are not UTF-8. Read as a
+        // string they became U+FFFD, and a compressed page could not be read.
+        let body: &[u8] = &[0x1f, 0x8b, 0x08, 0x00, 0xff, 0x00, 0xfe, 0x0a, 0x0a, 0x80];
+        let mut stdout = b"Content-Type: text/html\r\nContent-Encoding: gzip\r\n\r\n".to_vec();
+        stdout.extend_from_slice(body);
+        let out = cgi_to_http(&stdout);
+        assert!(out.ends_with(body), "the body must arrive exactly as PHP sent it");
+        let head = String::from_utf8_lossy(&out[..out.len() - body.len()]);
+        assert!(head.contains("Content-Encoding: gzip"));
+        assert!(head.contains(&format!("Content-Length: {}", body.len())));
     }
 }

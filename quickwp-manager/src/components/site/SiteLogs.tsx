@@ -216,7 +216,13 @@ export default function SiteLogs({ domain }: { domain: string }) {
             ref={boxRef}
             className="min-h-0 flex-1 overflow-auto p-4 font-mono text-[11px] leading-relaxed text-gray-700"
           >
-            {body || "— empty —"}
+            {body
+              ? body.split("\n").map((line, i) => (
+                  <span key={i} className={clsx("block whitespace-pre-wrap break-all", levelTone(line))}>
+                    {line || "\u00a0"}
+                  </span>
+                ))
+              : "— empty —"}
           </pre>
         )}
       </div>
@@ -282,6 +288,21 @@ function DebugOff({ path }: { path: string }) {
       </pre>
     </div>
   );
+}
+
+/**
+ * The colour of a log line, from what it says about itself: warnings amber,
+ * errors red, the rest as written. Reads Nexora's own [WARN]/[ERROR] and the
+ * words PHP and MySQL use in their logs, so every stream is scanned the same way.
+ */
+function levelTone(line: string) {
+  if (/\[(ERROR|FATAL)\]|\bPHP Fatal error\b|\bFatal error\b|\[ERROR\]|\bERROR:/i.test(line)) {
+    return "text-red-700";
+  }
+  if (/\[WARN(ING)?\]|\bPHP Warning\b|\bWARNING:|\[Warning\]/i.test(line)) {
+    return "text-amber-700";
+  }
+  return "";
 }
 
 function human(bytes: number) {

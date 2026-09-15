@@ -31,6 +31,7 @@ export default function SiteDatabase({ site }: { site: Site }) {
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [frameReady, setFrameReady] = useState(false);
+  const [slow, setSlow] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -62,7 +63,16 @@ export default function SiteDatabase({ site }: { site: Site }) {
   // A new address is a new page to wait for; the same one is left alone.
   useEffect(() => {
     setFrameReady(false);
+    setSlow(false);
   }, [url]);
+
+  // Adminer answers in well under a second. A frame still empty after a few
+  // is not coming, so say so and offer the browser instead of spinning on.
+  useEffect(() => {
+    if (!url || frameReady) return;
+    const timer = setTimeout(() => setSlow(true), 8000);
+    return () => clearTimeout(timer);
+  }, [url, frameReady]);
 
   const copy = () => {
     if (!url) return;
@@ -83,6 +93,7 @@ export default function SiteDatabase({ site }: { site: Site }) {
     const f = frameRef.current;
     if (f && url) {
       setFrameReady(false);
+      setSlow(false);
       f.src = url;
     }
   };
@@ -124,7 +135,7 @@ export default function SiteDatabase({ site }: { site: Site }) {
           does not change shape the moment it loads. */}
       <div className="flex flex-shrink-0 items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm">
         <span className="flex-1 truncate font-mono text-xs text-gray-600" title={url ?? undefined}>
-          {url ?? (loading ? "Starting the database…" : "—")}
+          {url ?? (loading ? "Starting the web server and database…" : "—")}
         </span>
         <button
           onClick={copy}
@@ -182,13 +193,40 @@ export default function SiteDatabase({ site }: { site: Site }) {
                   Try again
                 </button>
               </div>
+            ) : url && slow ? (
+              <div className="max-w-sm text-center">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Adminer is taking longer than it should
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                  The database is running. Reload the frame, or open Adminer in your browser.
+                </p>
+                <div className="mt-3 flex justify-center gap-2">
+                  <button
+                    onClick={reloadFrame}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    <ArrowPathIcon className="h-4 w-4" />
+                    Reload
+                  </button>
+                  <button
+                    onClick={() =>
+                      void api.siteAdminerOpen(site.domain).catch((e) => setFailure(errorText(e)))
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    <ArrowTopRightOnSquareIcon className="h-4 w-4" />
+                    Open in browser
+                  </button>
+                </div>
+              </div>
             ) : (
               <p className="flex items-center gap-2 text-xs text-gray-500">
                 <span
                   aria-hidden
                   className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-500"
                 />
-                {url ? "Loading Adminer…" : "Starting the database…"}
+                {url ? "Loading Adminer…" : "Starting the web server and database…"}
               </p>
             )}
           </div>

@@ -25,20 +25,25 @@ const RESPONDER: u8 = 1;
 
 #[derive(Debug)]
 pub struct FcgiResponse {
-    pub stdout: String,
+    /// Exactly what PHP wrote: CGI headers, then a body that may be gzip, an
+    /// image or a download -- never assumed to be text.
+    pub stdout: Vec<u8>,
     pub stderr: String,
 }
 
 impl FcgiResponse {
-    /// The body after the CGI headers.
-    pub fn body(&self) -> &str {
-        match self.stdout.find("\r\n\r\n") {
-            Some(i) => &self.stdout[i + 4..],
-            None => match self.stdout.find("\n\n") {
-                Some(i) => &self.stdout[i + 2..],
-                None => &self.stdout,
+    /// The body after the CGI headers, as text, for callers that expect text.
+    pub fn body(&self) -> String {
+        let out = &self.stdout;
+        let find = |needle: &[u8]| out.windows(needle.len()).position(|w| w == needle);
+        let body = match find(b"\r\n\r\n") {
+            Some(i) => &out[i + 4..],
+            None => match find(b"\n\n") {
+                Some(i) => &out[i + 2..],
+                None => &out[..],
             },
-        }
+        };
+        String::from_utf8_lossy(body).into_owned()
     }
 }
 
@@ -135,7 +140,7 @@ pub fn request(addr: &str, params: &[(&str, &str)], body: &[u8]) -> Result<FcgiR
     }
 
     Ok(FcgiResponse {
-        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stdout,
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
 }

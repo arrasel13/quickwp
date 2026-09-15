@@ -183,7 +183,7 @@ pub fn start(
 
     // A public share is the only thing Nexora does that is visible from
     // outside this machine, so starting one always leaves a line behind.
-    crate::log::write(&format!(
+    crate::log::info("tunnel", &format!(
         "tunnel started: {domain} -> {url} (pid {pid}, owner {}, guard {})",
         t.owner,
         guard_pid.map(|g| g.to_string()).unwrap_or_else(|| "none".into())
@@ -235,7 +235,7 @@ pub fn stop(db: &Db, sup: &Supervisor, domain: &str) -> Result<bool> {
             proc::kill_tree(t.pid);
         }
         forget(db, domain)?;
-        crate::log::write(&format!("tunnel stopped: {domain}"));
+        crate::log::info("tunnel", &format!("tunnel stopped: {domain}"));
         return Ok(true);
     }
     Ok(stopped_by_supervisor)
@@ -259,14 +259,14 @@ pub fn sweep(db: &Db, sup: &Supervisor) -> Result<usize> {
     for t in list(db)? {
         if !proc::is_alive(t.pid) {
             forget(db, &t.domain)?;
-            crate::log::write(&format!("tunnel swept (process gone): {}", t.domain));
+            crate::log::warn("tunnel", &format!("tunnel swept (process gone): {}", t.domain));
             acted += 1;
             continue;
         }
         if let Some(exp) = t.expires_at {
             if proc::now() >= exp {
                 let _ = stop(db, sup, &t.domain);
-                crate::log::write(&format!("tunnel swept (expired): {}", t.domain));
+                crate::log::warn("tunnel", &format!("tunnel swept (expired): {}", t.domain));
                 acted += 1;
             }
         }
@@ -315,14 +315,14 @@ pub fn guard_loop(
         if let Some((pid, start)) = parent {
             if !proc::is_same_process(pid, start) {
                 proc::kill_tree(tunnel_pid);
-                crate::log::write(&format!("tunnel closed by guard (owner gone): {domain}"));
+                crate::log::warn("tunnel", &format!("tunnel closed by guard (owner gone): {domain}"));
                 break;
             }
         }
         if let Some(exp) = expires {
             if proc::now() >= exp {
                 proc::kill_tree(tunnel_pid);
-                crate::log::write(&format!("tunnel closed by guard (expired): {domain}"));
+                crate::log::warn("tunnel", &format!("tunnel closed by guard (expired): {domain}"));
                 break;
             }
         }

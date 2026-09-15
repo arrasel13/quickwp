@@ -196,7 +196,7 @@ fn stop_orphan(series: &str) {
         return; // someone else's MySQL: the port gate reports it, nothing is stopped
     }
     if let Some(pid) = ports::holder_pid(ports::MYSQL) {
-        crate::log::write(&format!("stopping MySQL (pid {pid}): its data directory was deleted"));
+        crate::log::warn("mysql", &format!("stopping MySQL (pid {pid}): its data directory was deleted"));
         crate::proc::kill_tree(pid);
     }
     for _ in 0..50 {
@@ -214,10 +214,12 @@ pub fn start(sup: &Supervisor, series: &str) -> Result<u16> {
         return Ok(ports::MYSQL);
     }
     if adopt_if_ours(series) {
+        crate::log::info("mysql", &format!("MySQL {series} already running on port {}; using it", ports::MYSQL));
         return Ok(ports::MYSQL);
     }
     stop_orphan(series);
     initialize(series)?;
+    crate::log::info("mysql", &format!("starting MySQL {series} on port {}", ports::MYSQL));
 
     let dir = data_dir(series);
     sup.start(

@@ -685,7 +685,7 @@ pub fn install_system(tld: &str, edge_binary: &std::path::Path, takeover: bool) 
         if !(resolver_is_ours(tld) && own_edge_serving()) {
             return Err(e);
         }
-        crate::log::write(&format!(
+        crate::log::warn("system", &format!(
             "the privileged step reported an error, but the install is in place: {e}"
         ));
     }

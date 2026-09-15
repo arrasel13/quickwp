@@ -267,6 +267,7 @@ pub fn start_pool(sup: &Supervisor, minor: &str) -> Result<u16> {
         return Ok(port);
     }
     if adopt_if_ours(minor) {
+        crate::log::info("php", &format!("PHP {minor} pool already running on port {port}; using it"));
         return Ok(port);
     }
     let bin = runtime::fpm_binary(minor)?;
@@ -288,6 +289,7 @@ pub fn start_pool(sup: &Supervisor, minor: &str) -> Result<u16> {
     // different facts and the caller is asking for the second.
     for _ in 0..60 {
         if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            crate::log::info("php", &format!("PHP {minor} pool started on port {port}"));
             return Ok(port);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));

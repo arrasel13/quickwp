@@ -189,45 +189,53 @@ const WRAPPER: &str = r#"<?php
 
 // Nexora shows Adminer in a frame in its own window, and a frame is a
 // different site from the page around it: it is sent no cookies, and the ones
-// it sets are refused. With cookies, the first page loaded and the first
-// click inside it was turned away. So nothing here uses a cookie. Adminer's
-// session travels in the address -- Adminer adds it to every link and form
-// itself when cookies are off -- and the key that let you in is remembered in
-// that session.
-ini_set('session.use_cookies', '0');
+// it sets are refused. Relying on them, the first page loaded and the first
+// click inside it was turned away. So the session may also travel in the
+// address: when no cookie comes back, Adminer adds it to every link and form
+// itself. A browser tab, which keeps cookies, just uses the cookie. The key
+// that let you in is remembered in the session either way.
+//
+// Only settings here, no session: Adminer changes session settings of its own
+// before starting one, and PHP refuses that once a session is active.
 ini_set('session.use_only_cookies', '0');
 // An address naming a session PHP never issued gets a fresh, empty one, so a
 // link cannot hand someone a session chosen in advance.
 ini_set('session.use_strict_mode', '1');
-session_name('adminer_sid');
-session_cache_limiter('');
-session_start();
+// A PHP warning is printed ahead of the page, and once anything is printed no
+// header can follow: not the 403 below, not Adminer's own. The pool shows
+// warnings for sites' sake and a pool setting cannot be turned off from here,
+// so they are not raised at all. Adminer reports database errors itself.
+error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED & ~E_USER_DEPRECATED);
 
 // Adminer answers on a real hostname, so any page in the browser could point
 // a form at it. The key is what stops that. It arrives once in the URL Nexora
 // builds; the session holds a hash of it, so making a new key shuts every
-// session the old one opened.
-$expected = @file_get_contents(__DIR__ . '/token');
-$expected = ($expected === false) ? '' : trim($expected);
-$given = isset($_GET['nexora_auth']) ? (string) $_GET['nexora_auth'] : '';
-if ($expected !== '' && $given !== '' && hash_equals($expected, $given)) {
-    $_SESSION['nexora_admitted'] = hash('sha256', $expected);
-}
-$admitted = $expected !== ''
-    && isset($_SESSION['nexora_admitted'])
-    && hash_equals(hash('sha256', $expected), (string) $_SESSION['nexora_admitted']);
-if (!$admitted) {
-    header('HTTP/1.1 403 Forbidden');
-    header('Content-Type: text/html; charset=utf-8');
-    echo '<!doctype html><meta charset="utf-8"><title>Not for this tab</title>';
-    echo '<style>body{font:14px/1.6 -apple-system,system-ui,sans-serif;margin:3rem auto;max-width:34rem;color:#1f2937}</style>';
-    echo '<h1 style="font-size:1.1rem">Not for this tab</h1>';
-    echo '<p>This database browser only opens from Nexora, which puts a one-time key in the address. ';
-    echo 'Open it from a site&rsquo;s <b>Database</b> tab.</p>';
-    exit;
+// session the old one opened. Called once Adminer's session is open.
+function nexora_admit() {
+    $expected = @file_get_contents(__DIR__ . '/token');
+    $expected = ($expected === false) ? '' : trim($expected);
+    $given = isset($_GET['nexora_auth']) ? (string) $_GET['nexora_auth'] : '';
+    if ($expected !== '' && $given !== '' && hash_equals($expected, $given)) {
+        $_SESSION['nexora_admitted'] = hash('sha256', $expected);
+    }
+    $admitted = $expected !== ''
+        && isset($_SESSION['nexora_admitted'])
+        && hash_equals(hash('sha256', $expected), (string) $_SESSION['nexora_admitted']);
+    if (!$admitted) {
+        header('HTTP/1.1 403 Forbidden');
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!doctype html><meta charset="utf-8"><title>Not for this tab</title>';
+        echo '<style>body{font:14px/1.6 -apple-system,system-ui,sans-serif;margin:3rem auto;max-width:34rem;color:#1f2937}</style>';
+        echo '<h1 style="font-size:1.1rem">Not for this tab</h1>';
+        echo '<p>This database browser only opens from Nexora, which puts a one-time key in the address. ';
+        echo 'Open it from a site&rsquo;s <b>Database</b> tab.</p>';
+        exit;
+    }
 }
 
 function adminer_object() {
+    nexora_admit();
+
     // Adminer has started its session by this point and has not yet reached its
     // auth gate. That gate only attempts a connection when
     // is_string(get_password()), and get_password() reads the session rather

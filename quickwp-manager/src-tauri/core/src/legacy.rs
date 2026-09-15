@@ -57,7 +57,7 @@ fn migrate_between(old: &Path, new: &Path) {
             let _ = std::fs::rename(from, to);
         }
     }
-    crate::log::write(&format!("moved the data directory from {}", old.display()));
+    crate::log::info("migrate", &format!("moved the data directory from {}", old.display()));
 }
 
 /// Stop every process running from under `dir` -- its PHP pools, database
