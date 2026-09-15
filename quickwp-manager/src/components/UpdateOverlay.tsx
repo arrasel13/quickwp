@@ -1,79 +1,136 @@
 import { useEffect, useState } from "react";
-import { ExclamationTriangleIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import { api } from "../lib/api";
+import { CheckIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import clsx from "clsx";
+import { api, errorText, hasBackend, UpdateOffer } from "../lib/api";
 import markUrl from "../assets/nexora-mark.svg";
 
 /**
- * What the window shows when a newer Nexora is opened while this one runs:
- * a moment's notice that it is about to close and come back updated, or why
- * it could not.
+ * Asked when a newer Nexora installer is opened while this one runs. Finder
+ * cannot copy over a running app, so the update is installed from here:
+ * "Close and Reopen" swaps the new Nexora in and opens it again, with the
+ * sites kept running throughout.
  */
 export default function UpdateOverlay() {
-  const [installing, setInstalling] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [offer, setOffer] = useState<UpdateOffer | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!hasBackend) return;
     const offs: Array<() => void> = [];
-    void api.onUpdateInstalling(() => {
-      setFailure(null);
-      setInstalling(true);
-    }).then((off) => offs.push(off));
-    void api.onUpdateFailed((message) => {
-      setInstalling(false);
-      setFailure(message);
-    }).then((off) => offs.push(off));
+    const show = (o: UpdateOffer) => {
+      setError(null);
+      setClosing(false);
+      setOffer(o);
+    };
+    void api.onUpdateAvailable(show).then((off) => offs.push(off));
+    void api
+      .onUpdateWithdrawn(() => {
+        setOffer(null);
+        setClosing(false);
+      })
+      .then((off) => offs.push(off));
+    // Announced before this window was listening -- right after launch.
+    void api
+      .appUpdatePending()
+      .then((o) => o && show(o))
+      .catch(() => {});
     return () => offs.forEach((off) => off());
   }, []);
 
-  if (installing) {
-    return (
-      <div
-        role="alertdialog"
-        aria-live="assertive"
-        aria-label="Installing the new Nexora"
-        className="fixed inset-0 z-[90] flex items-center justify-center bg-gray-950/60 p-6 backdrop-blur-sm"
-      >
-        <div className="w-full max-w-sm rounded-2xl bg-white p-7 text-center shadow-2xl">
-          <div className="relative mx-auto h-16 w-16">
-            <span className="absolute inset-0 animate-spin rounded-full border-[3px] border-gray-100 border-t-wp-blue" />
-            <span className="absolute inset-0 grid place-items-center">
-              <img src={markUrl} alt="" aria-hidden draggable={false} className="h-7 w-7" />
-            </span>
+  if (!offer) return null;
+
+  const restart = async () => {
+    setClosing(true);
+    setError(null);
+    try {
+      await api.appUpdateRestart();
+      // Nexora closes now; the new one opens in a moment.
+    } catch (e) {
+      setError(errorText(e));
+      setClosing(false);
+    }
+  };
+
+  const later = () => {
+    setOffer(null);
+    void api.appUpdateLater().catch(() => {});
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="update-title"
+      className="fixed inset-0 z-[90] flex items-center justify-center bg-gray-950/50 p-6 backdrop-blur-[2px]"
+    >
+      <div className="w-full max-w-[380px] overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-black/5">
+        <div className="px-7 pb-6 pt-7 text-center">
+          <div className="relative mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-gray-50 ring-1 ring-inset ring-gray-200">
+            <img src={markUrl} alt="" aria-hidden draggable={false} className="h-8 w-8" />
+            {closing && (
+              <span
+                aria-hidden
+                className="absolute -inset-1 animate-spin rounded-[20px] border-2 border-transparent border-t-wp-blue"
+              />
+            )}
           </div>
-          <h2 className="mt-5 text-base font-semibold text-gray-900">Installing the new Nexora</h2>
-          <p className="mt-1.5 text-sm leading-relaxed text-gray-500">
-            Nexora closes, updates and opens again in a few seconds. Your sites keep running.
+          <h2 id="update-title" className="mt-5 text-[17px] font-semibold text-gray-900">
+            {closing ? "Updating Nexora…" : "Nexora update ready"}
+          </h2>
+          <p className="mx-auto mt-1.5 max-w-[300px] text-sm leading-relaxed text-gray-500">
+            {closing
+              ? "Nexora is closing to install the new version. It opens again in a few seconds."
+              : "A new version of Nexora is ready to install. Restart the app to finish updating."}
           </p>
-          <div className="mt-5 h-1 overflow-hidden rounded-full bg-gray-100">
-            <div className="h-full w-1/2 animate-pulse rounded-full bg-wp-blue" />
-          </div>
+
+          <ul className="mx-auto mt-4 inline-flex flex-col gap-1.5 text-left text-xs text-gray-600">
+            <li className="flex items-center gap-2">
+              <CheckIcon className="h-3.5 w-3.5 flex-shrink-0 text-emerald-600" />
+              Your sites keep running while it updates
+            </li>
+            <li className="flex items-center gap-2">
+              <CheckIcon className="h-3.5 w-3.5 flex-shrink-0 text-emerald-600" />
+              No need to drag Nexora into Applications
+            </li>
+          </ul>
+
+          {error && (
+            <p
+              role="alert"
+              className="mt-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-left text-xs leading-relaxed text-red-700"
+            >
+              <ExclamationTriangleIcon className="mt-px h-4 w-4 flex-shrink-0" />
+              <span className="break-words">{error}</span>
+            </p>
+          )}
+        </div>
+
+        <div className="flex gap-2.5 border-t border-gray-100 bg-gray-50/80 px-6 py-4">
+          <button
+            type="button"
+            onClick={later}
+            disabled={closing}
+            className="flex-1 rounded-lg bg-white px-4 py-2 text-sm font-medium text-gray-700 ring-1 ring-inset ring-gray-300 transition-colors hover:bg-gray-50 disabled:opacity-50"
+          >
+            Later
+          </button>
+          <button
+            type="button"
+            onClick={() => void restart()}
+            disabled={closing}
+            className={clsx(
+              "inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-wp-blue px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-wp-blue-dark",
+              closing && "cursor-wait opacity-80",
+            )}
+          >
+            {closing && (
+              <span aria-hidden className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+            )}
+            {closing ? "Closing…" : "Close and Reopen"}
+          </button>
         </div>
       </div>
-    );
-  }
-
-  if (failure) {
-    return (
-      <div
-        role="alert"
-        className="fixed bottom-5 right-5 z-[90] flex max-w-md items-start gap-3 rounded-xl border border-amber-200 bg-white p-4 shadow-xl"
-      >
-        <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-500" />
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-gray-900">The update was not installed</p>
-          <p className="mt-0.5 break-words text-xs leading-relaxed text-gray-600">{failure}</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setFailure(null)}
-          aria-label="Dismiss"
-          className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
-        >
-          <XMarkIcon className="h-4 w-4" />
-        </button>
-      </div>
-    );
-  }
-
-  return null;
+    </div>
+  );
 }

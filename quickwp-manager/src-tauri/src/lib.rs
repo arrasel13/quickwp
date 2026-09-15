@@ -23,6 +23,8 @@ struct AppState {
     /// Set once the shutdown has run, so the window's Destroyed cannot run it
     /// a second time and undo a "keep running".
     down: AtomicBool,
+    /// A newer Nexora waiting for "Close and Reopen".
+    update: Mutex<UpdateSlot>,
 }
 
 type Res<T> = Result<T, String>;
@@ -2446,57 +2448,125 @@ fn shutdown(state: &AppState, mode: QuitMode) {
     }
 }
 
-/// Install a newer Nexora over this one when its installer is opened.
+/// A newer Nexora waiting to be installed, and the installers put off with
+/// "Later".
+#[derive(Default)]
+struct UpdateSlot {
+    offer: Option<core::selfupdate::Installer>,
+    later: Vec<std::path::PathBuf>,
+}
+
+/// What the window is told about an update on offer.
+#[derive(Clone, serde::Serialize)]
+struct UpdateOffer {
+    volume: String,
+}
+
+fn offer_of(installer: &core::selfupdate::Installer) -> UpdateOffer {
+    UpdateOffer { volume: installer.volume.display().to_string() }
+}
+
+/// Offer to install a newer Nexora when its installer is opened.
 ///
-/// Finder refuses to copy over a running app, so this copy watches for a
-/// Nexora installer being mounted and, when one holds a newer build, lets the
-/// window say so, starts the script that swaps the new app in once this one
-/// has quit, and quits keeping the sites running. The new launch takes them
-/// back.
+/// Finder refuses to copy over a running app ("the item Nexora is in use"),
+/// so this copy watches for a Nexora installer being opened. When one holds a
+/// newer build the window asks to close and reopen, and nothing is installed
+/// until that is answered (`app_update_restart`). Ejecting the installer
+/// withdraws the question.
 fn watch_for_update(handle: AppHandle) {
     let Ok(exe) = std::env::current_exe() else { return };
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     // A development build runs from target/, not from an app to replace.
-    let Some(bundle) = core::selfupdate::bundle_of(&exe) else { return };
+    if core::selfupdate::bundle_of(&exe).is_none() {
+        return;
+    }
     std::thread::spawn(move || {
-        let mut watcher = core::selfupdate::Watcher::default();
+        let mut watcher = core::selfupdate::Watcher::new();
         loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
-            let Some(installer) = watcher.newer_installer(&exe, std::path::Path::new("/Volumes")) else {
-                continue;
-            };
-            if !core::selfupdate::can_replace(&bundle) {
-                qlog::warn(
-                    "update",
-                    &format!("a newer Nexora is open, but {} cannot be replaced from here", bundle.display()),
-                );
-                let _ = handle.emit(
-                    "update-failed",
-                    format!("A newer Nexora is open, but {} can't be replaced from here. Quit Nexora, then copy it over.", bundle.display()),
-                );
+            let state = handle.state::<AppState>();
+            if state.quitting.load(Ordering::SeqCst) {
                 return;
             }
-            qlog::info(
-                "update",
-                &format!("a newer Nexora was opened from {}; installing it", installer.volume.display()),
-            );
-            let _ = handle.emit("update-installing", ());
-            // Long enough to read what is happening before the window goes.
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            match core::selfupdate::start_install(std::process::id(), &installer, &bundle) {
-                Ok(()) => {
-                    // "Keep sites running", whatever the quit setting: an update
-                    // should not stop a single site.
-                    finish_quit(&handle, QuitMode::Keep);
+            let found = watcher.newer_installer(&exe, std::path::Path::new("/Volumes"));
+            let mut slot = state.update.lock().unwrap();
+            match found {
+                Some(installer) if slot.later.contains(&installer.app) => {}
+                Some(installer) => {
+                    if slot.offer.as_ref() != Some(&installer) {
+                        qlog::info(
+                            "update",
+                            &format!(
+                                "a newer Nexora was opened from {}; asking to close and reopen",
+                                installer.volume.display()
+                            ),
+                        );
+                        let _ = handle.emit("update-available", offer_of(&installer));
+                        slot.offer = Some(installer);
+                    }
                 }
-                Err(e) => {
-                    qlog::warn("update", &format!("could not start installing the update: {e}"));
-                    let _ = handle.emit("update-failed", e.to_string());
+                None => {
+                    if slot.offer.take().is_some() {
+                        qlog::info("update", "the Nexora installer was closed; the update is no longer offered");
+                        let _ = handle.emit("update-withdrawn", ());
+                    }
+                    // An installer put off and then ejected is asked about
+                    // again the next time it is opened.
+                    slot.later.retain(|app| app.exists());
                 }
             }
-            return;
         }
     });
+}
+
+/// The update on offer, for a window that opened after it was announced.
+#[tauri::command]
+fn app_update_pending(state: State<'_, AppState>) -> Res<Option<UpdateOffer>> {
+    Ok(state.update.lock().unwrap().offer.as_ref().map(offer_of))
+}
+
+/// "Close and Reopen": install the offered Nexora once this one has quit --
+/// keeping the sites running -- and open it again.
+#[tauri::command]
+fn app_update_restart(handle: AppHandle, state: State<'_, AppState>) -> Res<()> {
+    let installer = state
+        .update
+        .lock()
+        .unwrap()
+        .offer
+        .clone()
+        .ok_or("The Nexora installer is no longer open. Open it again to update.")?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let bundle = core::selfupdate::bundle_of(&exe)
+        .ok_or("This copy of Nexora is not an installed app, so it cannot update itself.")?;
+    if !core::selfupdate::can_replace(&bundle) {
+        return Err(format!(
+            "Nexora can't replace {} from here. Quit Nexora, then copy the new one into Applications.",
+            bundle.display()
+        ));
+    }
+    core::selfupdate::start_install(std::process::id(), &installer, &bundle)?;
+    qlog::info("update", "closing to install the new Nexora");
+    // Quit once this answer has reached the window, not while it is sent.
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        // "Keep sites running", whatever the quit setting: an update should
+        // not stop a single site.
+        finish_quit(&handle, QuitMode::Keep);
+    });
+    Ok(())
+}
+
+/// "Later": not asked again until this installer is ejected and opened again.
+#[tauri::command]
+fn app_update_later(state: State<'_, AppState>) -> Res<()> {
+    let mut slot = state.update.lock().unwrap();
+    if let Some(installer) = slot.offer.take() {
+        qlog::info("update", "the update was put off until the installer is opened again");
+        slot.later.push(installer.app);
+    }
+    Ok(())
 }
 
 /// The answer to "quit-requested", from the window's dialog.
@@ -2644,6 +2714,7 @@ pub fn run() {
             ptys: pty::Ptys::new(),
             quitting: AtomicBool::new(false),
             down: AtomicBool::new(false),
+            update: Mutex::new(UpdateSlot::default()),
         })
         .setup(|app| {
             use tauri::Manager;
@@ -2821,6 +2892,9 @@ pub fn run() {
             apps_installed,
             php_system_list,
             app_quit,
+            app_update_pending,
+            app_update_restart,
+            app_update_later,
         ])
         .on_window_event(|window, event| match event {
             // Closing the window is quitting: it goes through the same choice

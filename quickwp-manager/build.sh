@@ -132,6 +132,20 @@ if [ $? -eq 0 ]; then
     print_success "Build completed successfully!"
     print_status "Build artifacts can be found in src-tauri/target/release/bundle/"
     
+    # One name for the installer, whatever the version or architecture:
+    # Tauri calls it Nexora_<version>_<arch>.dmg, and there is no setting for
+    # that, so it is renamed here. Older ones are removed so only this is left.
+    PROFILE_DIR="release"
+    [ "$BUILD_DEBUG" = true ] && PROFILE_DIR="debug"
+    DMG_DIR="src-tauri/target/$PROFILE_DIR/bundle/dmg"
+    [ -n "$BUILD_TARGET" ] && DMG_DIR="src-tauri/target/$BUILD_TARGET/$PROFILE_DIR/bundle/dmg"
+    BUILT_DMG=$(ls -t "$DMG_DIR"/Nexora_*.dmg 2>/dev/null | head -1)
+    if [ -n "$BUILT_DMG" ]; then
+        mv -f "$BUILT_DMG" "$DMG_DIR/Nexora.dmg"
+        rm -f "$DMG_DIR"/Nexora_*.dmg
+        print_status "Installer: $DMG_DIR/Nexora.dmg"
+    fi
+
     # List the generated files
     if [ -d "src-tauri/target/release/bundle" ]; then
         print_status "Generated files:"

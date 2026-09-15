@@ -42,6 +42,12 @@ export interface SiteDatabaseInfo {
   error: string | null;
 }
 
+/** A newer Nexora waiting for "Close and Reopen". */
+export interface UpdateOffer {
+  /** Where the installer is mounted. */
+  volume: string;
+}
+
 /** A site's WordPress debug logging, read from its wp-config.php. */
 export interface WpDebugState {
   /** Whether WordPress writes a debug log now, however it was set up. */
@@ -701,16 +707,22 @@ export const api = {
     return listen("quit-requested", () => cb());
   },
 
-  /** A newer Nexora was opened: this one is about to close and update. */
-  onUpdateInstalling: (cb: () => void) => {
+  /** A newer Nexora installer was opened: ask to close and reopen. */
+  onUpdateAvailable: (cb: (offer: UpdateOffer) => void) => {
     if (!hasBackend) return Promise.resolve(() => {});
-    return listen("update-installing", () => cb());
+    return listen<UpdateOffer>("update-available", (e) => cb(e.payload));
   },
 
-  onUpdateFailed: (cb: (message: string) => void) => {
+  /** The installer was ejected before the update was installed. */
+  onUpdateWithdrawn: (cb: () => void) => {
     if (!hasBackend) return Promise.resolve(() => {});
-    return listen<string>("update-failed", (e) => cb(e.payload));
+    return listen("update-withdrawn", () => cb());
   },
+
+  appUpdatePending: () => call<UpdateOffer | null>("app_update_pending"),
+  /** Install the offered Nexora, keeping sites running, and reopen. */
+  appUpdateRestart: () => call<void>("app_update_restart"),
+  appUpdateLater: () => call<void>("app_update_later"),
 
   onInstallProgress: (cb: (p: InstallProgress) => void) => {
     if (!hasBackend) return Promise.resolve(() => {});

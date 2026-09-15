@@ -6,13 +6,23 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 import { api } from "./api";
 import { useAsync } from "./useAsync";
 
+const SELECTED_KEY = "nexora.selected-site";
+
 function useSitesState() {
   // Keyed, so a reload -- after starting or stopping a site, say -- keeps the
   // list on screen and refreshes it underneath. Unkeyed, every reload went
   // back to "loading", which unmounted the whole site screen and rebuilt it:
   // the page visibly shook.
   const { data, error, loading, reload, setData } = useAsync(() => api.siteList(), [], "site-list");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Remembered, so Nexora reopens -- after an update, say -- on the site that
+  // was open rather than on the first one.
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(SELECTED_KEY);
+    } catch {
+      return null;
+    }
+  });
   // A counter rather than a flag: every press of "+" is a new request, even
   // when the last one has not been "consumed" by a re-render yet.
   const [newSiteRequest, setNewSiteRequest] = useState(0);
@@ -30,7 +40,14 @@ function useSitesState() {
     /** Change the list on screen ahead of the backend, as an optimistic update. */
     setSites: setData,
     selected,
-    select: (id: string) => setSelectedId(id),
+    select: (id: string) => {
+      setSelectedId(id);
+      try {
+        localStorage.setItem(SELECTED_KEY, id);
+      } catch {
+        // Not remembered across launches; nothing else depends on it.
+      }
+    },
     newSiteRequest,
     requestNewSite: () => setNewSiteRequest((n) => n + 1),
   };

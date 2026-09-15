@@ -72,10 +72,19 @@ pub fn can_replace(bundle: &Path) -> bool {
 #[derive(Default)]
 pub struct Watcher {
     seen: HashMap<PathBuf, (u64, SystemTime, Verdict)>,
+    /// What each app looked like last time, to act only on one that holds still.
+    last_look: HashMap<PathBuf, (u64, SystemTime)>,
     current: Option<Print>,
+    /// Only finished installers: read-only images, not ones being built.
+    finished_only: bool,
 }
 
 impl Watcher {
+    /// The watcher the app runs: it only considers finished installers.
+    pub fn new() -> Self {
+        Self { finished_only: true, ..Self::default() }
+    }
+
     /// A mounted Nexora newer than the running `exe`, if one is open.
     pub fn newer_installer(&mut self, exe: &Path, volumes: &Path) -> Option<Installer> {
         let exe_name = exe.file_name()?.to_owned();
@@ -89,8 +98,18 @@ impl Watcher {
             if same_path(&app, &bundle) {
                 continue;
             }
+            if self.finished_only && !is_finished_installer(&volume) {
+                continue;
+            }
             let size = meta.len();
             let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            // An app is judged only once it has held still between two looks:
+            // one still being written would be fingerprinted, and copied,
+            // half done.
+            let look = (size, mtime);
+            if self.last_look.insert(app.clone(), look) != Some(look) {
+                continue;
+            }
             let verdict = match self.seen.get(&app) {
                 Some((s, m, v)) if *s == size && *m == mtime => *v,
                 _ => {
@@ -130,6 +149,28 @@ impl Watcher {
         };
         compare(self.current.as_ref().unwrap(), &(size, mtime, hash))
     }
+}
+
+/// A finished installer is a disk image mounted read-only, as a .dmg someone
+/// opens always is. Building a .dmg first mounts a writable image, named
+/// `dmg.XXXXXX`, with a Nexora still being put together on it. Treating that
+/// as an installer ejected it mid-build, failing the build, and could have
+/// installed half an app.
+fn is_finished_installer(volume: &Path) -> bool {
+    let name = volume.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    !name.starts_with("dmg.") && read_only(volume)
+}
+
+fn read_only(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
+        return false;
+    }
+    (st.f_flags as u64) & (libc::MNT_RDONLY as u64) != 0
 }
 
 fn compare(current: &Print, candidate: &Print) -> Verdict {
@@ -301,6 +342,44 @@ mod tests {
         assert_eq!(compare(&running, &(12, earlier - Duration::from_secs(60), "bbb".into())), Verdict::Older);
     }
 
+    /// Two looks, as two polls a second apart: the first only notes the app.
+    fn look(w: &mut Watcher, exe: &Path, volumes: &Path) -> Option<Installer> {
+        let _ = w.newer_installer(exe, volumes);
+        w.newer_installer(exe, volumes)
+    }
+
+    #[test]
+    fn an_app_is_only_judged_once_it_holds_still() {
+        let root = tmp("still");
+        let installed = fake_app(&root.join("Applications"), BUNDLE_ID, b"old build", Duration::from_secs(3600));
+        let exe = installed.join("Contents/MacOS/nexora-app");
+        let volumes = root.join("Volumes");
+        let newer = fake_app(&volumes.join("Nexora"), BUNDLE_ID, b"new bu", Duration::ZERO);
+        let mut w = Watcher::default();
+        assert_eq!(w.newer_installer(&exe, &volumes), None, "first sight is not enough");
+        // Still being written: it grew since the last look.
+        std::fs::write(newer.join("Contents/MacOS/nexora-app"), b"new build").unwrap();
+        assert_eq!(w.newer_installer(&exe, &volumes), None, "changed since the last look");
+        assert!(w.newer_installer(&exe, &volumes).is_some(), "held still, so judged");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_a_read_only_image_that_is_not_being_built_is_an_installer() {
+        assert!(read_only(Path::new("/")), "the macOS system volume is mounted read-only");
+        assert!(!read_only(&std::env::temp_dir()));
+        assert!(!is_finished_installer(&std::env::temp_dir()));
+        assert!(!is_finished_installer(Path::new("/Volumes/dmg.Gc3l2F")));
+        // The app's own watcher ignores writable volumes like these test folders.
+        let root = tmp("strict");
+        let installed = fake_app(&root.join("Applications"), BUNDLE_ID, b"old build", Duration::from_secs(3600));
+        let exe = installed.join("Contents/MacOS/nexora-app");
+        fake_app(&root.join("Volumes/Nexora"), BUNDLE_ID, b"new build", Duration::ZERO);
+        let mut strict = Watcher::new();
+        assert_eq!(look(&mut strict, &exe, &root.join("Volumes")), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_mounted_newer_nexora_is_found_and_others_are_not() {
         let root = tmp("watch");
@@ -313,15 +392,15 @@ mod tests {
         fake_app(&volumes.join("Impostor"), "com.example.other", b"new build", Duration::ZERO);
         fake_app(&volumes.join("Same"), BUNDLE_ID, b"old build", Duration::ZERO);
         let mut w = Watcher::default();
-        assert_eq!(w.newer_installer(&exe, &volumes), None);
+        assert_eq!(look(&mut w, &exe, &volumes), None);
 
         // An older build is not installed over a newer one.
         fake_app(&volumes.join("Old"), BUNDLE_ID, b"ancient", Duration::from_secs(7200));
-        assert_eq!(w.newer_installer(&exe, &volumes), None);
+        assert_eq!(look(&mut w, &exe, &volumes), None);
 
         // A newer build is.
         let newer = fake_app(&volumes.join("Nexora 2"), BUNDLE_ID, b"new build", Duration::ZERO);
-        let found = w.newer_installer(&exe, &volumes).expect("the newer installer is found");
+        let found = look(&mut w, &exe, &volumes).expect("the newer installer is found");
         assert_eq!(found.app, newer);
         assert_eq!(found.volume, volumes.join("Nexora 2"));
         let _ = std::fs::remove_dir_all(&root);

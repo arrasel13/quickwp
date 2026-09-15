@@ -4,13 +4,12 @@ import {
   ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
   DocumentTextIcon,
-  PauseIcon,
-  PlayIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend, SiteLog } from "../../lib/api";
 import ConfirmDialog from "../ui/ConfirmDialog";
+import IconButton from "../ui/IconButton";
 import WpDebugPanel from "./WpDebugPanel";
 
 const TAIL_LINES = 1000;
@@ -26,13 +25,14 @@ export default function SiteLogs({ domain }: { domain: string }) {
   const [streams, setStreams] = useState<SiteLog[]>([]);
   const [selected, setSelected] = useState<string>("wp-debug");
   const [body, setBody] = useState("");
-  const [paused, setPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [spinning, setSpinning] = useState(false);
   const boxRef = useRef<HTMLPreElement>(null);
+  // Whether the view is at the newest line, so new lines may move it there.
+  const atBottom = useRef(true);
 
   const current = streams.find((s) => s.id === selected) ?? null;
 
@@ -59,23 +59,27 @@ export default function SiteLogs({ domain }: { domain: string }) {
     }
   }, [domain, selected]);
 
-  // Follow the file until paused. Switching stream reloads immediately so the
-  // pane is never showing the previous log under the new tab's name.
+  // Always following. Switching stream reloads at once, so the pane never
+  // shows the previous log under the new tab's name.
   useEffect(() => {
     void loadBody();
-    if (paused) return;
     const timer = setInterval(() => {
       if (!document.hidden) void loadBody();
     }, 3000);
     return () => clearInterval(timer);
-  }, [loadBody, paused]);
+  }, [loadBody]);
 
-  // Pinned to the newest line while following, which is the point of following.
+  // A new stream opens at its newest line.
   useEffect(() => {
-    if (!paused && boxRef.current) {
-      boxRef.current.scrollTop = boxRef.current.scrollHeight;
-    }
-  }, [body, paused]);
+    atBottom.current = true;
+  }, [selected]);
+
+  // New lines keep the view at the bottom -- unless you have scrolled up to
+  // read, which used to need a Pause button.
+  useEffect(() => {
+    const box = boxRef.current;
+    if (box && atBottom.current) box.scrollTop = box.scrollHeight;
+  }, [body]);
 
   const refresh = async () => {
     setSpinning(true);
@@ -109,6 +113,44 @@ export default function SiteLogs({ domain }: { domain: string }) {
   const wordpress = isWpDebug && current?.logging !== null && current?.logging !== undefined;
   const loggingOff = isWpDebug && current?.logging === false;
 
+  // The log's actions: in the file header for most logs, and inside the debug
+  // panel for a WordPress debug log, so that tab has one bar rather than two.
+  const renderActions = (lastAtEdge: boolean) => (
+    <>
+      <IconButton label="Refresh" onClick={() => void refresh()} disabled={spinning}>
+        <ArrowPathIcon className={clsx("h-4 w-4", spinning && "animate-spin")} />
+      </IconButton>
+      <IconButton
+        label={busy === "download" ? "Saving…" : "Download"}
+        disabled={!current?.exists || busy === "download"}
+        onClick={() =>
+          void act("download", async () => {
+            const path = await api.siteLogDownload(domain, selected);
+            return `Saved to ${path}`;
+          })
+        }
+      >
+        <ArrowDownTrayIcon className="h-4 w-4" />
+      </IconButton>
+      <IconButton
+        label="Open file"
+        disabled={!current?.exists}
+        onClick={() => void api.pathOpen(current?.path ?? "").catch((e) => setNote(errorText(e)))}
+      >
+        <ArrowTopRightOnSquareIcon className="h-4 w-4" />
+      </IconButton>
+      <IconButton
+        label="Clear log"
+        tone="danger"
+        tipAlign={lastAtEdge ? "right" : "center"}
+        onClick={() => setConfirmClear(true)}
+        disabled={!current?.exists || busy === "clear"}
+      >
+        <TrashIcon className="h-4 w-4" />
+      </IconButton>
+    </>
+  );
+
   return (
     <div className="flex h-full flex-col p-4">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -130,79 +172,40 @@ export default function SiteLogs({ domain }: { domain: string }) {
           ))}
         </nav>
 
-        {/* Toolbar */}
-        <div className="flex flex-shrink-0 flex-wrap items-center gap-2 border-b border-gray-200 px-3 py-2.5">
-          <DocumentTextIcon className="h-4 w-4 flex-shrink-0 text-gray-400" />
-          <span className="font-mono text-sm text-gray-900">{fileName}</span>
-
-          {current?.exists && (
-            <span className="text-[11px] text-gray-400">
-              {human(current.bytes)}
+        {/* Header: which file, how big, where, and its actions. A WordPress
+            debug log has none of its own -- its panel carries all of it. */}
+        {!wordpress && (
+          <div className="flex flex-shrink-0 items-center gap-3 border-b border-gray-200 px-4 py-2.5">
+            <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-gray-50 text-gray-400 ring-1 ring-inset ring-gray-200">
+              <DocumentTextIcon className="h-4 w-4" />
             </span>
-          )}
-
-          <div className="ml-auto flex flex-wrap items-center gap-1.5">
-            <ToolbarButton onClick={() => void refresh()} disabled={spinning}>
-              <ArrowPathIcon
-                className={clsx("h-4 w-4", spinning && "animate-spin")}
-              />
-              Refresh
-            </ToolbarButton>
-
-            <ToolbarButton onClick={() => setPaused((p) => !p)}>
-              {paused ? (
-                <PlayIcon className="h-4 w-4" />
-              ) : (
-                <PauseIcon className="h-4 w-4" />
-              )}
-              {paused ? "Resume" : "Pause"}
-            </ToolbarButton>
-
-            <ToolbarButton
-              onClick={() => setConfirmClear(true)}
-              disabled={!current?.exists || busy === "clear"}
-            >
-              <TrashIcon className="h-4 w-4" />
-              Clear
-            </ToolbarButton>
-
-            <ToolbarButton
-              disabled={!current?.exists || busy === "download"}
-              onClick={() =>
-                void act("download", async () => {
-                  const path = await api.siteLogDownload(domain, selected);
-                  return `Saved to ${path}`;
-                })
-              }
-            >
-              <ArrowDownTrayIcon className="h-4 w-4" />
-              {busy === "download" ? "Saving…" : "Download"}
-            </ToolbarButton>
-
-            <ToolbarButton
-              disabled={!current?.exists}
-              onClick={() =>
-                void api
-                  .pathOpen(current?.path ?? "")
-                  .catch((e) => setNote(errorText(e)))
-              }
-            >
-              <ArrowTopRightOnSquareIcon className="h-4 w-4" />
-              Open file
-            </ToolbarButton>
+            <div className="min-w-0 flex-1">
+              <p className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-mono text-[13px] font-medium text-gray-900">{fileName}</span>
+                {current?.exists && (
+                  <span className="flex-shrink-0 text-[11px] text-gray-400">{human(current.bytes)}</span>
+                )}
+                {current?.exists && (
+                  <span className="inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-px text-[10px] font-medium text-emerald-700">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                    Live
+                  </span>
+                )}
+              </p>
+              <p className="truncate font-mono text-[11px] text-gray-400" title={current?.path}>
+                {current?.path ?? "—"}
+              </p>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-0.5">{renderActions(true)}</div>
           </div>
-        </div>
-
-        {/* Path */}
-        <div className="flex-shrink-0 border-b border-gray-200 px-3 py-2.5">
-          <span className="break-all font-mono text-xs text-gray-600">
-            {current?.path ?? "—"}
-          </span>
-        </div>
+        )}
 
         {wordpress && (
           <WpDebugPanel
             domain={domain}
+            size={current?.exists ? human(current.bytes) : null}
+            path={current?.path ?? ""}
+            actions={renderActions(false)}
             onChanged={() => void Promise.all([loadStreams(), loadBody()])}
           />
         )}
@@ -227,6 +230,10 @@ export default function SiteLogs({ domain }: { domain: string }) {
         ) : (
           <pre
             ref={boxRef}
+            onScroll={(e) => {
+              const b = e.currentTarget;
+              atBottom.current = b.scrollHeight - b.scrollTop - b.clientHeight < 40;
+            }}
             className="min-h-0 flex-1 overflow-auto p-4 font-mono text-[11px] leading-relaxed text-gray-700"
           >
             {body
@@ -263,26 +270,6 @@ export default function SiteLogs({ domain }: { domain: string }) {
         }}
       />
     </div>
-  );
-}
-
-function ToolbarButton({
-  onClick,
-  disabled,
-  children,
-}: {
-  onClick: () => void;
-  disabled?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
-    >
-      {children}
-    </button>
   );
 }
 

@@ -1,12 +1,8 @@
 import { useEffect, useState } from "react";
-import {
-  BugAntIcon,
-  ChevronDownIcon,
-  CodeBracketIcon,
-  ExclamationTriangleIcon,
-} from "@heroicons/react/24/outline";
+import { BugAntIcon, CodeBracketIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend, WpDebugState } from "../../lib/api";
+import IconButton from "../ui/IconButton";
 
 type Busy = "enable" | "disable" | "insert" | "remove" | null;
 
@@ -21,9 +17,19 @@ define( 'SAVEQUERIES', true );`;
  */
 export default function WpDebugPanel({
   domain,
+  size,
+  path,
+  actions,
   onChanged,
 }: {
   domain: string;
+  /** The debug log's size, when it exists. */
+  size?: string | null;
+  /** Where the debug log is, shown on hover. */
+  path?: string;
+  /** The log's own actions -- refresh, download, open, clear -- so this tab
+   *  has one bar rather than a panel under a toolbar. */
+  actions?: React.ReactNode;
   /** After a change, so the log below can show what is now being written. */
   onChanged: () => void;
 }) {
@@ -85,7 +91,7 @@ export default function WpDebugPanel({
             <BugAntIcon className="h-5 w-5" />
           </span>
           <div className="min-w-0">
-            <p className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+            <p className="flex items-center gap-2 text-sm font-semibold text-gray-900" title={path || undefined}>
               Debug logging
               {debug && (
                 <span
@@ -98,6 +104,7 @@ export default function WpDebugPanel({
                   {logging ? "On" : "Off"}
                 </span>
               )}
+              {size && <span className="text-[11px] font-normal text-gray-400">debug.log · {size}</span>}
             </p>
             <p className="mt-0.5 text-xs text-gray-500">
               {!debug
@@ -109,47 +116,37 @@ export default function WpDebugPanel({
           </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            type="button"
+        <div className="ml-auto flex items-center gap-1.5">
+          {actions && (
+            <>
+              <div className="flex items-center gap-0.5">{actions}</div>
+              <span aria-hidden className="mx-1 h-5 w-px bg-gray-200" />
+            </>
+          )}
+          <IconButton
+            label={debug?.custom_active ? "Custom code · inserted" : "Custom code"}
             onClick={() => setCustomOpen((o) => !o)}
-            aria-expanded={customOpen}
             disabled={!debug}
-            className={clsx(
-              "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ring-1 ring-inset transition-colors disabled:opacity-50",
-              customOpen || debug?.custom_active
-                ? "bg-white text-gray-900 ring-gray-300"
-                : "bg-white text-gray-600 ring-gray-200 hover:text-gray-900 hover:ring-gray-300",
-            )}
+            active={customOpen}
           >
             <CodeBracketIcon className="h-4 w-4" />
-            Custom code
-            {debug?.custom_active && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-label="inserted" />}
-            <ChevronDownIcon className={clsx("h-3.5 w-3.5 text-gray-400 transition-transform", customOpen && "rotate-180")} />
-          </button>
+            {debug?.custom_active && (
+              <span aria-hidden className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-emerald-500 ring-2 ring-white" />
+            )}
+          </IconButton>
 
-          {debug?.standard ? (
-            <button
-              type="button"
-              onClick={() => void run("disable", () => api.wpDebugSet(domain, false))}
-              disabled={busy !== null}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3.5 py-1.5 text-sm font-semibold text-gray-700 ring-1 ring-inset ring-gray-300 transition-colors hover:bg-gray-50 disabled:opacity-60"
-            >
-              {busy === "disable" && <Spinner dark />}
-              {busy === "disable" ? "Disabling…" : "Disable debug log"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void run("enable", () => api.wpDebugSet(domain, true))}
-              disabled={!debug || busy !== null || Boolean(onElsewhere)}
-              title={onElsewhere ? "Already on in wp-config.php" : undefined}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-wp-blue px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-wp-blue-dark disabled:opacity-50"
-            >
-              {busy === "enable" && <Spinner />}
-              {busy === "enable" ? "Enabling…" : "Enable debug log"}
-            </button>
-          )}
+          <span aria-hidden className="mx-1 h-5 w-px bg-gray-200" />
+
+          {/* The switch is Nexora's two lines: on puts them in wp-config.php. */}
+          <Switch
+            label="Debug logging"
+            checked={Boolean(debug?.standard || onElsewhere)}
+            busy={busy === "enable" || busy === "disable"}
+            disabled={!debug || busy !== null || Boolean(onElsewhere)}
+            onChange={(on) =>
+              void run(on ? "enable" : "disable", () => api.wpDebugSet(domain, on))
+            }
+          />
         </div>
       </div>
 
@@ -237,6 +234,49 @@ export default function WpDebugPanel({
         </p>
       )}
     </section>
+  );
+}
+
+/** An on/off switch; the knob spins while the change is being saved. */
+function Switch({
+  label,
+  checked,
+  busy,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  busy?: boolean;
+  disabled?: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      aria-busy={busy || undefined}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={clsx(
+        "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-blue/40 focus-visible:ring-offset-2 disabled:cursor-not-allowed",
+        checked ? "bg-emerald-500" : "bg-gray-300",
+        disabled && !busy && "opacity-60",
+      )}
+    >
+      <span
+        className={clsx(
+          "grid h-5 w-5 place-items-center rounded-full bg-white shadow ring-1 ring-black/5 transition-transform duration-200",
+          checked ? "translate-x-[22px]" : "translate-x-0.5",
+        )}
+      >
+        {busy && (
+          <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-2 border-gray-200 border-t-gray-600" />
+        )}
+      </span>
+    </button>
   );
 }
 
