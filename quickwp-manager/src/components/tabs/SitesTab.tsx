@@ -791,10 +791,10 @@ export default function SitesTab() {
                 <TerminalTab fixedDomain={selectedSite.name} />
               </LazyPanel>
 
-              {/* Mail — one Mailpit catches what every site sends, so this is
-                  the same inbox from whichever site you open it. */}
-              <LazyPanel seen={visited.has(5)} className="h-full overflow-y-auto">
-                <MailTab />
+              {/* Mail — one Mailpit catches what every site sends; this tab
+                  shows this site's share of it, or everything. */}
+              <LazyPanel seen={visited.has(5)} className="h-full overflow-hidden">
+                <MailTab site={selectedBackendSite ?? null} />
               </LazyPanel>
 
               {/* Settings */}

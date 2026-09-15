@@ -94,6 +94,13 @@ fn start_stack(app: &Nexora, edge: &Mutex<Option<server::Edge>>) -> core::Result
             Err(e) => qlog::warn("app", &format!("could not start MySQL {series}: {e}")),
         }
     }
+    // Mailpit too: mail a site sends waits in its Mail tab instead of being
+    // lost because nothing was listening. Not fatal, like MySQL.
+    if mail::is_installed() {
+        if let Err(e) = start_mail(app) {
+            qlog::warn("mail", &format!("could not start Mailpit: {e}"));
+        }
+    }
     let mut edge = edge.lock().unwrap();
     if edge.is_none() {
         *edge = Some(server::start(app.db.clone(), ports::NGINX)?);
@@ -1508,6 +1515,16 @@ fn setup_finish(state: State<'_, AppState>, done: bool) -> Res<()> {
         .app
         .db
         .set_setting("onboarding_done", if done { "1" } else { "0" })?;
+    if done && mail::is_installed() {
+        // Mail is caught from the first site on: Mailpit starts as setup
+        // ends, not the first time someone thinks to look for it.
+        let app = state.app.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = start_mail(&app) {
+                qlog::warn("mail", &format!("could not start Mailpit after setup: {e}"));
+            }
+        });
+    }
     Ok(())
 }
 
@@ -1993,17 +2010,32 @@ fn migrate_import(
 // ----------------------------------------------------------------- mail
 
 fn catch_all_on(state: &State<'_, AppState>) -> bool {
+    catch_all_setting(&state.app)
+}
+
+fn catch_all_setting(app: &Nexora) -> bool {
     // Absent is ON deliberately: a site created before the switch existed is
     // caught too, because "every site's mail is caught" must not quietly mean
     // "every site created after you found the switch".
-    state
-        .app
-        .db
+    app.db
         .setting("catch_all")
         .ok()
         .flatten()
         .map(|v| v != "0")
         .unwrap_or(true)
+}
+
+/// Start Mailpit and make sure every WordPress site's mail plugin is current,
+/// so its mail is caught and tagged with the site. Writing the plugin needs
+/// no pool restart: WordPress reads mu-plugins on every request.
+fn start_mail(app: &Nexora) -> core::Result<u16> {
+    let port = mail::start(&app.sup)?;
+    if catch_all_setting(app) {
+        for s in site::list(&app.db)? {
+            let _ = mail::set_site_catch(&s.docroot, &s.domain, true);
+        }
+    }
+    Ok(port)
 }
 
 #[tauri::command(async)]
@@ -2048,7 +2080,7 @@ fn mail_open(state: State<'_, AppState>) -> Res<()> {
 /// is true of the machine rather than only of the setting.
 fn apply_catch_all(state: &State<'_, AppState>, on: bool) -> Res<()> {
     for s in site::list(&state.app.db)? {
-        let _ = mail::set_site_catch(&s.docroot, on);
+        let _ = mail::set_site_catch(&s.docroot, &s.domain, on);
     }
     for m in runtime::PHP_MINORS {
         if state.app.sup.is_running(&php::pool_name(m)) {
@@ -2056,6 +2088,77 @@ fn apply_catch_all(state: &State<'_, AppState>, on: bool) -> Res<()> {
             let _ = php::start_pool(&state.app.sup, m);
         }
     }
+    Ok(())
+}
+
+/// A site's caught mail -- or everything, with no domain -- newest first.
+/// Mailpit is started first if it is installed but not running, so the Mail
+/// tab never shows an empty inbox only because nothing was listening.
+#[tauri::command]
+async fn mail_messages(handle: AppHandle, domain: Option<String>, query: Option<String>) -> Res<mail::MailList> {
+    let names: Vec<String> = match domain {
+        Some(d) => {
+            let state = handle.state::<AppState>();
+            let s = site_by_domain(&state, &d)?;
+            std::iter::once(s.domain.clone()).chain(s.aliases.iter().cloned()).collect()
+        }
+        None => Vec::new(),
+    };
+    let h = handle.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Res<()> {
+        let st = h.state::<AppState>();
+        if st.app.sup.is_running(mail::SERVICE) {
+            return Ok(());
+        }
+        if !mail::is_installed() {
+            return Err("Mailpit is not installed.".into());
+        }
+        start_mail(&st.app).map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(mail::list(&names, query.as_deref().unwrap_or("")).await?)
+}
+
+/// One message whole. Opening it marks it read, as in any mail app.
+#[tauri::command]
+async fn mail_message(id: String) -> Res<mail::MailMessage> {
+    let message = mail::message(&id).await?;
+    let _ = mail::mark_read(std::slice::from_ref(&id)).await;
+    Ok(message)
+}
+
+#[tauri::command]
+async fn mail_raw(id: String) -> Res<String> {
+    Ok(mail::raw(&id).await?)
+}
+
+#[tauri::command]
+async fn mail_headers(id: String) -> Res<std::collections::BTreeMap<String, Vec<String>>> {
+    Ok(mail::headers(&id).await?)
+}
+
+/// Mark messages read: these `ids`, or every message when `all` is set. No
+/// ids without `all` is nothing -- Mailpit reads an empty list as everything.
+#[tauri::command]
+async fn mail_mark_read(ids: Vec<String>, all: bool) -> Res<()> {
+    if ids.is_empty() && !all {
+        return Ok(());
+    }
+    Ok(mail::mark_read(if all { &[] } else { &ids }).await?)
+}
+
+/// Delete messages: these `ids`, or every message when `all` is set.
+#[tauri::command]
+async fn mail_delete(ids: Vec<String>, all: bool) -> Res<()> {
+    if ids.is_empty() && !all {
+        return Ok(());
+    }
+    mail::delete(if all { &[] } else { &ids }).await?;
+    qlog::info(
+        "mail",
+        &if all { "cleared all caught mail".to_string() } else { format!("deleted {} message(s)", ids.len()) },
+    );
     Ok(())
 }
 
@@ -2895,6 +2998,12 @@ pub fn run() {
             app_update_pending,
             app_update_restart,
             app_update_later,
+            mail_messages,
+            mail_message,
+            mail_raw,
+            mail_headers,
+            mail_mark_read,
+            mail_delete,
         ])
         .on_window_event(|window, event| match event {
             // Closing the window is quitting: it goes through the same choice

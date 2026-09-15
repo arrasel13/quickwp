@@ -84,6 +84,10 @@ pub fn start(sup: &Supervisor) -> Result<u16> {
 
     for _ in 0..50 {
         if std::net::TcpStream::connect(("127.0.0.1", ports::MAILPIT_UI)).is_ok() {
+            crate::log::info(
+                "mail",
+                &format!("Mailpit started: SMTP on {}, inbox on {}", ports::MAILPIT_SMTP, ports::MAILPIT_UI),
+            );
             return Ok(ports::MAILPIT_UI);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -170,6 +174,9 @@ add_action('phpmailer_init', function ($phpmailer) {
     $phpmailer->SMTPAuth   = false;
     $phpmailer->SMTPSecure = '';
     $phpmailer->SMTPAutoTLS = false;
+    // Tags the message with this site, so the site's Mail tab finds it
+    // whatever address it was sent from or to.
+    $phpmailer->addCustomHeader('X-Tags', 'NEXORA_SITE_TAG');
 }, PHP_INT_MAX);
 "#;
 
@@ -182,7 +189,7 @@ fn mu_plugin_path(docroot: &str) -> PathBuf {
 /// Absent is treated as ON deliberately: a site created before the switch
 /// existed is caught too, because "every site's mail is caught" must not
 /// quietly mean "every site created after you found the switch".
-pub fn set_site_catch(docroot: &str, on: bool) -> Result<()> {
+pub fn set_site_catch(docroot: &str, domain: &str, on: bool) -> Result<()> {
     crate::legacy::remove_old_mu_plugins(docroot);
     let path = mu_plugin_path(docroot);
     if !on {
@@ -193,12 +200,239 @@ pub fn set_site_catch(docroot: &str, on: bool) -> Result<()> {
         return Ok(()); // not a WordPress site; the sendmail shim covers it
     }
     paths::mkdir_p(path.parent().unwrap())?;
-    let body = MU_PLUGIN.replace("NEXORA_MAILPIT_PORT", &ports::MAILPIT_SMTP.to_string());
+    // A domain is letters, digits, dots and dashes; anything else is dropped
+    // rather than written into PHP.
+    let tag: String = domain
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+        .collect();
+    let body = MU_PLUGIN
+        .replace("NEXORA_MAILPIT_PORT", &ports::MAILPIT_SMTP.to_string())
+        .replace("NEXORA_SITE_TAG", &tag);
     std::fs::write(&path, body).map_err(|e| Error::Io { path, source: e })
+}
+
+// ------------------------------------------------------------------ reading
+
+/// One address on a message, as Mailpit reports it.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct MailAddress {
+    #[serde(rename = "Name", default)]
+    pub name: String,
+    #[serde(rename = "Address", default)]
+    pub address: String,
+}
+
+/// A message in a list: enough to show it, not its body.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct MailSummary {
+    #[serde(rename = "ID")]
+    pub id: String,
+    #[serde(rename = "From", default)]
+    pub from: Option<MailAddress>,
+    #[serde(rename = "To", default)]
+    pub to: Option<Vec<MailAddress>>,
+    #[serde(rename = "Subject", default)]
+    pub subject: String,
+    #[serde(rename = "Created", default)]
+    pub created: String,
+    #[serde(rename = "Read", default)]
+    pub read: bool,
+    #[serde(rename = "Snippet", default)]
+    pub snippet: String,
+    #[serde(rename = "Attachments", default)]
+    pub attachments: u32,
+    #[serde(rename = "Tags", default)]
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MailList {
+    pub messages: Vec<MailSummary>,
+    pub total: usize,
+    pub unread: usize,
+}
+
+/// One message, whole.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct MailMessage {
+    #[serde(rename = "ID")]
+    pub id: String,
+    #[serde(rename = "From", default)]
+    pub from: Option<MailAddress>,
+    #[serde(rename = "To", default)]
+    pub to: Option<Vec<MailAddress>>,
+    #[serde(rename = "Cc", default)]
+    pub cc: Option<Vec<MailAddress>>,
+    #[serde(rename = "Subject", default)]
+    pub subject: String,
+    #[serde(rename = "Date", default)]
+    pub date: String,
+    #[serde(rename = "HTML", default)]
+    pub html: String,
+    #[serde(rename = "Text", default)]
+    pub text: String,
+    #[serde(rename = "Attachments", default)]
+    pub attachments: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+struct Listing {
+    #[serde(default)]
+    messages: Vec<MailSummary>,
+}
+
+fn api(path: &str) -> String {
+    format!("http://127.0.0.1:{}/api/v1/{path}", ports::MAILPIT_UI)
+}
+
+fn client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| Error::other(format!("could not make a mail client: {e}")))
+}
+
+async fn fetch(req: reqwest::RequestBuilder) -> Result<String> {
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| Error::other(format!("Mailpit did not answer: {e}")))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| Error::other(format!("Mailpit's answer was cut off: {e}")))?;
+    if !status.is_success() {
+        return Err(Error::other(format!("Mailpit answered {status}: {}", body.trim())));
+    }
+    Ok(body)
+}
+
+/// Mailpit ids are letters and digits; anything else never reaches a URL.
+fn check_id(id: &str) -> Result<()> {
+    if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        Ok(())
+    } else {
+        Err(Error::other("that is not a Mailpit message id"))
+    }
+}
+
+async fn search(c: &reqwest::Client, query: &str) -> Result<Vec<MailSummary>> {
+    let req = if query.is_empty() {
+        c.get(api("messages")).query(&[("limit", "500")])
+    } else {
+        c.get(api("search")).query(&[("query", query), ("limit", "500")])
+    };
+    let body = fetch(req).await?;
+    serde_json::from_str::<Listing>(&body)
+        .map(|l| l.messages)
+        .map_err(|e| Error::other(format!("Mailpit's list could not be read: {e}")))
+}
+
+/// The search words that find one site's mail: tagged with its name by the
+/// mail plugin, or sent from or to its domain -- plain `mail()` and
+/// non-WordPress sites carry no tag.
+fn site_terms(name: &str) -> [String; 3] {
+    [format!("tag:\"{name}\""), format!("from:{name}"), format!("to:{name}")]
+}
+
+/// A site's messages -- `names` is its domain and aliases -- or every message
+/// when `names` is empty, newest first. `query` narrows it with Mailpit's own
+/// search words.
+pub async fn list(names: &[String], query: &str) -> Result<MailList> {
+    let c = client()?;
+    let query = query.trim();
+    let mut messages: Vec<MailSummary> = Vec::new();
+    if names.is_empty() {
+        messages = search(&c, query).await?;
+    } else {
+        let mut seen = std::collections::HashSet::new();
+        for name in names {
+            for term in site_terms(name) {
+                let q = if query.is_empty() { term } else { format!("{term} {query}") };
+                for m in search(&c, &q).await? {
+                    if seen.insert(m.id.clone()) {
+                        messages.push(m);
+                    }
+                }
+            }
+        }
+        // Mailpit stamps every message in this machine's zone, so the
+        // timestamps order as text.
+        messages.sort_by(|a, b| b.created.cmp(&a.created));
+    }
+    let unread = messages.iter().filter(|m| !m.read).count();
+    Ok(MailList { total: messages.len(), unread, messages })
+}
+
+pub async fn message(id: &str) -> Result<MailMessage> {
+    check_id(id)?;
+    let body = fetch(client()?.get(api(&format!("message/{id}")))).await?;
+    serde_json::from_str(&body).map_err(|e| Error::other(format!("the message could not be read: {e}")))
+}
+
+pub async fn raw(id: &str) -> Result<String> {
+    check_id(id)?;
+    fetch(client()?.get(api(&format!("message/{id}/raw")))).await
+}
+
+pub async fn headers(id: &str) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+    check_id(id)?;
+    let body = fetch(client()?.get(api(&format!("message/{id}/headers")))).await?;
+    serde_json::from_str(&body).map_err(|e| Error::other(format!("the headers could not be read: {e}")))
+}
+
+/// Mark messages read. An empty list means every message, as Mailpit reads it.
+pub async fn mark_read(ids: &[String]) -> Result<()> {
+    for id in ids {
+        check_id(id)?;
+    }
+    let body = serde_json::json!({ "IDs": ids, "Read": true }).to_string();
+    fetch(client()?.put(api("messages")).header("Content-Type", "application/json").body(body))
+        .await
+        .map(|_| ())
+}
+
+/// Delete messages. An empty list means every message, as Mailpit reads it.
+pub async fn delete(ids: &[String]) -> Result<()> {
+    for id in ids {
+        check_id(id)?;
+    }
+    let body = serde_json::json!({ "IDs": ids }).to_string();
+    fetch(client()?.delete(api("messages")).header("Content-Type", "application/json").body(body))
+        .await
+        .map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_site_is_found_by_its_tag_and_by_its_address() {
+        let terms = super::site_terms("wpdev.test");
+        assert_eq!(terms[0], "tag:\"wpdev.test\"");
+        assert_eq!(terms[1], "from:wpdev.test");
+        assert_eq!(terms[2], "to:wpdev.test");
+    }
+
+    #[test]
+    fn only_a_mailpit_id_reaches_a_url() {
+        assert!(super::check_id("5LCey2CnRDIrLprRYPkEVs").is_ok());
+        assert!(super::check_id("../messages").is_err());
+        assert!(super::check_id("").is_err());
+    }
+
+    #[test]
+    fn the_plugin_tags_mail_with_the_site_and_nothing_unsafe() {
+        let dir = std::env::temp_dir().join(format!("nexora-mail-tag-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("wp-content")).unwrap();
+        super::set_site_catch(&dir.to_string_lossy(), "wp-dev.test'); evil(", true).unwrap();
+        let body = std::fs::read_to_string(dir.join("wp-content/mu-plugins/nexora-mail.php")).unwrap();
+        assert!(body.contains("addCustomHeader('X-Tags', 'wp-dev.testevil')"), "{body}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]
@@ -247,7 +481,7 @@ mod tests {
     fn removing_the_catch_on_a_non_wordpress_site_is_not_an_error() {
         let dir = std::env::temp_dir().join("nexora-mail-nonwp");
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(set_site_catch(&dir.to_string_lossy(), true).is_ok());
-        assert!(set_site_catch(&dir.to_string_lossy(), false).is_ok());
+        assert!(set_site_catch(&dir.to_string_lossy(), "t.test", true).is_ok());
+        assert!(set_site_catch(&dir.to_string_lossy(), "t.test", false).is_ok());
     }
 }

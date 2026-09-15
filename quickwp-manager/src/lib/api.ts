@@ -272,6 +272,44 @@ export interface VerifyReport {
   all_ok: boolean;
 }
 
+/** One address on a message, as Mailpit reports it. */
+export interface MailAddress {
+  Name: string;
+  Address: string;
+}
+
+/** A caught message in a list. */
+export interface MailSummary {
+  ID: string;
+  From: MailAddress | null;
+  To: MailAddress[] | null;
+  Subject: string;
+  Created: string;
+  Read: boolean;
+  Snippet: string;
+  Attachments: number;
+  Tags: string[] | null;
+}
+
+export interface MailList {
+  messages: MailSummary[];
+  total: number;
+  unread: number;
+}
+
+/** One caught message, whole. */
+export interface MailMessage {
+  ID: string;
+  From: MailAddress | null;
+  To: MailAddress[] | null;
+  Cc: MailAddress[] | null;
+  Subject: string;
+  Date: string;
+  HTML: string;
+  Text: string;
+  Attachments: unknown;
+}
+
 export interface MailStatus {
   installed: boolean;
   running: boolean;
@@ -641,6 +679,15 @@ export const api = {
   mailStop: () => call<boolean>("mail_stop"),
   mailOpen: () => call<void>("mail_open"),
   mailSetCatchAll: (on: boolean) => call<string>("mail_set_catch_all", { on }),
+  /** A site's caught mail, or all of it with no domain; starts Mailpit if needed. */
+  mailMessages: (domain: string | null, query: string) =>
+    call<MailList>("mail_messages", { domain, query }),
+  /** Opening a message marks it read. */
+  mailMessage: (id: string) => call<MailMessage>("mail_message", { id }),
+  mailRaw: (id: string) => call<string>("mail_raw", { id }),
+  mailHeaders: (id: string) => call<Record<string, string[]>>("mail_headers", { id }),
+  mailMarkRead: (ids: string[], all: boolean) => call<void>("mail_mark_read", { ids, all }),
+  mailDelete: (ids: string[], all: boolean) => call<void>("mail_delete", { ids, all }),
 
   // tunnels
   tunnelStatus: () => call<{ installed: boolean; tunnels: Tunnel[] }>("tunnel_status"),
