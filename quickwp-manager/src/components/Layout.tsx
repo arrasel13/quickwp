@@ -1,5 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { FolderOpenIcon, PlayIcon, PlusIcon, StopIcon, TrashIcon } from "@heroicons/react/24/outline";
+import {
+  FolderOpenIcon,
+  PlayIcon,
+  PlusIcon,
+  StopIcon,
+  TrashIcon,
+} from "@heroicons/react/24/outline";
 import { PlayIcon as PlaySolidIcon, StopIcon as StopSolidIcon } from "@heroicons/react/24/solid";
 import { DrawerLeftIcon } from "./ui/DrawerIcons";
 import clsx from "clsx";
@@ -9,7 +15,6 @@ import { SitesProvider, useSites } from "../lib/sites";
 import AppSettings from "./AppSettings";
 import QuitDialog from "./QuitDialog";
 import UpdateOverlay from "./UpdateOverlay";
-import SiteAvatar from "./SiteAvatar";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import markUrl from "../assets/nexora-mark.svg";
 import SitesTab from "./tabs/SitesTab";
@@ -80,18 +85,30 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
     }
   }, [collapsed]);
 
+  // Command-B (Control-B elsewhere) shows and hides the sidebar, the shortcut
+  // the opener names.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setCollapsed((c) => !c);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div data-tauri-drag-region className="h-screen bg-chrome overflow-hidden">
       {/* The frame around the content sheet moves the window too. */}
       <div data-tauri-drag-region className="flex h-full">
-        {/* Sidebar. Collapsed, each site becomes its initial rather than
-            disappearing, so every site stays one click away. w-20 still
-            clears the three traffic lights. */}
+        {/* Sidebar: where sites are listed and picked. Hidden, it is gone
+            rather than narrowed -- the window is the site's -- and the button
+            at the foot of the details brings it back. */}
         <div
           className={clsx(
-            "flex-shrink-0 flex flex-col text-gray-300 transition-[width] duration-150 ease-out",
-            collapsed ? "w-20" : "w-60",
-            immersive && "hidden",
+            "w-60 flex-shrink-0 flex flex-col text-gray-300",
+            (collapsed || immersive) && "hidden",
           )}
         >
           {/* Dragging the window by this strip stands in for the title bar
@@ -104,41 +121,25 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
               isMac ? "h-12" : "h-11",
             )}
           >
-            {!collapsed && <NewSiteButton />}
+            <NewSiteButton />
           </div>
-          {collapsed && (
-            <div className="flex flex-shrink-0 justify-center px-3 pb-1">
-              <NewSiteButton />
-            </div>
-          )}
-
-          <SiteList collapsed={collapsed} />
+          <SiteList />
 
           <div className="flex-shrink-0 px-3 pb-3 pt-2">
-            <div
-              className={clsx(
-                "flex items-center",
-                collapsed ? "flex-col gap-1" : "justify-between",
-              )}
-            >
+            <div className="flex items-center justify-between">
               <button
                 onClick={() => setSettingsOpen(true)}
-                title={collapsed ? t("appSettings") : undefined}
-                className={clsx(
-                  // Closing the settings sheet hands focus back here; the
-                  // browser's blue outline glares on the dark frame.
-                  "flex items-center gap-2.5 rounded-md py-2 text-[13px] font-medium text-gray-300 hover:bg-white/5 hover:text-white transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30",
-                  collapsed ? "justify-center w-full px-0" : "px-3",
-                )}
+                // Closing the settings sheet hands focus back here; the
+                // browser's blue outline glares on the dark frame.
+                className="flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] font-medium text-gray-300 hover:bg-white/5 hover:text-white transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
               >
                 <img src={markUrl} alt="" aria-hidden className="h-4 w-4 flex-shrink-0" draggable={false} />
-                <span className={collapsed ? "sr-only" : undefined}>{t("appSettings")}</span>
+                <span>{t("appSettings")}</span>
               </button>
               <button
-                onClick={() => setCollapsed((c) => !c)}
-                aria-label={collapsed ? t("expandSidebar") : t("collapseSidebar")}
-                title={collapsed ? t("expandSidebar") : t("collapseSidebar")}
-                aria-pressed={!collapsed}
+                onClick={() => setCollapsed(true)}
+                aria-label={t("hideSidebar")}
+                title={t("hideSidebar")}
                 className="rounded-md p-1.5 text-gray-400 hover:bg-white/5 hover:text-white transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
               >
                 <DrawerLeftIcon className="h-5 w-5" />
@@ -154,11 +155,16 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
             "flex-1 min-w-0 bg-white overflow-hidden",
             // In full preview the sheet is the whole window, edge to edge.
             immersive ? "m-0" : "my-2 mr-2 rounded-lg ring-1 ring-black/5",
+            !immersive && collapsed && "ml-2",
           )}
         >
-          <SitesTab />
+          <SitesTab sidebarHidden={collapsed && !immersive} />
         </main>
       </div>
+
+      {/* The way back to the sidebar, and to the other sites, without giving
+          the window back to it. */}
+      {collapsed && !immersive && <SidebarOpener onOpen={() => setCollapsed(false)} />}
 
       <AppSettings
         open={settingsOpen}
@@ -187,7 +193,7 @@ function NewSiteButton() {
   );
 }
 
-function SiteList({ collapsed }: { collapsed: boolean }) {
+function SiteList() {
   const t = useT();
   const { sites, selected, select, loading, error, reload, setSites } = useSites();
   // The site a right-click opened the menu for, and where it was clicked.
@@ -252,23 +258,15 @@ function SiteList({ collapsed }: { collapsed: boolean }) {
         aria-label={t("sites")}
         className="sidebar-scroll flex-1 space-y-0.5 overflow-y-auto overflow-x-hidden px-3 pb-3"
       >
-        {!collapsed && error && (
+        {error && (
           <p className="px-3 py-2 text-xs leading-relaxed text-red-300">{t("sitesError")}</p>
         )}
-        {!collapsed && !error && !loading && sites.length === 0 && (
+        {!error && !loading && sites.length === 0 && (
           <p className="px-3 py-2 text-xs text-gray-500">{t("noSitesYet")}</p>
         )}
         {sites.map((s) => {
           const active = selected?.id === s.id;
           const label = s.name || s.domain;
-          const dot = (
-            <span
-              className={clsx(
-                "h-2 w-2 flex-shrink-0 rounded-full",
-                s.enabled ? "bg-green-500" : "bg-gray-600",
-              )}
-            />
-          );
           const pending = toggling === s.id;
           return (
             // A row holds two buttons side by side -- the site, and its status
@@ -296,26 +294,15 @@ function SiteList({ collapsed }: { collapsed: boolean }) {
                 onClick={() => select(String(s.id))}
                 aria-haspopup="menu"
                 aria-current={active ? "page" : undefined}
-                title={collapsed ? `${label} — ${s.domain}` : s.domain}
+                title={s.domain}
                 className={clsx(
-                  "flex w-full min-w-0 items-center rounded-md text-left text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30",
-                  collapsed ? "justify-center p-1.5" : "gap-2 py-2 pl-3 pr-9",
+                  "flex w-full min-w-0 items-center gap-2 rounded-md py-2 pl-3 pr-9 text-left text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30",
                   active || menu?.site.id === s.id
                     ? "text-white"
                     : "text-gray-300 group-hover:text-white",
                 )}
               >
-                {collapsed ? (
-                  <span className="relative">
-                    <SiteAvatar name={label} className="h-8 w-8 text-xs" />
-                    <span className="absolute -bottom-0.5 -right-0.5 rounded-full ring-2 ring-chrome">
-                      {dot}
-                    </span>
-                    <span className="sr-only">{label}</span>
-                  </span>
-                ) : (
-                  <span className="min-w-0 flex-1 truncate">{label}</span>
-                )}
+                <span className="min-w-0 flex-1 truncate">{label}</span>
               </button>
 
               {/* The status dot is also the switch: pointing at the row turns
@@ -324,8 +311,7 @@ function SiteList({ collapsed }: { collapsed: boolean }) {
                   stacked, and only fade -- nothing is swapped in or out, so a
                   click never makes the row blink. While the change is under
                   way the dot, already in its new colour, pulses. */}
-              {!collapsed && (
-                <button
+              <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
@@ -367,7 +353,6 @@ function SiteList({ collapsed }: { collapsed: boolean }) {
                     )}
                   />
                 </button>
-              )}
             </div>
           );
         })}
@@ -544,6 +529,149 @@ function SiteMenu({
       {item(labels.open, FolderOpenIcon, onOpenFolder)}
       <div role="separator" className="my-1 h-px bg-gray-100" />
       {item(labels.remove, TrashIcon, onDelete, true)}
+    </div>
+  );
+}
+
+/**
+ * The button at the foot of the window with the sidebar hidden.
+ *
+ * Pointing at it brings the sites back without the sidebar: the list, with the
+ * one in view marked, and the way to put the sidebar back for good. It sits
+ * over the details pane, never over the preview, which is a native view that
+ * anything drawn in the page would open behind.
+ */
+function SidebarOpener({ onOpen }: { onOpen: () => void }) {
+  const t = useT();
+  const { sites, selected, select, reload } = useSites();
+  const [open, setOpen] = useState(false);
+  /** The site being started or stopped from here. */
+  const [busy, setBusy] = useState<number | null>(null);
+
+  const toggle = async (site: Site) => {
+    setBusy(site.id);
+    try {
+      await api.siteSetEnabled(site.domain, !site.enabled);
+      // A started site should answer straight away, not wait for the stack.
+      if (!site.enabled) await api.stackStart();
+    } catch {
+      // The list reloads either way; the sidebar reports what went wrong.
+    } finally {
+      await reload();
+      setBusy(null);
+    }
+  };
+  // A moment's grace, so the pointer can cross the gap to the list.
+  const closing = useRef<number>();
+  const show = () => {
+    window.clearTimeout(closing.current);
+    setOpen(true);
+  };
+  const hide = () => {
+    window.clearTimeout(closing.current);
+    closing.current = window.setTimeout(() => setOpen(false), 120);
+  };
+  useEffect(() => () => window.clearTimeout(closing.current), []);
+
+  return (
+    <div
+      className="fixed bottom-3 left-3 z-40"
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
+    >
+      {open && (
+        <div
+          role="menu"
+          aria-label={t("sites")}
+          className="absolute bottom-full left-0 mb-1.5 w-64 rounded-lg border border-gray-200 bg-white p-1 shadow-xl shadow-black/10"
+        >
+          {sites.map((s) => {
+            const active = selected?.id === s.id;
+            const label = s.name || s.domain;
+            // A row holds two buttons -- the site, and its switch -- because a
+            // button cannot contain another.
+            return (
+              <div
+                key={s.id}
+                className={clsx(
+                  "group flex items-center rounded-md transition-colors",
+                  active ? "bg-gray-100" : "hover:bg-gray-100",
+                )}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    select(String(s.id));
+                    setOpen(false);
+                  }}
+                  className={clsx(
+                    "min-w-0 flex-1 truncate rounded-md px-2.5 py-1.5 text-left text-[13px] focus:outline-none",
+                    active ? "font-semibold text-gray-900" : "text-gray-700 group-hover:text-gray-900",
+                  )}
+                >
+                  {label}
+                </button>
+                {/* Stop shows a running site, play a stopped one: the switch
+                    is the status as well. */}
+                <button
+                  type="button"
+                  onClick={() => void toggle(s)}
+                  disabled={busy === s.id}
+                  aria-label={`${s.enabled ? t("site.stop") : t("site.start")}: ${label}`}
+                  title={s.enabled ? t("site.stop") : t("site.start")}
+                  className="mr-1 grid h-7 w-7 flex-shrink-0 place-items-center rounded-md text-gray-400 transition-colors hover:bg-gray-200/70 hover:text-gray-900 focus:outline-none focus-visible:bg-gray-200/70 disabled:opacity-50"
+                >
+                  {busy === s.id ? (
+                    <span
+                      aria-hidden
+                      className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600"
+                    />
+                  ) : s.enabled ? (
+                    <StopSolidIcon aria-hidden className="h-3.5 w-3.5" />
+                  ) : (
+                    <PlaySolidIcon aria-hidden className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              </div>
+            );
+          })}
+          {sites.length > 0 && <div role="separator" className="my-1 h-px bg-gray-200" />}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onOpen();
+            }}
+            className="flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left text-[13px] text-gray-800 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:bg-gray-100"
+          >
+            {t("openSidebar")}
+            <span aria-hidden className="flex items-center gap-1">
+              <kbd className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[11px] font-medium text-gray-500">
+                {isMac ? "\u2318" : "Ctrl"}
+              </kbd>
+              <kbd className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[11px] font-medium text-gray-500">
+                B
+              </kbd>
+            </span>
+          </button>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={t("openSidebar")}
+        title={t("openSidebar")}
+        className="grid h-8 w-8 place-items-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-blue/30"
+      >
+        <DrawerLeftIcon className="h-5 w-5" />
+      </button>
     </div>
   );
 }

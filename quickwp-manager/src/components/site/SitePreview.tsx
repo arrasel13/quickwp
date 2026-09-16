@@ -6,7 +6,9 @@ import {
   ArrowTopRightOnSquareIcon,
   ChevronDownIcon,
   CircleStackIcon,
+  DocumentTextIcon,
   EllipsisVerticalIcon,
+  EnvelopeIcon,
   PlayIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
@@ -23,12 +25,23 @@ import {
   type SiteDatabaseInfo,
 } from "../../lib/api";
 import { useSites } from "../../lib/sites";
+import { onPreviewRequest } from "../../lib/previewBus";
 import { peekCache, putCache } from "../../lib/useAsync";
 import SiteAvatar from "../SiteAvatar";
+import SiteLogs from "./SiteLogs";
+import MailTab from "../tabs/MailTab";
 
 // In full preview the toolbar runs under the window's traffic lights, which
 // sit over the page on macOS (tauri.conf.json: titleBarStyle "Overlay").
 const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent);
+
+/**
+ * What the pane shows. The first three are pages, each in a webview of its
+ * own; the last two are the app's own screens, drawn here while the pages
+ * park out of sight.
+ */
+type View = PreviewView | "logs" | "mail";
+const PAGES: View[] = ["site", "admin", "database"];
 
 export type PreviewMode = "fit" | "mobile" | "tablet" | "desktop" | "both";
 
@@ -171,7 +184,7 @@ const loaded = new Set<string>();
 const loadedKey = (domain: string, view: PreviewView) => `${domain} ${view}`;
 
 /** The view each site was left on, so going back to a site goes back to it. */
-const viewOf = new Map<string, PreviewView>();
+const viewOf = new Map<string, View>();
 
 /** Sites whose WordPress view has been sent a login link since it last got in. */
 const loggingIn = new Set<string>();
@@ -275,7 +288,7 @@ export default function SitePreview({
   const { reload: reloadSites } = useSites();
   const paneRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<Box | null>(null);
-  const [view, setView] = useState<PreviewView>(() => viewOf.get(site.domain) ?? "site");
+  const [view, setView] = useState<View>(() => viewOf.get(site.domain) ?? "site");
   const [dbUrl, setDbUrl] = useState<string | null>(() => cachedDatabaseUrl(site.domain));
   const [pages, setPages] = useState<Partial<Record<PreviewView, { url: string; loading: boolean }>>>({});
   const [error, setError] = useState<string | null>(null);
@@ -283,6 +296,10 @@ export default function SitePreview({
   const [slow, setSlow] = useState(false);
   /** Asking for Adminer's address the first time, with nothing cached. */
   const [dbBusy, setDbBusy] = useState(false);
+  /** The site's front page, kept from when it was last running. */
+  const [shot, setShot] = useState<string | null>(null);
+  /** A page of wp-admin a shortcut asked for, until the layout carries it. */
+  const [adminPath, setAdminPath] = useState<string | null>(null);
   /** The menu open from the toolbar, drawn in the overlay. */
   const [menuOpen, setMenuOpen] = useState<"open" | "options" | null>(null);
   const preferred = usePreferredApps();
@@ -294,10 +311,12 @@ export default function SitePreview({
   const isWordPress = site.kind === "wordpress";
 
   // A view the site does not have falls back to the site itself.
-  const current: PreviewView =
+  const current: View =
     (view === "admin" && !isWordPress) || (view === "database" && !(site.db_name && dbUrl))
       ? "site"
       : view;
+  /** The page behind the current view, when the view is a page at all. */
+  const nativeView = PAGES.includes(current) ? (current as PreviewView) : null;
 
   useEffect(() => {
     onLayoutError = setError;
@@ -344,6 +363,8 @@ export default function SitePreview({
     [mode, box],
   );
   const showing = hasBackend && visible && site.enabled && !covered && placed.length > 0;
+  /** A page is on screen: Logs and Mail are drawn in its place. */
+  const showingPage = showing && nativeView !== null;
   const toWindow = (f: Placed): PreviewFrame => ({
     slot: f.slot,
     x: f.x + (box?.left ?? 0),
@@ -356,19 +377,50 @@ export default function SitePreview({
   useEffect(() => {
     if (!box) return;
     sendLayout(
-      showing
+      showingPage
         ? {
             domain: site.domain,
-            view: current,
+            view: nativeView!,
             frames: placed.map(toWindow),
-            url: current === "database" ? dbUrl : null,
+            url: current === "database" ? dbUrl : current === "admin" ? adminPath : null,
           }
         : HIDDEN,
     );
-  }, [site.domain, current, dbUrl, showing, placed, box]);
+    // Sent; a later layout -- a resize, say -- must not ask for it again.
+    if (showingPage && adminPath) setAdminPath(null);
+  }, [site.domain, current, nativeView, dbUrl, adminPath, showingPage, placed, box]);
+
+  // A shortcut in the details: show that page of wp-admin, starting the site
+  // when it is not running. The path rides with the layout below, so the view
+  // lands on it whether its webview is already loaded or made for it.
+  useEffect(
+    () =>
+      onPreviewRequest((r) => {
+        if (r.domain !== site.domain) return;
+        setError(null);
+        viewOf.set(site.domain, "admin");
+        setView("admin");
+        setAdminPath(r.path);
+        if (!site.enabled) void start();
+      }),
+    [site.domain, site.enabled],
+  );
 
   // Gone from the screen -- no site, the app settings sheet -- hides it.
   useEffect(() => () => sendLayout(HIDDEN), []);
+
+  // A stopped site shows the page it had when it was last running.
+  useEffect(() => {
+    if (!hasBackend) return;
+    let live = true;
+    void api
+      .siteThumbnail(site.domain)
+      .then((png) => live && setShot(png))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [site.domain, site.enabled]);
 
   // Another site: back to the view it was left on, with nothing reported yet.
   useEffect(() => {
@@ -404,17 +456,17 @@ export default function SitePreview({
   // drawn under it shows: "Loading", and if nothing comes, why.
   const settled = (v: PreviewView) =>
     loaded.has(loadedKey(site.domain, v)) || (pages[v] != null && !pages[v]!.loading);
-  const hasLoaded = settled(current);
+  const hasLoaded = nativeView === null || settled(nativeView);
   const siteLoaded = settled("site");
 
   useEffect(() => {
-    if (!showing || hasLoaded) {
+    if (!showingPage || hasLoaded) {
       setSlow(false);
       return;
     }
     const timer = setTimeout(() => setSlow(true), SLOW_MS);
     return () => clearTimeout(timer);
-  }, [showing, hasLoaded, site.domain, current]);
+  }, [showingPage, hasLoaded, site.domain, current]);
 
   // Once the site's first page is in -- and its login with it -- load
   // WordPress admin and the database behind it, so switching to either is
@@ -455,15 +507,16 @@ export default function SitePreview({
   }, [site.enabled, site.domain]);
 
   const go = (action: PreviewAction) => {
+    if (!nativeView) return;
     setError(null);
     void api
-      .previewGo(site.domain, current, action, current === "database" ? dbUrl : null)
+      .previewGo(site.domain, nativeView, action, current === "database" ? dbUrl : null)
       .catch((e) => setError(errorText(e)));
   };
 
   // A view already on screen goes back to where it starts; another one is
   // shown as it was left.
-  const choose = (next: PreviewView) => {
+  const choose = (next: View) => {
     setError(null);
     if (next === current) {
       go("home");
@@ -551,7 +604,9 @@ export default function SitePreview({
       anchor: menuAnchor(button),
       align: "end",
       items: [
-        { kind: "item", id: "browser", label: "Browser", icon: "browser" },
+        // The browser needs the site being served; the folder is there
+        // either way, so Finder, the editor and the terminal still work.
+        { kind: "item", id: "browser", label: "Browser", icon: "browser", disabled: !live },
         { kind: "item", id: "finder", label: "Finder", icon: "finder" },
         // Named for the apps chosen in App settings, as Overview names them.
         { kind: "item", id: "editor", label: preferred.editor ?? "Code editor", icon: "editor" },
@@ -580,6 +635,8 @@ export default function SitePreview({
     "grid h-7 w-7 flex-shrink-0 place-items-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-blue/30 disabled:pointer-events-none disabled:opacity-40";
   const live = hasBackend && site.enabled;
   const loadingText = {
+    logs: "",
+    mail: "",
     site: isWordPress ? `Logging in to ${label}…` : `Loading ${label}…`,
     admin: "Opening WordPress admin…",
     database: "Opening the database…",
@@ -595,40 +652,48 @@ export default function SitePreview({
           fullPreview && isMac ? "pl-[88px]" : "pl-2",
         )}
       >
-        <button
-          type="button"
-          onClick={() => go("reload")}
-          disabled={!live}
-          aria-label="Reload"
-          title="Reload"
-          className={toolButton}
-        >
-          <ArrowPathIcon className={clsx("h-4 w-4", pages[current]?.loading && "animate-spin")} />
-        </button>
-        <button
-          type="button"
-          onClick={() => go("back")}
-          disabled={!live}
-          aria-label="Back"
-          title="Back"
-          className={toolButton}
-        >
-          <ArrowLeftIcon className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => go("forward")}
-          disabled={!live}
-          aria-label="Forward"
-          title="Forward"
-          className={toolButton}
-        >
-          <ArrowRightIcon className="h-4 w-4" />
-        </button>
+        {/* A stopped site has nothing to reload, and nowhere to go back
+            to: its toolbar is only the ways out of the preview. */}
+        {live && nativeView && (
+          <>
+          <button
+            type="button"
+            onClick={() => go("reload")}
+            disabled={!live}
+            aria-label="Reload"
+            title="Reload"
+            className={toolButton}
+          >
+            <ArrowPathIcon className={clsx("h-4 w-4", nativeView && pages[nativeView]?.loading && "animate-spin")} />
+          </button>
+          <button
+            type="button"
+            onClick={() => go("back")}
+            disabled={!live}
+            aria-label="Back"
+            title="Back"
+            className={toolButton}
+          >
+            <ArrowLeftIcon className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => go("forward")}
+            disabled={!live}
+            aria-label="Forward"
+            title="Forward"
+            className={toolButton}
+          >
+            <ArrowRightIcon className="h-4 w-4" />
+          </button>
+          </>
+        )}
 
         <div className="mx-1 flex min-w-0 flex-1 justify-center">
           {/* What the preview shows: the site, WordPress admin, or the
-              database. The one it is on carries its name. */}
+              database. The one it is on carries its name. Only while the
+              site is running: stopped, there is nothing to show. */}
+          {live && (
           <div
             role="group"
             aria-label="Show in the preview"
@@ -675,7 +740,26 @@ export default function SitePreview({
                 Database
               </Segment>
             )}
+            <Segment
+              selected={current === "logs"}
+              onClick={() => choose("logs")}
+              disabled={!live}
+              label="Logs"
+              icon={<DocumentTextIcon className="h-4 w-4" />}
+            >
+              Logs
+            </Segment>
+            <Segment
+              selected={current === "mail"}
+              onClick={() => choose("mail")}
+              disabled={!live}
+              label="Mail"
+              icon={<EnvelopeIcon className="h-4 w-4" />}
+            >
+              Mail
+            </Segment>
           </div>
+          )}
         </div>
 
         {/* Open the site elsewhere. One button, the whole of it opening the
@@ -698,23 +782,24 @@ export default function SitePreview({
           <ArrowTopRightOnSquareIcon className="h-4 w-4" />
           <ChevronDownIcon className="h-3 w-3 text-gray-400" strokeWidth={2.5} />
         </button>
-        <button
-          type="button"
-          onClick={(e) => void openOptions(e.currentTarget)}
-          disabled={!hasBackend}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen === "options"}
-          aria-label="Preview options"
-          title="Preview options"
-          className={clsx(toolButton, menuOpen === "options" && "bg-gray-100 text-gray-900")}
-        >
-          <EllipsisVerticalIcon className="h-4 w-4" />
-        </button>
+        {live && nativeView && (
+          <button
+            type="button"
+            onClick={(e) => void openOptions(e.currentTarget)}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen === "options"}
+            aria-label="Preview options"
+            title="Preview options"
+            className={clsx(toolButton, menuOpen === "options" && "bg-gray-100 text-gray-900")}
+          >
+            <EllipsisVerticalIcon className="h-4 w-4" />
+          </button>
+        )}
       </div>
 
       {/* A page load in progress, under the toolbar. */}
       <div className="relative h-0.5 flex-shrink-0 overflow-hidden">
-        {live && pages[current]?.loading && (
+        {live && nativeView && pages[nativeView]?.loading && (
           <div className="absolute inset-y-0 left-0 w-1/3 animate-preview-load bg-wp-blue" />
         )}
       </div>
@@ -744,7 +829,18 @@ export default function SitePreview({
           </div>
         ))}
 
-        {showing && !hasLoaded && (
+        {live && current === "logs" && (
+          <div className="absolute inset-0 bg-white">
+            <SiteLogs domain={site.domain} />
+          </div>
+        )}
+        {live && current === "mail" && (
+          <div className="absolute inset-0 bg-white">
+            <MailTab site={site} />
+          </div>
+        )}
+
+        {showingPage && !hasLoaded && (
           <div className="absolute inset-0 flex items-center justify-center p-6">
             {slow ? (
               <Note title={`${label} isn't loading`}>
@@ -777,21 +873,50 @@ export default function SitePreview({
         )}
 
         {!showing && (
-          <div className="absolute inset-0 flex items-center justify-center p-6">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-gray-50 p-6">
             {!hasBackend ? (
               <Note title="Live preview">The site shows here in the desktop app.</Note>
             ) : !site.enabled ? (
-              <Note title={`${label} is stopped`}>
-                <button
-                  type="button"
-                  onClick={() => void start()}
-                  disabled={starting}
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-gray-800 disabled:opacity-60"
-                >
-                  <PlayIcon className="h-4 w-4" />
-                  {starting ? "Starting…" : "Start site"}
-                </button>
-              </Note>
+              <>
+                {/* The front page as it was when the site last ran, or --
+                    never having run -- a page in its shape, so the pane has
+                    the site in it rather than nothing. */}
+                {shot ? (
+                  <img
+                    src={shot}
+                    alt=""
+                    className="max-h-[55%] w-[420px] max-w-full rounded-lg object-cover object-top shadow-lg ring-1 ring-black/5"
+                  />
+                ) : (
+                  <div
+                    aria-hidden
+                    className="w-[300px] rounded-lg bg-white p-5 shadow-lg ring-1 ring-black/5"
+                  >
+                    <p className="truncate text-[11px] font-semibold text-gray-800">{label}</p>
+                    <div className="mt-1.5 h-1.5 w-14 rounded bg-gray-200" />
+                    <div className="mt-8 h-2.5 w-28 rounded bg-gray-300" />
+                    <div className="mt-3 space-y-1.5">
+                      <div className="h-1.5 w-full rounded bg-gray-200" />
+                      <div className="h-1.5 w-11/12 rounded bg-gray-200" />
+                      <div className="h-1.5 w-2/3 rounded bg-gray-200" />
+                    </div>
+                    <div className="mt-8 h-1.5 w-16 rounded bg-gray-200" />
+                  </div>
+                )}
+                <div className="flex flex-col items-center gap-3">
+                  <p className="text-[13px] text-gray-600">Start the site to see a live preview.</p>
+                  <button
+                    type="button"
+                    onClick={() => void start()}
+                    disabled={starting}
+                    aria-busy={starting || undefined}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-wp-blue px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-wp-blue-dark focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-blue/40 disabled:opacity-60"
+                  >
+                    <PlayIcon className="h-4 w-4" />
+                    {starting ? "Starting…" : "Start site"}
+                  </button>
+                </div>
+              </>
             ) : null}
           </div>
         )}

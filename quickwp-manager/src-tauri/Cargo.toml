@@ -28,3 +28,13 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
+base64 = "0.22"
+
+# Drawing a loaded page into a picture is WebKit's job, and only its own
+# API can ask (src/thumb.rs). Versions follow the ones wry already builds.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["std", "NSData", "NSDictionary", "NSError", "NSValue"] }
+objc2-app-kit = { version = "0.3", features = ["std", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
+objc2-web-kit = { version = "0.3", features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKSnapshotConfiguration"] }

@@ -15,6 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 mod overlay;
 mod preview;
+mod thumb;
 
 struct AppState {
     app: Nexora,
@@ -3022,6 +3023,7 @@ pub fn run() {
             overlay::overlay_show,
             overlay::overlay_hide,
             overlay::overlay_current,
+            thumb::site_thumbnail,
         ])
         .on_window_event(|window, event| match event {
             // Closing the window is quitting: it goes through the same choice

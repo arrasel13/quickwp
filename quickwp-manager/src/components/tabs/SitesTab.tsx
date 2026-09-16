@@ -21,12 +21,10 @@ import clsx from "clsx";
 import { Fragment } from "react";
 import SiteOverview from "../site/SiteOverview";
 import SitePreview, { type PreviewMode } from "../site/SitePreview";
+import SiteHeaderMenu from "../site/SiteHeaderMenu";
 import { usePref } from "../../lib/usePref";
 import SiteWordPress from "../site/SiteWordPress";
-import SiteLogs from "../site/SiteLogs";
 import SiteSettings from "../site/SiteSettings";
-import MailTab from "./MailTab";
-import SiteAvatar from "../SiteAvatar";
 import WindowDragStrip from "../WindowDragStrip";
 import { unlessWindowDrag } from "../../lib/windowDrag";
 import { useSites } from "../../lib/sites";
@@ -160,6 +158,10 @@ const noAutoFill = {
   spellCheck: false,
 } as const;
 
+// The traffic lights sit over the page on macOS (tauri.conf.json:
+// titleBarStyle "Overlay").
+const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent);
+
 /** Narrowest the details pane goes, and the least it leaves the preview. */
 const MIN_DETAILS = 360;
 const MIN_PREVIEW = 320;
@@ -174,7 +176,7 @@ interface ProjectOption {
   available?: boolean;
 }
 
-export default function SitesTab() {
+export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: boolean }) {
   // Real sites, from the Rust backend. There is no mock data here any more:
   // an empty list means you have not created a site yet, and says so.
   // Whether the stack can serve a real name yet decides which URL is honest.
@@ -316,14 +318,12 @@ export default function SitesTab() {
     error: string | null;
   } | null>(null);
 
-  // The database and a terminal are not tabs here: the preview beside the
-  // details shows the database in Adminer, and its open menu starts the
-  // terminal. The panels below follow this order.
+  // What is shown beside the details is not a tab here: the preview shows
+  // the database, the logs and the mail, and its open menu starts a terminal.
+  // The panels below follow this order.
   const siteDetailTabs = [
     { name: "Overview", id: "overview" },
     { name: "WordPress", id: "wordpress" },
-    { name: "Logs", id: "logs" },
-    { name: "Mail", id: "mail" },
     { name: "Settings", id: "settings" },
   ];
 
@@ -707,37 +707,16 @@ export default function SitesTab() {
         }
       >
       {/* Header: the site in view, named the way the sidebar names it. */}
-      <div data-tauri-drag-region="deep" className="flex flex-shrink-0 items-center gap-3 px-4 pt-4 pb-3">
-        <div className="inline-flex min-w-0 max-w-full items-center gap-3 rounded-md bg-gray-900 py-1.5 pl-1.5 pr-4 text-white">
-          <SiteAvatar
-            name={selectedBackendSite?.name || selectedSite.name}
-            className="h-9 w-9 text-sm"
-          />
-          <div className="min-w-0">
-            <div className="truncate text-[13px] font-semibold leading-5">
-              {selectedBackendSite?.name || selectedSite.name}
-            </div>
-            <div className="truncate text-[11px] leading-4 text-gray-300">
-              {selectedSite.name}
-            </div>
-          </div>
-        </div>
-        <span
-          className={clsx(
-            "inline-flex flex-shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors duration-300",
-            selectedSite.status === "running"
-              ? "bg-green-50 text-green-700"
-              : "bg-gray-100 text-gray-500",
-          )}
-        >
-          <span
-            className={clsx(
-              "h-1.5 w-1.5 rounded-full",
-              selectedSite.status === "running" ? "bg-green-500" : "bg-gray-400",
-            )}
-          />
-          {selectedSite.status === "running" ? "Running" : "Stopped"}
-        </span>
+      <div
+        data-tauri-drag-region="deep"
+        className={clsx(
+          "flex-shrink-0 px-3 pb-3",
+          // With no sidebar the window's traffic lights are over this row, so
+          // the site drops below them rather than being pushed aside.
+          sidebarHidden && isMac ? "pt-10" : "pt-5",
+        )}
+      >
+        {selectedBackendSite && <SiteHeaderMenu site={selectedBackendSite} />}
       </div>
 
       {/* Main Content */}
@@ -799,19 +778,8 @@ export default function SitesTab() {
                 )}
               </LazyPanel>
 
-              {/* Logs */}
-              <LazyPanel seen={visited.has(2)} className="h-full overflow-hidden">
-                <SiteLogs domain={selectedSite.name} />
-              </LazyPanel>
-
-              {/* Mail — one Mailpit catches what every site sends; this tab
-                  shows this site's share of it, or everything. */}
-              <LazyPanel seen={visited.has(3)} className="h-full overflow-hidden">
-                <MailTab site={selectedBackendSite ?? null} />
-              </LazyPanel>
-
               {/* Settings */}
-              <LazyPanel seen={visited.has(4)} className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(2)} className="h-full overflow-y-auto">
                 {selectedBackendSite ? (
                   <SiteSettings
                     site={selectedBackendSite}

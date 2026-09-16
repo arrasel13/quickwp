@@ -791,6 +791,11 @@ export const api = {
    */
   previewGo: (domain: string, view: PreviewView, action: PreviewAction, url?: string | null) =>
     call<void>("preview_go", { domain, view, action, url: url ?? null }),
+  /**
+   * A picture of the site's front page as a data URI, kept from the last
+   * time the preview showed it. Null for a site never seen running.
+   */
+  siteThumbnail: (domain: string) => call<string | null>("site_thumbnail", { domain }),
   /** Load the menu overlay, hidden. See src/lib/overlay.ts. */
   overlayPrepare: () => call<void>("overlay_prepare"),
   /** Show a menu in the overlay, over a window of this size. */

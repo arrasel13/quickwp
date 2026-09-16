@@ -4,20 +4,28 @@ import {
   CodeBracketIcon,
   CommandLineIcon,
   DocumentDuplicateIcon,
-  DocumentTextIcon,
   FolderOpenIcon,
-  PaintBrushIcon,
   PhotoIcon,
-  PencilSquareIcon,
-  RectangleGroupIcon,
-  RectangleStackIcon,
-  Squares2X2Icon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend, Site } from "../../lib/api";
 import { peekCache, putCache } from "../../lib/useAsync";
 import { withKnownUpdates } from "./SiteWordPress";
 import { usePreferredApps } from "../../lib/usePreferredApps";
+import { openInPreview } from "../../lib/previewBus";
+import {
+  MediaIcon,
+  NavigationIcon,
+  PagesIcon,
+  PatternsIcon,
+  PluginsIcon,
+  PostsIcon,
+  SiteEditorIcon,
+  StylesIcon,
+  TemplatesIcon,
+  ThemesIcon,
+  UsersIcon,
+} from "../ui/WpIcons";
 import ConfirmDialog from "../ui/ConfirmDialog";
 
 type WpStatus = Awaited<ReturnType<typeof api.wpStatus>>;
@@ -55,9 +63,10 @@ export default function SiteOverview({ site }: { site: Site }) {
   const [wpVersion, setWpVersion] = useState<string | null>(null);
   const [theme, setTheme] = useState<{ title: string; name: string } | null>(null);
   const [thumb, setThumb] = useState<string | null>(null);
+  /** The site's own front page, kept from the last time the preview showed it. */
+  const [shot, setShot] = useState<string | null>(null);
   const [disk, setDisk] = useState<number | null>(null);
   const [admin, setAdmin] = useState<{ login: string; email: string } | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The admin password: the one saved in the login keychain at install, or
@@ -94,9 +103,20 @@ export default function SiteOverview({ site }: { site: Site }) {
     setWpVersion(peekCache<WpStatus>(`wp-status:${d}`)?.version ?? null);
     setTheme(theme);
     setThumb(theme ? (peekCache<string | null>(`wp-thumb:${d}:${theme.name}`) ?? null) : null);
+    setShot(peekCache<string | null>(`site-shot:${d}`) ?? null);
     setAdmin(users ? pickAdmin(users) : null);
 
     if (hasBackend) {
+      // What the site itself looks like beats the theme's own picture of
+      // itself, which is the same for everyone running that theme.
+      void api
+        .siteThumbnail(d)
+        .then((png) => {
+          putCache(`site-shot:${d}`, png);
+          if (live) setShot(png);
+        })
+        .catch(() => {});
+
       void api
         .siteDiskUsage(d)
         .then((b) => {
@@ -167,9 +187,9 @@ export default function SiteOverview({ site }: { site: Site }) {
     };
   }, [site.domain, isWordPress, refresh]);
 
+  // `_id` names what is running, for callers that read like a log of it.
   const run = useCallback(
-    async (id: string, fn: () => Promise<unknown>, success?: (r: unknown) => string) => {
-      setBusy(id);
+    async (_id: string, fn: () => Promise<unknown>, success?: (r: unknown) => string) => {
       setNote(null);
       setError(null);
       try {
@@ -177,8 +197,6 @@ export default function SiteOverview({ site }: { site: Site }) {
         if (success) setNote(success(r));
       } catch (e) {
         setError(errorText(e));
-      } finally {
-        setBusy(null);
       }
     },
     [],
@@ -201,124 +219,57 @@ export default function SiteOverview({ site }: { site: Site }) {
 
   // One wp-admin launch at a time: each one mints a login token, and a
   // double-clicked shortcut would otherwise open two tabs.
-  const openAdmin = (path?: string) => {
-    if (busy) return;
-    void run(path ?? "admin", () => api.wpOpenAdmin(site.domain, path));
-  };
+  // The preview beside the details shows wp-admin, logged in and already
+  // loaded, so a shortcut is a switch rather than a browser opening cold.
+  const openAdmin = (path: string) => openInPreview(site.domain, path);
 
   return (
-    <div className="p-6">
-      <div className="mx-auto grid max-w-6xl gap-x-10 gap-y-8 pane-lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
-        {/* ---------------------------------------------- left: the facts */}
-        <div className="space-y-8">
-          {isWordPress && installState === "not_installed" && (
-            <section className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-              <p className="text-sm font-semibold text-amber-900">
-                WordPress isn't set up in this site's database
-              </p>
-              <p className="mt-1 text-xs leading-relaxed text-amber-900">
-                The site's files are here, but its database is empty — likely removed along with
-                Nexora's data folder — so there is no theme, preview or admin account to show.
-                Setting it up again brings those back with the saved admin login. Posts and pages
-                from before can't be recovered.
-              </p>
-              <button
-                onClick={() => void setUpAgain()}
-                disabled={settingUp}
-                className="mt-3 inline-flex items-center gap-2 rounded-md bg-wp-blue px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-wp-blue-dark disabled:cursor-wait disabled:opacity-70"
-              >
-                {settingUp && (
-                  <span
-                    aria-hidden
-                    className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
-                  />
-                )}
-                {settingUp ? "Setting up…" : "Set up WordPress again"}
-              </button>
-            </section>
-          )}
+    <div className="space-y-8 p-6">
+      {isWordPress && installState === "not_installed" && (
+        <section className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-sm font-semibold text-amber-900">
+            WordPress isn't set up in this site's database
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-amber-900">
+            The site's files are here, but its database is empty — likely removed along with
+            Nexora's data folder — so there is no theme, preview or admin account to show.
+            Setting it up again brings those back with the saved admin login. Posts and pages
+            from before can't be recovered.
+          </p>
+          <button
+            onClick={() => void setUpAgain()}
+            disabled={settingUp}
+            className="mt-3 inline-flex items-center gap-2 rounded-md bg-wp-blue px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-wp-blue-dark disabled:cursor-wait disabled:opacity-70"
+          >
+            {settingUp && (
+              <span
+                aria-hidden
+                className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
+              />
+            )}
+            {settingUp ? "Setting up…" : "Set up WordPress again"}
+          </button>
+        </section>
+      )}
 
-          <section>
-            <h2 className="mb-3 text-sm font-semibold text-gray-900">About</h2>
-            <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-              <div className="flex gap-4">
-                <div className="h-[74px] w-[102px] flex-shrink-0 overflow-hidden rounded border border-gray-200 bg-gray-50">
-                  {thumb ? (
-                    <img
-                      src={thumb}
-                      alt=""
-                      className="h-full w-full object-cover object-top"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center">
-                      <PhotoIcon className="h-5 w-5 text-gray-300" />
-                    </div>
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-[11px] text-gray-500">
-                    {isWordPress ? "Theme" : "Kind"}
-                  </p>
-                  <p className="truncate text-sm font-semibold text-gray-900">
-                    {isWordPress ? (theme?.title ?? "—") : site.kind}
-                  </p>
-                  <p className="mt-1 text-[11px] text-gray-500">
-                    {isWordPress && wpVersion ? `WP v${wpVersion} · ` : ""}
-                    PHP v{site.php_minor}
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-4">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-[11px] font-medium text-gray-600">Disk</span>
-                  <span className="text-[11px] text-gray-900">
-                    {disk === null ? "measuring…" : formatBytes(disk)}
-                  </span>
-                </div>
-                <DiskBar bytes={disk} />
-              </div>
-            </div>
-          </section>
-
-          {isWordPress && (
-            <section>
-              <h2 className="mb-3 text-sm font-semibold text-gray-900">WP Admin</h2>
-              <div className="space-y-5 rounded-md border border-gray-200 bg-white px-5 py-4">
-                <CopyField label="Username" value={admin?.login ?? null} />
-                {/* Masked. Copies the password saved when the site was made.
-                    A site with none saved -- made before Nexora kept them, or
-                    changed outside it -- is offered a new one instead, after
-                    asking. */}
-                <CopyField
-                  label="Password"
-                  value={admin ? "••••••••••••" : null}
-                  onCopy={() => {
-                    if (password) return password;
-                    setConfirmReset(true);
-                    return null;
-                  }}
-                />
-                <CopyField label="Email" value={admin?.email || null} />
-              </div>
-            </section>
-          )}
-        </div>
-
-        {/* --------------------------------------- right: somewhere to go */}
+      <div className="mx-auto grid max-w-6xl gap-x-10 gap-y-8 pane-lg:grid-cols-[minmax(0,1fr)_minmax(0,340px)]">
+        {/* ----------------------------------------- somewhere to go */}
         <div className="space-y-8">
           {isWordPress && (
             <section>
               <h2 className="mb-3 text-sm font-semibold text-gray-900">Shortcuts</h2>
               <Grid>
-                <Tile icon={PencilSquareIcon} label="Site Editor" onClick={() => openAdmin("site-editor.php")} />
-                <Tile icon={PaintBrushIcon} label="Styles" onClick={() => openAdmin("site-editor.php?path=%2Fwp_global_styles")} />
-                <Tile icon={Squares2X2Icon} label="Patterns" onClick={() => openAdmin("site-editor.php?path=%2Fpatterns")} />
-                <Tile icon={RectangleGroupIcon} label="Navigation" onClick={() => openAdmin("site-editor.php?path=%2Fnavigation")} />
-                <Tile icon={RectangleStackIcon} label="Templates" onClick={() => openAdmin("site-editor.php?path=%2Ftemplate")} />
-                <Tile icon={DocumentTextIcon} label="Posts" onClick={() => openAdmin("edit.php")} />
-                <Tile icon={DocumentDuplicateIcon} label="Pages" onClick={() => openAdmin("edit.php?post_type=page")} />
-                <Tile icon={PhotoIcon} label="Media Library" onClick={() => openAdmin("upload.php")} />
+                <Tile icon={SiteEditorIcon} label="Site Editor" onClick={() => openAdmin("site-editor.php")} />
+                <Tile icon={StylesIcon} label="Styles" onClick={() => openAdmin("site-editor.php?path=%2Fwp_global_styles")} />
+                <Tile icon={PatternsIcon} label="Patterns" onClick={() => openAdmin("site-editor.php?path=%2Fpatterns")} />
+                <Tile icon={NavigationIcon} label="Navigation" onClick={() => openAdmin("site-editor.php?path=%2Fnavigation")} />
+                <Tile icon={TemplatesIcon} label="Templates" onClick={() => openAdmin("site-editor.php?path=%2Ftemplate")} />
+                <Tile icon={PostsIcon} label="Posts" onClick={() => openAdmin("edit.php")} />
+                <Tile icon={PagesIcon} label="Pages" onClick={() => openAdmin("edit.php?post_type=page")} />
+                <Tile icon={MediaIcon} label="Media Library" onClick={() => openAdmin("upload.php")} />
+                <Tile icon={PluginsIcon} label="Plugins" onClick={() => openAdmin("plugins.php")} />
+                <Tile icon={ThemesIcon} label="Themes" onClick={() => openAdmin("themes.php")} />
+                <Tile icon={UsersIcon} label="Users" onClick={() => openAdmin("users.php")} />
               </Grid>
             </section>
           )}
@@ -365,6 +316,75 @@ export default function SiteOverview({ site }: { site: Site }) {
             </p>
           )}
         </div>
+
+        {/* ------- the facts, under it: what the site is, and its login */}
+        <div className="space-y-8">
+          {isWordPress && (
+            <section>
+              <h2 className="mb-3 text-sm font-semibold text-gray-900">WP Admin</h2>
+              <div className="space-y-5 rounded-md border border-gray-200 bg-white px-5 py-4">
+                <CopyField label="Username" value={admin?.login ?? null} />
+                {/* Masked. Copies the password saved when the site was made.
+                    A site with none saved -- made before Nexora kept them, or
+                    changed outside it -- is offered a new one instead, after
+                    asking. */}
+                <CopyField
+                  label="Password"
+                  value={admin ? "••••••••••••" : null}
+                  onCopy={() => {
+                    if (password) return password;
+                    setConfirmReset(true);
+                    return null;
+                  }}
+                />
+                <CopyField label="Email" value={admin?.email || null} />
+              </div>
+            </section>
+          )}
+
+          <section>
+            <h2 className="mb-3 text-sm font-semibold text-gray-900">About</h2>
+            <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+              <div className="flex gap-4">
+                <div className="h-[74px] w-[102px] flex-shrink-0 overflow-hidden rounded border border-gray-200 bg-gray-50">
+                  {(shot ?? thumb) ? (
+                    <img
+                      src={shot ?? thumb!}
+                      alt=""
+                      className="h-full w-full object-cover object-top"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center">
+                      <PhotoIcon className="h-5 w-5 text-gray-300" />
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] text-gray-500">
+                    {isWordPress ? "Theme" : "Kind"}
+                  </p>
+                  <p className="truncate text-sm font-semibold text-gray-900">
+                    {isWordPress ? (theme?.title ?? "—") : site.kind}
+                  </p>
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    {isWordPress && wpVersion ? `WP v${wpVersion} · ` : ""}
+                    PHP v{site.php_minor}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-[11px] font-medium text-gray-600">Disk</span>
+                  <span className="text-[11px] text-gray-900">
+                    {disk === null ? "measuring…" : formatBytes(disk)}
+                  </span>
+                </div>
+                <DiskBar bytes={disk} />
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
 
       <ConfirmDialog
@@ -410,7 +430,7 @@ export default function SiteOverview({ site }: { site: Site }) {
 // ---------------------------------------------------------------- bits
 
 function Grid({ children }: { children: React.ReactNode }) {
-  return <div className="grid gap-3 pane-sm:grid-cols-2 pane-xl:grid-cols-3">{children}</div>;
+  return <div className="grid grid-cols-2 gap-2.5 pane-xl:grid-cols-3">{children}</div>;
 }
 
 function Tile({
@@ -431,7 +451,7 @@ function Tile({
       onClick={onClick}
       disabled={disabled}
       className={clsx(
-        "flex items-center gap-2.5 rounded-lg border border-gray-200 bg-white px-3.5 py-3 text-left text-sm font-medium shadow-sm transition-colors disabled:opacity-50",
+        "flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-left text-[12px] font-medium shadow-sm transition-colors disabled:opacity-50",
         destructive
           ? "text-red-700 hover:bg-red-50"
           : "text-gray-800 hover:bg-gray-50",

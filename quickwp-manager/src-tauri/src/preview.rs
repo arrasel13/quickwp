@@ -131,6 +131,23 @@ fn adminer_address(state: &State<'_, AppState>, url: Option<&str>) -> Res<Url> {
     Ok(url)
 }
 
+/// A page of wp-admin, as the details' shortcuts name it: "edit.php",
+/// "site-editor.php?path=%2Fpatterns". Bounded to this site's admin, so a path
+/// from the UI cannot point the logged-in view anywhere else.
+fn admin_page(base: &str, path: Option<&str>) -> Res<Url> {
+    // Checked as it came, not after tidying: trimming the slashes off "//host"
+    // first would have turned it into a page name and let it through.
+    let page = path.unwrap_or("");
+    let bad = page.contains("://")
+        || page.starts_with('/')
+        || page.contains('\\')
+        || page.split(['?', '#']).next().unwrap_or("").contains("..");
+    if bad {
+        return Err(format!("`{page}` is not a page of wp-admin"));
+    }
+    parse(&format!("{base}/wp-admin/{page}"))
+}
+
 /// Where the preview reaches a site.
 ///
 /// Its own https address when 443 really serves it with Nexora's certificate.
@@ -216,8 +233,9 @@ fn create(
         }
         "site" => home.clone(),
         // With the login the site view made. If there is none, WordPress shows
-        // its login form, and the UI asks for a login link then.
-        "admin" => parse(&format!("{base}/wp-admin/"))?,
+        // its login form, and the UI asks for a login link then. A shortcut in
+        // the details opens its own page of the admin.
+        "admin" => admin_page(&base, url)?,
         _ => adminer_address(state, url)?,
     };
     qlog::info(
@@ -227,6 +245,7 @@ fn create(
 
     let page = {
         let (domain, view, slot) = (domain.to_string(), view.to_string(), f.slot.clone());
+        let base = base.clone();
         move |wv: Webview, p: tauri::webview::PageLoadPayload<'_>| {
             let _ = wv.app_handle().emit_to(
                 "main",
@@ -239,6 +258,11 @@ fn create(
                     loading: matches!(p.event(), PageLoadEvent::Started),
                 },
             );
+            // With the site up, keep a picture of its front page, for when
+            // it is not.
+            if view == "site" && slot == "main" && matches!(p.event(), PageLoadEvent::Finished) {
+                crate::thumb::refresh(&wv.window(), &domain, &base);
+            }
         }
     };
 
@@ -281,8 +305,11 @@ fn create(
 
 /// Put one view of `domain`'s preview where `frames` say, and hide every other
 /// one. No domain, or no frames, hides them all: a dialog is open, the site is
-/// stopped, or the pane is closed. `url` is Adminer's address, needed the
-/// first time the database view is shown.
+/// stopped, or the pane is closed.
+///
+/// `url` is Adminer's address for the database view, and a page of wp-admin
+/// for the WordPress one -- the view goes to it, whether it is being made now
+/// or was already loaded.
 #[tauri::command(async)]
 pub fn preview_layout(
     window: Window,
@@ -308,6 +335,12 @@ pub fn preview_layout(
                 Some(wv) => {
                     let _ = wv.set_position(LogicalPosition::new(f.x, f.y));
                     let _ = wv.set_size(LogicalSize::new(f.width, f.height));
+                    // A shortcut asking for a page of an admin already loaded.
+                    if view == "admin" && url.is_some() {
+                        if let Some(base) = inner.base.get(&domain).cloned() {
+                            let _ = wv.navigate(admin_page(&base, url.as_deref())?);
+                        }
+                    }
                     wv
                 }
                 None => create(&window, &state, &mut inner, &domain, &view, f, url.as_deref(), false)?,
@@ -472,6 +505,26 @@ mod tests {
         assert!(l.chars().all(|c| c.is_ascii_alphanumeric() || "-/:_".contains(c)));
         assert!(l.starts_with(&view_prefix("my-site.test", "admin")));
         assert!(!label("my-site.test", "site", "main").starts_with(&view_prefix("my-site.test", "admin")));
+    }
+
+    #[test]
+    fn an_admin_page_stays_inside_this_site_s_admin() {
+        let ok = |p: &str| super::admin_page("http://a.test:1", Some(p)).map(|u| u.to_string());
+        assert_eq!(ok("edit.php").unwrap(), "http://a.test:1/wp-admin/edit.php");
+        assert_eq!(
+            ok("site-editor.php?path=%2Fpatterns").unwrap(),
+            "http://a.test:1/wp-admin/site-editor.php?path=%2Fpatterns"
+        );
+        // A path that would leave the admin, or the site, is not one.
+        assert!(ok("https://example.com").is_err());
+        assert!(ok("//example.com").is_err());
+        assert!(ok("../../wp-config.php").is_err());
+        assert!(ok("..\\evil").is_err());
+        // Nothing asked for is the admin itself.
+        assert_eq!(
+            super::admin_page("http://a.test:1", None).unwrap().to_string(),
+            "http://a.test:1/wp-admin/"
+        );
     }
 
     #[test]
