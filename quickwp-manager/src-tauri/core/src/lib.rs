@@ -253,6 +253,99 @@ impl Nexora {
         Ok(removed)
     }
 
+    /// Copy a site: its folder, its database, and its address throughout both.
+    ///
+    /// The copy is a site of its own -- `<name>-copy.<tld>`, then `-copy-2` and
+    /// on -- with its own folder under the sites directory and its own database
+    /// and user; the saved admin login comes with it. The original is only
+    /// read. A copy that cannot be finished is taken down again rather than
+    /// left half made.
+    pub fn duplicate_site(&self, domain: &str) -> Result<site::Site> {
+        let src = site::find(&self.db, domain)?
+            .ok_or_else(|| Error::other(format!("no site answers on `{domain}`")))?;
+        let label = src.domain.split('.').next().unwrap_or(&src.domain).to_string();
+        let tld = self.db.tld()?;
+        // Free as a site and as a folder: a folder left from a deleted site
+        // would otherwise have the copy poured into it.
+        let taken = |d: &str| {
+            site::find(&self.db, d).ok().flatten().is_some()
+                || paths::sites().join(d.split('.').next().unwrap_or(d)).exists()
+        };
+        let new_domain = (1..)
+            .map(|n| match n {
+                1 => format!("{label}-copy.{tld}"),
+                n => format!("{label}-copy-{n}.{tld}"),
+            })
+            .find(|d| !taken(d))
+            .expect("a copy name is always free eventually");
+        let name = if src.name.trim().is_empty() { &src.domain } else { &src.name };
+
+        let created = site::create(
+            &self.db,
+            &site::NewSite {
+                name: format!("{name} copy"),
+                domain: new_domain.clone(),
+                kind: src.kind.clone(),
+                php_minor: src.php_minor.clone(),
+                link_path: None,
+            },
+        )?;
+
+        let finished = (|| -> Result<site::Site> {
+            paths::copy_tree(std::path::Path::new(&src.docroot), std::path::Path::new(&created.docroot))?;
+
+            if let Some(src_db) = src.db_name.clone().filter(|n| !n.is_empty()) {
+                let series = src
+                    .db_engine
+                    .clone()
+                    .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string());
+                database::start(&self.sup, &series)?;
+                let creds = database::create_for_site(&series, &new_domain)?;
+                let dump = std::env::temp_dir().join(format!("nexora-copy-{}.sql", creds.name));
+                database::dump_to(&series, &src_db, &dump)?;
+                let loaded = database::import(&series, &creds.name, &dump);
+                let _ = std::fs::remove_file(&dump);
+                loaded?;
+                site::set_database(&self.db, created.id, &series, &creds.name)?;
+
+                let copy = site::find(&self.db, &new_domain)?
+                    .ok_or_else(|| Error::other("the copy vanished while it was being made"))?;
+                if std::path::Path::new(&copy.docroot).join("wp-config.php").exists() {
+                    // The copied wp-config.php still names the original's
+                    // database, and every stored URL still points at it.
+                    wptools::config_set(&copy, "DB_NAME", &creds.name)?;
+                    wptools::config_set(&copy, "DB_USER", &creds.user)?;
+                    wptools::config_set(&copy, "DB_PASSWORD", &creds.password)?;
+                    wordpress::search_replace(
+                        &copy,
+                        &format!("//{}", src.domain),
+                        &format!("//{new_domain}"),
+                        false,
+                    )?;
+                }
+            }
+
+            for login in secrets::logins(&src.domain) {
+                if let Some(password) = secrets::password(&src.domain, &login) {
+                    let _ = secrets::remember(&new_domain, &login, &password);
+                }
+            }
+            site::find(&self.db, &new_domain)?
+                .ok_or_else(|| Error::other("the copy vanished while it was being made"))
+        })();
+
+        match finished {
+            Ok(copy) => {
+                log::info("sites", &format!("{} duplicated as {}", src.domain, copy.domain));
+                Ok(copy)
+            }
+            Err(e) => {
+                let _ = self.delete_site(&new_domain);
+                Err(e)
+            }
+        }
+    }
+
     /// Issue a certificate for a site if the one on disk does not already cover
     /// every name it answers on. Compared against the name SET, not file
     /// existence -- see `ca::covers`.

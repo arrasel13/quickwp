@@ -10,6 +10,7 @@ import {
 import clsx from "clsx";
 import { api } from "../../lib/api";
 import type { OverlayIcon, OverlayMenu } from "../../lib/overlay";
+import CertDetails from "../site/CertDetails";
 import "../../App.css";
 
 const ICONS: Record<OverlayIcon, React.ComponentType<{ className?: string }>> = {
@@ -79,6 +80,8 @@ function Panel({ menu, onChoose }: { menu: OverlayMenu; onChoose: (id: string) =
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const checkable = menu.items.some((i) => i.kind === "item" && i.checked !== undefined);
+  /** A card rather than a list: it lays out its own padding and width. */
+  const card = menu.items.some((i) => i.kind === "cert");
 
   // Beside its button, kept inside the window: above it when there is no room
   // below. Measured before paint, so it never shows in the wrong place.
@@ -126,9 +129,15 @@ function Panel({ menu, onChoose }: { menu: OverlayMenu; onChoose: (id: string) =
       tabIndex={-1}
       onKeyDown={moveFocus}
       style={pos ?? { left: 0, top: 0, visibility: "hidden" }}
-      className="fixed min-w-[200px] rounded-lg bg-white p-1 text-gray-900 shadow-xl shadow-black/10 outline-none ring-1 ring-black/10"
+      className={clsx(
+        "fixed bg-white text-gray-900 shadow-xl shadow-black/10 outline-none ring-1 ring-black/10",
+        card ? "rounded-xl" : "min-w-[200px] rounded-lg p-1",
+      )}
     >
       {menu.items.map((item, i) => {
+        if (item.kind === "cert") {
+          return <CertDetails key={i} domain={item.domain} active={item.active} />;
+        }
         if (item.kind === "separator") {
           return <div key={i} role="separator" className="mx-1 my-1 h-px bg-gray-200" />;
         }

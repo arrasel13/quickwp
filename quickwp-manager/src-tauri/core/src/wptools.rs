@@ -50,6 +50,15 @@ pub fn config_get(site: &Site, key: &str) -> Result<Option<String>> {
 }
 
 /// Write a boolean constant as a real PHP literal, not the string "true".
+/// Set a wp-config.php constant to a string. For the keys Nexora writes
+/// itself; the value goes to WP-CLI as an argument, never through a shell.
+pub fn config_set(site: &Site, key: &str, value: &str) -> Result<()> {
+    let mut c = wp(site)?;
+    c.args(["config", "set", key, value, "--type=constant"]);
+    run(c, "Writing wp-config.php")?;
+    Ok(())
+}
+
 pub fn config_set_bool(site: &Site, key: &str, on: bool) -> Result<String> {
     check_constant(key)?;
     let mut c = wp(site)?;

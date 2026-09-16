@@ -581,6 +581,19 @@ fn site_create(state: State<'_, AppState>, new: site::NewSite) -> Res<site::Site
     Ok(s)
 }
 
+/// Duplicate a site -- files, database and address -- and bring it up the way
+/// a new site comes up: its PHP pool running, a certificate, DNS told.
+#[tauri::command(async)]
+fn site_duplicate(state: State<'_, AppState>, domain: String) -> Res<site::Site> {
+    let s = state.app.duplicate_site(&domain)?;
+    if runtime::is_installed(&s.php_minor, "fpm") {
+        let _ = php::start_pool(&state.app.sup, &s.php_minor);
+    }
+    let _ = state.app.ensure_cert(&s);
+    let _ = state.app.reload_dns();
+    Ok(s)
+}
+
 #[tauri::command(async)]
 fn site_delete(state: State<'_, AppState>, domain: String) -> Res<Vec<String>> {
     Ok(state.app.delete_site(&domain)?)
@@ -1209,6 +1222,33 @@ fn db_import(series: String, db_name: String, file: String) -> Res<String> {
 fn site_disk_usage(state: State<'_, AppState>, domain: String) -> Res<u64> {
     let site = site_by_domain(&state, &domain)?;
     Ok(site::disk_usage(&site.docroot))
+}
+
+#[derive(serde::Serialize)]
+struct DiskBreakdown {
+    plugins: u64,
+    themes: u64,
+    /// None when the site has no database or its size could not be read.
+    database: Option<u64>,
+    /// The rest of the folder: WordPress itself, uploads, anything else.
+    other: u64,
+}
+
+/// What a site takes on disk, by part, for the Disk bar on Overview.
+#[tauri::command(async)]
+fn site_disk_breakdown(state: State<'_, AppState>, domain: String) -> Res<DiskBreakdown> {
+    let site = site_by_domain(&state, &domain)?;
+    let files = site::disk_breakdown(&site.docroot);
+    let database = match (&site.db_engine, &site.db_name) {
+        (Some(engine), Some(name)) => database::size(engine, name).ok(),
+        _ => None,
+    };
+    Ok(DiskBreakdown {
+        plugins: files.plugins,
+        themes: files.themes,
+        database,
+        other: files.total.saturating_sub(files.plugins + files.themes),
+    })
 }
 
 /// Files and database in one archive in ~/Downloads. Returns where it landed.
@@ -2915,6 +2955,7 @@ pub fn run() {
             site_adminer_open,
             site_database,
             site_disk_usage,
+            site_disk_breakdown,
             site_export_all,
             wp_open_admin,
             browser_choices,
@@ -3024,6 +3065,7 @@ pub fn run() {
             overlay::overlay_hide,
             overlay::overlay_current,
             thumb::site_thumbnail,
+            site_duplicate,
         ])
         .on_window_event(|window, event| match event {
             // Closing the window is quitting: it goes through the same choice

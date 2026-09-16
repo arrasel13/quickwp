@@ -8,7 +8,10 @@ import {
   CircleStackIcon,
   DocumentTextIcon,
   EllipsisVerticalIcon,
+  ClockIcon,
   EnvelopeIcon,
+  LockClosedIcon,
+  LockOpenIcon,
   PlayIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
@@ -30,6 +33,7 @@ import { peekCache, putCache } from "../../lib/useAsync";
 import SiteAvatar from "../SiteAvatar";
 import SiteLogs from "./SiteLogs";
 import MailTab from "../tabs/MailTab";
+import { SiteCron } from "./SiteTools";
 
 // In full preview the toolbar runs under the window's traffic lights, which
 // sit over the page on macOS (tauri.conf.json: titleBarStyle "Overlay").
@@ -37,10 +41,10 @@ const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent
 
 /**
  * What the pane shows. The first three are pages, each in a webview of its
- * own; the last two are the app's own screens, drawn here while the pages
+ * own; the rest are the app's own screens, drawn here while the pages
  * park out of sight.
  */
-type View = PreviewView | "logs" | "mail";
+type View = PreviewView | "logs" | "mail" | "cron";
 const PAGES: View[] = ["site", "admin", "database"];
 
 export type PreviewMode = "fit" | "mobile" | "tablet" | "desktop" | "both";
@@ -189,6 +193,16 @@ const viewOf = new Map<string, View>();
 /** Sites whose WordPress view has been sent a login link since it last got in. */
 const loggingIn = new Set<string>();
 
+/**
+ * The wp-admin page a shortcut asked for, per site, until the WordPress view
+ * is on it. Kept through everything in between -- starting the site, the
+ * login form, the login -- so the view ends where it was sent.
+ */
+const wanted = new Map<string, string>();
+
+/** The page part of a wp-admin path: "users.php" of "users.php?role=x". */
+const pageOf = (path: string) => path.split(/[?#]/)[0];
+
 /** A page that has not arrived after this long is not coming. */
 const SLOW_MS = 20000;
 
@@ -275,6 +289,8 @@ export default function SitePreview({
   onModeChange,
   fullPreview,
   onFullPreviewChange,
+  onReveal,
+  httpsReady,
 }: {
   site: Site;
   /** False while the pane is closed or being resized. */
@@ -284,6 +300,10 @@ export default function SitePreview({
   fullPreview: boolean;
   /** Full preview: the whole window, without the sidebar or the details. */
   onFullPreviewChange: (full: boolean) => void;
+  /** Open the pane, closed or not: a shortcut is asking to be shown. */
+  onReveal?: () => void;
+  /** Nexora's HTTPS is set up: its CA trusted and the edge serving TLS. */
+  httpsReady: boolean;
 }) {
   const { reload: reloadSites } = useSites();
   const paneRef = useRef<HTMLDivElement>(null);
@@ -301,7 +321,28 @@ export default function SitePreview({
   /** A page of wp-admin a shortcut asked for, until the layout carries it. */
   const [adminPath, setAdminPath] = useState<string | null>(null);
   /** The menu open from the toolbar, drawn in the overlay. */
-  const [menuOpen, setMenuOpen] = useState<"open" | "options" | null>(null);
+  const [menuOpen, setMenuOpen] = useState<"open" | "options" | "ssl" | null>(null);
+  // Whether this site has a certificate: HTTPS on for Nexora is not enough
+  // on its own for a site whose certificate was never issued.
+  const [hasCert, setHasCert] = useState<boolean | null>(
+    () => peekCache<{ exists: boolean }>(`site-cert:${site.domain}`)?.exists ?? null,
+  );
+  useEffect(() => {
+    if (!hasBackend) return;
+    let live = true;
+    setHasCert(peekCache<{ exists: boolean }>(`site-cert:${site.domain}`)?.exists ?? null);
+    void api
+      .siteCertInfo(site.domain)
+      .then((c) => {
+        putCache(`site-cert:${site.domain}`, c);
+        if (live) setHasCert(c.exists);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [site.domain, httpsReady]);
+  const sslActive = httpsReady && hasCert === true;
   const preferred = usePreferredApps();
   const covered = useCovered(paneRef);
   const label = site.name || site.domain;
@@ -312,7 +353,7 @@ export default function SitePreview({
 
   // A view the site does not have falls back to the site itself.
   const current: View =
-    (view === "admin" && !isWordPress) || (view === "database" && !(site.db_name && dbUrl))
+    ((view === "admin" || view === "cron") && !isWordPress) || (view === "database" && !(site.db_name && dbUrl))
       ? "site"
       : view;
   /** The page behind the current view, when the view is a page at all. */
@@ -398,9 +439,11 @@ export default function SitePreview({
       onPreviewRequest((r) => {
         if (r.domain !== site.domain) return;
         setError(null);
+        wanted.set(site.domain, r.path);
         viewOf.set(site.domain, "admin");
         setView("admin");
         setAdminPath(r.path);
+        onReveal?.();
         if (!site.enabled) void start();
       }),
     [site.domain, site.enabled],
@@ -444,9 +487,19 @@ export default function SitePreview({
       if (p.view !== "admin" || p.loading) return;
       if (!isLoginForm(p.url)) {
         loggingIn.delete(p.domain);
+        const page = wanted.get(p.domain);
+        try {
+          if (page && new URL(p.url).pathname.endsWith(`/wp-admin/${pageOf(page)}`)) {
+            wanted.delete(p.domain);
+          }
+        } catch {
+          /* not an address; nothing to settle */
+        }
       } else if (!loggingIn.has(p.domain)) {
         loggingIn.add(p.domain);
-        void api.previewGo(p.domain, "admin", "login").catch((e) => setError(errorText(e)));
+        void api
+          .previewGo(p.domain, "admin", "login", wanted.get(p.domain) ?? null)
+          .catch((e) => setError(errorText(e)));
       }
     });
     return () => void off.then((f) => f());
@@ -502,7 +555,7 @@ export default function SitePreview({
   // Started again after being stopped: what the page showed is stale.
   const wasEnabled = useRef(site.enabled);
   useEffect(() => {
-    if (site.enabled && !wasEnabled.current) go("reload");
+    if (site.enabled && !wasEnabled.current && !adminPath && !wanted.has(site.domain)) go("reload");
     wasEnabled.current = site.enabled;
   }, [site.enabled, site.domain]);
 
@@ -598,6 +651,24 @@ export default function SitePreview({
     void job.catch((e) => setError(errorText(e)));
   };
 
+  const openSsl = async (button: Element) => {
+    setMenuOpen("ssl");
+    await openOverlayMenu({
+      anchor: menuAnchor(button),
+      align: "end",
+      items: [{ kind: "cert", domain: site.domain, active: sslActive }],
+    });
+    setMenuOpen(null);
+    // Regenerating from the menu may have issued one.
+    void api
+      .siteCertInfo(site.domain)
+      .then((c) => {
+        putCache(`site-cert:${site.domain}`, c);
+        setHasCert(c.exists);
+      })
+      .catch(() => {});
+  };
+
   const openWith = async (button: Element) => {
     setMenuOpen("open");
     const choice = await openOverlayMenu({
@@ -637,6 +708,7 @@ export default function SitePreview({
   const loadingText = {
     logs: "",
     mail: "",
+    cron: "",
     site: isWordPress ? `Logging in to ${label}…` : `Loading ${label}…`,
     admin: "Opening WordPress admin…",
     database: "Opening the database…",
@@ -758,12 +830,40 @@ export default function SitePreview({
             >
               Mail
             </Segment>
+            {isWordPress && (
+              <Segment
+                selected={current === "cron"}
+                onClick={() => choose("cron")}
+                disabled={!live}
+                label="Cron"
+                icon={<ClockIcon className="h-4 w-4" />}
+              >
+                Cron
+              </Segment>
+            )}
           </div>
           )}
         </div>
 
         {/* Open the site elsewhere. One button, the whole of it opening the
             list: the browser, Finder, the editor and the terminal. */}
+        {/* SSL: locked when the site is served over trusted HTTPS. */}
+        <button
+          type="button"
+          onClick={(e) => void openSsl(e.currentTarget)}
+          disabled={!hasBackend}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen === "ssl"}
+          aria-label={sslActive ? "SSL certificate: Trusted" : "SSL certificate: Not enabled"}
+          title={sslActive ? "SSL certificate: Trusted" : "SSL certificate: Not enabled"}
+          className={clsx(toolButton, menuOpen === "ssl" && "bg-gray-100 text-gray-900")}
+        >
+          {sslActive ? (
+            <LockClosedIcon className="h-4 w-4 text-green-600" />
+          ) : (
+            <LockOpenIcon className="h-4 w-4" />
+          )}
+        </button>
         <button
           type="button"
           onClick={(e) => void openWith(e.currentTarget)}
@@ -837,6 +937,11 @@ export default function SitePreview({
         {live && current === "mail" && (
           <div className="absolute inset-0 bg-white">
             <MailTab site={site} />
+          </div>
+        )}
+        {live && isWordPress && current === "cron" && (
+          <div className="absolute inset-0 bg-white">
+            <SiteCron domain={site.domain} />
           </div>
         )}
 

@@ -466,7 +466,13 @@ pub fn preview_go(
             // cookie the login sets and only needs wp-admin once that is there.
             let site = super::site_by_domain(&state, &domain)?;
             super::ensure_serving(&state)?;
-            let link = parse(&wordpress::magic_login_to(&site, &base, "", None)?)?;
+            // Back to the page a shortcut asked for, when one did: a site that
+            // was stopped has no login yet, so asking for Users lands on the
+            // login form first, and the Dashboard after it would lose Users.
+            if let Some(page) = url.as_deref() {
+                admin_page(&base, Some(page))?;
+            }
+            let link = parse(&wordpress::magic_login_to(&site, &base, "", url.as_deref())?)?;
             views[0].1.navigate(link).map_err(|e| e.to_string())?;
             for (_, wv) in &views[1..] {
                 let _ = wv.eval("setTimeout(function(){location.href='/wp-admin/'},1500)");

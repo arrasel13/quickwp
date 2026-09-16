@@ -476,6 +476,15 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   return invoke<T>(cmd, args);
 }
 
+/** A site's size by part, in bytes. */
+export interface DiskBreakdown {
+  plugins: number;
+  themes: number;
+  /** Null when the site has no database, or its size could not be read. */
+  database: number | null;
+  other: number;
+}
+
 export const api = {
   // stack
   stackStatus: () => call<StackStatus>("stack_status"),
@@ -517,6 +526,8 @@ export const api = {
   siteCreate: (n: NewSite) => call<Site>("site_create", { new: n }),
   folderStatus: (path: string) => call<FolderStatus>("folder_status", { path }),
   siteDelete: (domain: string) => call<void>("site_delete", { domain }),
+  /** Copy a site -- files, database and address -- as `<name>-copy`. */
+  siteDuplicate: (domain: string) => call<Site>("site_duplicate", { domain }),
   siteSetEnabled: (domain: string, enabled: boolean) =>
     call<void>("site_set_enabled", { domain, enabled }),
   siteSetPhp: (domain: string, minor: string) => call<void>("site_set_php", { domain, minor }),
@@ -550,6 +561,7 @@ export const api = {
   siteDatabase: (domain: string) => call<SiteDatabaseInfo>("site_database", { domain }),
   /** Bytes under the docroot. Walked, so it is a measurement, not an estimate. */
   siteDiskUsage: (domain: string) => call<number>("site_disk_usage", { domain }),
+  siteDiskBreakdown: (domain: string) => call<DiskBreakdown>("site_disk_breakdown", { domain }),
   /** Files + database in one zip in ~/Downloads. Returns where it landed. */
   siteExportAll: (domain: string) => call<string>("site_export_all", { domain }),
   /** Open wp-admin logged in. `adminPath` is relative to wp-admin. */

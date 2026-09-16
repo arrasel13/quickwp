@@ -21,9 +21,8 @@ import { peekCache, useAsync } from "../../lib/useAsync";
 import { open } from "@tauri-apps/plugin-dialog";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import SiteManage from "./SiteManage";
-import SiteTools from "./SiteTools";
 
-type Section = "plugins" | "themes" | "users" | "tools";
+type Section = "plugins" | "themes" | "users";
 type Kind = "plugin" | "theme";
 
 /**
@@ -51,7 +50,7 @@ function canToggleOff(item: WpItem, kind: Kind): boolean {
 
 /**
  * Everything WordPress about one site: what is installed, what is out of
- * date, who can log in, and the maintenance commands.
+ * date, and who can log in.
  *
  * Read through WP-CLI against the real install, so a site edited outside
  * Nexora still reports the truth.
@@ -64,7 +63,7 @@ export default function SiteWordPress({
 }: {
   domain: string;
   docroot: string;
-  /** For Manage (export, delete), which shows under Tools. */
+  /** For Manage (export, delete), shown when the site is not WordPress. */
   site: Site;
   onDeleted?: () => void;
 }) {
@@ -111,7 +110,6 @@ export default function SiteWordPress({
     { id: "plugins", label: "Plugins", count: plugins.data?.length },
     { id: "themes", label: "Themes", count: themes.data?.length },
     { id: "users", label: "Users", count: users.data?.length },
-    { id: "tools", label: "Tools" },
   ];
 
   return (
@@ -150,12 +148,6 @@ export default function SiteWordPress({
         <ItemSection domain={domain} docroot={docroot} kind="theme" state={themes} />
       )}
       {section === "users" && <Users domain={domain} state={users} />}
-      {section === "tools" && (
-        <>
-          <SiteManage site={site} onDeleted={onDeleted} />
-          <SiteTools domain={domain} />
-        </>
-      )}
     </div>
   );
 }

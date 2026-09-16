@@ -365,6 +365,32 @@ pub fn drop_for_site(series: &str, db_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Bytes a database takes on disk.
+///
+/// Its folder in the data directory when that is readable -- which works with
+/// MySQL stopped -- else MySQL's own count of table data and indexes.
+pub fn size(series: &str, db_name: &str) -> Result<u64> {
+    let name = sanitise_identifier(db_name);
+    let dir = data_dir(series).join(&name);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        return Ok(entries
+            .flatten()
+            .filter_map(|e| e.metadata().ok())
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+            .sum());
+    }
+    let out = sql(
+        series,
+        &format!(
+            "SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = '{name}';"
+        ),
+    )?;
+    out.trim()
+        .parse::<u64>()
+        .map_err(|_| Error::other(format!("no size for `{name}`")))
+}
+
 pub fn databases(series: &str) -> Result<Vec<String>> {
     Ok(sql(series, "SHOW DATABASES;")?
         .lines()
@@ -386,10 +412,16 @@ pub fn export(series: &str, db_name: &str) -> Result<PathBuf> {
                 .unwrap()
                 .as_secs()
         ));
+    dump_to(series, db_name, &dest)?;
+    Ok(dest)
+}
+
+/// Dump one database to `dest`. A dump that fails leaves no file behind.
+pub fn dump_to(series: &str, db_name: &str, dest: &std::path::Path) -> Result<()> {
     paths::mkdir_p(dest.parent().unwrap())?;
 
-    let file = std::fs::File::create(&dest).map_err(|e| Error::Io {
-        path: dest.clone(),
+    let file = std::fs::File::create(dest).map_err(|e| Error::Io {
+        path: dest.to_path_buf(),
         source: e,
     })?;
     let out = std::process::Command::new(mysqldump(series)?)
@@ -410,13 +442,13 @@ pub fn export(series: &str, db_name: &str) -> Result<PathBuf> {
             source: e,
         })?;
     if !out.status.success() {
-        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(dest);
         return Err(Error::other(format!(
             "Export failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    Ok(dest)
+    Ok(())
 }
 
 /// Import a dump. OVERWRITES the site's tables -- the caller must confirm first.

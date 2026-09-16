@@ -11,6 +11,8 @@ export type OverlayIcon = "browser" | "finder" | "editor" | "terminal";
 export type OverlayItem =
   | { kind: "heading"; label: string }
   | { kind: "separator" }
+  /** A site's SSL state and certificate, with its own controls. */
+  | { kind: "cert"; domain: string; active: boolean }
   | {
       kind: "item";
       id: string;

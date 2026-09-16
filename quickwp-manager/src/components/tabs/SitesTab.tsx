@@ -787,7 +787,6 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
                       await reloadSites();
                     }}
                     environment={{
-                      httpsReady,
                       phpVersions,
                       nodeInstalls: nodeInstalls ?? [],
                       nodeSelected: nodeForSelected,
@@ -837,6 +836,8 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
             onModeChange={setPreviewMode}
             fullPreview={detailsHidden}
             onFullPreviewChange={setFullPreview}
+            onReveal={() => setPreviewOpen(true)}
+            httpsReady={httpsReady}
           />
         </div>
       )}

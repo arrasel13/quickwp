@@ -2,16 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import {
   DocumentDuplicateIcon,
   FolderOpenIcon,
-  LockClosedIcon,
-  LockOpenIcon,
   PlusIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, CertInfo, errorText, NodeVersion, Site, SiteInfo } from "../../lib/api";
+import { api, errorText, NodeVersion, Site, SiteInfo } from "../../lib/api";
 import { useAsync } from "../../lib/useAsync";
 import ConfirmDialog from "../ui/ConfirmDialog";
+import SiteTools from "./SiteTools";
 
 /**
  * What this site is, what it answers on, and where its files live.
@@ -22,7 +21,6 @@ import ConfirmDialog from "../ui/ConfirmDialog";
  */
 /** What the Environment panel shows and changes; owned by the Sites screen. */
 export interface EnvironmentProps {
-  httpsReady: boolean;
   phpVersions: string[];
   nodeInstalls: NodeVersion[];
   nodeSelected: string;
@@ -54,13 +52,21 @@ export default function SiteSettings({
         <div className="space-y-4">
           <EnvironmentPanel site={site} {...environment} />
           <InfoPanel site={site} />
-          <CertPanel site={site} setNote={setNote} />
           <XdebugPanel site={site} onChanged={onChanged} setNote={setNote} />
         </div>
       </div>
 
       <DomainsPanel site={site} onChanged={onChanged} setNote={setNote} />
       <EnvPanel site={site} setNote={setNote} />
+
+      {/* Through WP-CLI: search & replace, debugging, permalinks, language,
+          core and options. */}
+      {site.kind === "wordpress" && (
+        <section className="pt-2">
+          <h2 className="mb-3 text-sm font-semibold text-gray-900">WordPress</h2>
+          <SiteTools domain={site.domain} />
+        </section>
+      )}
 
       {note && (
         <pre className="whitespace-pre-wrap rounded-xl border border-gray-200 bg-white p-3 font-mono text-[11px] leading-relaxed text-gray-700 shadow-sm">
@@ -125,7 +131,6 @@ function CopyButton({ value, title }: { value: string; title?: string }) {
  *  Overview. The folder is not repeated: the Site folder panel has it. */
 function EnvironmentPanel({
   site,
-  httpsReady,
   phpVersions,
   nodeInstalls,
   nodeSelected,
@@ -159,17 +164,6 @@ function EnvironmentPanel({
         <EnvRow label="Web server">
           <span className="text-gray-900">Nexora edge</span>
           <span className="text-[11px] text-gray-400">built in</span>
-        </EnvRow>
-
-        <EnvRow label="SSL">
-          {httpsReady ? (
-            <LockClosedIcon className="h-3.5 w-3.5 text-green-600" />
-          ) : (
-            <LockOpenIcon className="h-3.5 w-3.5 text-gray-400" />
-          )}
-          <span className={clsx("font-medium", httpsReady ? "text-gray-900" : "text-gray-500")}>
-            {httpsReady ? "Trusted" : "Not enabled"}
-          </span>
         </EnvRow>
 
         {/* Node is a build-tool concern; a WordPress site has none. */}
@@ -515,132 +509,6 @@ function Row({
         {children}
       </dd>
     </div>
-  );
-}
-
-// ------------------------------------------------------------------- cert
-
-/** Whole days from now, so "expired" and "today" are not the same thing. */
-function daysUntil(iso: string): number | null {
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return null;
-  return Math.round((then - Date.now()) / 86_400_000);
-}
-
-function formatDate(iso: string): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return iso;
-  return new Date(t).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function CertPanel({ site, setNote }: { site: Site; setNote: SetNote }) {
-  const { data, reload } = useAsync(
-    () => api.siteCertInfo(site.domain),
-    [site.domain],
-    `site-cert:${site.domain}`,
-  );
-  const cert: CertInfo | null = data;
-  const [busy, setBusy] = useState(false);
-  const left = cert?.expires_at ? daysUntil(cert.expires_at) : null;
-
-  return (
-    <Panel title="HTTPS certificate">
-      {!cert?.exists && !cert?.issued_at ? (
-        <p className="text-xs text-gray-500">
-          No certificate yet — turn on HTTPS in Nexora Settings › General and one
-          is issued for this site.
-        </p>
-      ) : (
-        <>
-          <dl className="space-y-2.5">
-            <Row label="Issued">
-              {cert?.issued_at ? formatDate(cert.issued_at) : "—"}
-            </Row>
-            <Row label="Expires">
-              {cert?.expires_at ? (
-                <span>
-                  {formatDate(cert.expires_at)}{" "}
-                  <span
-                    className={clsx(
-                      "text-[11px]",
-                      left !== null && left < 14
-                        ? "text-amber-600"
-                        : "text-gray-400",
-                    )}
-                  >
-                    {left === null
-                      ? ""
-                      : left < 0
-                        ? "expired"
-                        : `in ${left} days`}
-                  </span>
-                </span>
-              ) : (
-                "—"
-              )}
-            </Row>
-            <Row label="Domains">
-              <span className="font-mono">{cert?.names.join(", ")}</span>
-            </Row>
-          </dl>
-
-          <div className="mt-3">
-            <div className="mb-1.5 text-xs text-gray-600">Certificate folder</div>
-            <div className="flex items-center gap-1 rounded-lg bg-gray-50 py-1.5 pl-3 pr-1.5">
-              <span
-                className="min-w-0 flex-1 truncate font-mono text-[11px] text-gray-700"
-                title={cert?.path}
-              >
-                {cert?.path}
-              </span>
-              <CopyButton value={cert?.path ?? ""} />
-              <button
-                title="Reveal in Finder"
-                onClick={() =>
-                  void api
-                    .pathOpen(cert?.path ?? "")
-                    .catch((e) => setNote(errorText(e)))
-                }
-                className="flex-shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700"
-              >
-                <FolderOpenIcon className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-
-      <div className="mt-4 flex items-end justify-between gap-3 border-t border-gray-100 pt-3">
-        <p className="text-[11px] leading-relaxed text-gray-500">
-          Re-issue from the local CA — for a cert nearing expiry, a corrupted
-          file, or after the CA was re-created. Briefly reloads the edge.
-        </p>
-        <button
-          disabled={busy}
-          onClick={() =>
-            void (async () => {
-              setBusy(true);
-              setNote(null);
-              try {
-                setNote(await api.siteRegenerateCert(site.domain));
-                await reload();
-              } catch (e) {
-                setNote(errorText(e));
-              } finally {
-                setBusy(false);
-              }
-            })()
-          }
-          className={clsx(ghost, "flex-shrink-0")}
-        >
-          {busy ? "Working…" : "Regenerate"}
-        </button>
-      </div>
-    </Panel>
   );
 }
 

@@ -8,7 +8,7 @@ import {
   PhotoIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
-import { api, errorText, hasBackend, Site } from "../../lib/api";
+import { api, errorText, hasBackend, Site, type DiskBreakdown } from "../../lib/api";
 import { peekCache, putCache } from "../../lib/useAsync";
 import { withKnownUpdates } from "./SiteWordPress";
 import { usePreferredApps } from "../../lib/usePreferredApps";
@@ -27,6 +27,8 @@ import {
   UsersIcon,
 } from "../ui/WpIcons";
 import ConfirmDialog from "../ui/ConfirmDialog";
+import SiteManage from "./SiteManage";
+import { MaintenanceAndBackup } from "./SiteTools";
 
 type WpStatus = Awaited<ReturnType<typeof api.wpStatus>>;
 type WpItems = Awaited<ReturnType<typeof api.wpItems>>;
@@ -65,7 +67,7 @@ export default function SiteOverview({ site }: { site: Site }) {
   const [thumb, setThumb] = useState<string | null>(null);
   /** The site's own front page, kept from the last time the preview showed it. */
   const [shot, setShot] = useState<string | null>(null);
-  const [disk, setDisk] = useState<number | null>(null);
+  const [disk, setDisk] = useState<DiskBreakdown | null>(null);
   const [admin, setAdmin] = useState<{ login: string; email: string } | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -99,7 +101,7 @@ export default function SiteOverview({ site }: { site: Site }) {
     const themes = peekCache<WpItems>(`wp-items:theme:${d}`);
     const theme = themes ? activeTheme(themes) : null;
     const users = peekCache<WpUsers>(`wp-users:${d}`);
-    setDisk(peekCache<number>(`disk:${d}`) ?? null);
+    setDisk(peekCache<DiskBreakdown>(`disk-parts:${d}`) ?? null);
     setWpVersion(peekCache<WpStatus>(`wp-status:${d}`)?.version ?? null);
     setTheme(theme);
     setThumb(theme ? (peekCache<string | null>(`wp-thumb:${d}:${theme.name}`) ?? null) : null);
@@ -118,9 +120,9 @@ export default function SiteOverview({ site }: { site: Site }) {
         .catch(() => {});
 
       void api
-        .siteDiskUsage(d)
+        .siteDiskBreakdown(d)
         .then((b) => {
-          putCache(`disk:${d}`, b);
+          putCache(`disk-parts:${d}`, b);
           if (live) setDisk(b);
         })
         .catch(() => {});
@@ -319,6 +321,11 @@ export default function SiteOverview({ site }: { site: Site }) {
 
         {/* ------- the facts, under it: what the site is, and its login */}
         <div className="space-y-8">
+          <SiteManage site={site} />
+
+          {/* Through WP-CLI, so for WordPress sites. */}
+          {isWordPress && <MaintenanceAndBackup domain={site.domain} />}
+
           {isWordPress && (
             <section>
               <h2 className="mb-3 text-sm font-semibold text-gray-900">WP Admin</h2>
@@ -377,10 +384,10 @@ export default function SiteOverview({ site }: { site: Site }) {
                 <div className="flex items-baseline justify-between">
                   <span className="text-[11px] font-medium text-gray-600">Disk</span>
                   <span className="text-[11px] text-gray-900">
-                    {disk === null ? "measuring…" : formatBytes(disk)}
+                    {disk === null ? "measuring…" : formatBytes(diskTotal(disk))}
                   </span>
                 </div>
-                <DiskBar bytes={disk} />
+                <DiskBar parts={disk} />
               </div>
             </div>
           </section>
@@ -524,23 +531,84 @@ function randomPassword(): string {
   return Array.from(bytes, (b) => chars[b % chars.length]).join("");
 }
 
+function diskTotal(d: DiskBreakdown) {
+  return d.plugins + d.themes + (d.database ?? 0) + d.other;
+}
+
+const DISK_PARTS = [
+  { key: "plugins", label: "Plugins", color: "bg-pink-600" },
+  { key: "themes", label: "Themes", color: "bg-amber-600" },
+  { key: "database", label: "Database", color: "bg-teal-600" },
+  { key: "other", label: "Other", color: "bg-gray-500" },
+] as const;
+
+function percent(part: number, total: number) {
+  if (total <= 0 || part <= 0) return "0%";
+  const p = (part / total) * 100;
+  return p < 1 ? "<1%" : `${Math.round(p)}%`;
+}
+
 /**
- * A size bar with no ceiling to measure against.
- *
- * A site has no quota, so a percentage would be invented. This shows the size
- * on a log scale against 1 GB purely as a sense of scale, and never fills.
+ * What the site's size is made of: plugins, themes, database and the rest,
+ * side by side in one bar, with the numbers on hover.
  */
-function DiskBar({ bytes }: { bytes: number | null }) {
-  const pct =
-    bytes === null || bytes <= 0
-      ? 0
-      : Math.min(95, (Math.log10(bytes) / Math.log10(1024 ** 3)) * 100);
+function DiskBar({ parts }: { parts: DiskBreakdown | null }) {
+  const [open, setOpen] = useState(false);
+  const total = parts ? diskTotal(parts) : 0;
+  const rows = parts
+    ? DISK_PARTS.filter((p) => p.key !== "database" || parts.database !== null).map((p) => ({
+        ...p,
+        bytes: parts[p.key] ?? 0,
+      }))
+    : [];
+  const shown = rows.filter((r) => r.bytes > 0);
+
   return (
-    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-gray-200">
-      <div
-        className="h-full rounded-full bg-amber-500 transition-[width] duration-500"
-        style={{ width: `${pct}%` }}
-      />
+    <div
+      className="relative mt-1.5 py-1"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      tabIndex={parts ? 0 : -1}
+      aria-label="Disk usage by part"
+    >
+      <div className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-gray-200">
+        {shown.map((r) => (
+          <div
+            key={r.key}
+            className={clsx("h-full transition-[width] duration-500", r.color)}
+            // Every part that has anything stays visible, however small.
+            style={{ width: `${(r.bytes / total) * 100}%`, minWidth: 4 }}
+          />
+        ))}
+      </div>
+
+      {open && parts && (
+        <div
+          role="tooltip"
+          className="absolute bottom-full left-0 right-0 z-20 mb-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2.5 shadow-lg"
+        >
+          <table className="w-full text-[12px] text-gray-900">
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.key}>
+                  <td className="py-0.5">
+                    <span className="flex items-center gap-2">
+                      <span className={clsx("h-2.5 w-2.5 flex-shrink-0 rounded-[3px]", r.color)} />
+                      {r.label}
+                    </span>
+                  </td>
+                  <td className="py-0.5 pl-3 text-right tabular-nums">{formatBytes(r.bytes)}</td>
+                  <td className="w-10 py-0.5 pl-3 text-right tabular-nums text-gray-500">
+                    {percent(r.bytes, total)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

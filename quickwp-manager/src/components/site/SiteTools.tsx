@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  ArrowDownTrayIcon,
   ArrowPathIcon,
   ArrowRightEndOnRectangleIcon,
-  ArrowUpTrayIcon,
+  ExclamationTriangleIcon,
   MagnifyingGlassIcon,
+  SparklesIcon,
+  TrashIcon,
   ShieldCheckIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
@@ -12,6 +13,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorText, CronEvent, WpLanguage } from "../../lib/api";
 import { useAsync } from "../../lib/useAsync";
 import ConfirmDialog from "../ui/ConfirmDialog";
+import { Action } from "./SiteManage";
+import { DatabaseTableIcon, ExportIcon, ImportIcon } from "../ui/WpIcons";
 
 /**
  * Maintenance for one WordPress site.
@@ -19,25 +22,48 @@ import ConfirmDialog from "../ui/ConfirmDialog";
  * Every control is one WP-CLI subcommand. The destructive ones are the reason
  * this file has a confirmation dialog rather than a `confirm()`.
  */
-export default function SiteTools({ domain }: { domain: string }) {
+/** One place for "run it, say what happened, never leave a spinner stuck". */
+function useAct() {
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const act = useCallback(async (key: string, fn: () => Promise<string>) => {
+    setBusy(key);
+    setNote(null);
+    try {
+      setNote(await fn());
+    } catch (e) {
+      setNote(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+  return { note, busy, act };
+}
 
-  /** One place for "run it, say what happened, never leave a spinner stuck". */
-  const act = useCallback(
-    async (key: string, fn: () => Promise<string>) => {
-      setBusy(key);
-      setNote(null);
-      try {
-        setNote(await fn());
-      } catch (e) {
-        setNote(errorText(e));
-      } finally {
-        setBusy(null);
-      }
-    },
-    [],
+/** What the last action said, under the panels that ran it. */
+function Note({ text }: { text: string | null }) {
+  if (!text) return null;
+  return (
+    <pre className="whitespace-pre-wrap rounded-xl border border-gray-200 bg-white p-3 font-mono text-[11px] leading-relaxed text-gray-700 shadow-sm">
+      {text}
+    </pre>
   );
+}
+
+/** Maintenance and Backup & restore, shown in Overview beside Manage. */
+export function MaintenanceAndBackup({ domain }: { domain: string }) {
+  const { note, busy, act } = useAct();
+  return (
+    <div className="space-y-7">
+      <Maintenance domain={domain} busy={busy} act={act} flat />
+      <Backup domain={domain} busy={busy} act={act} flat />
+      <Note text={note} />
+    </div>
+  );
+}
+
+export default function SiteTools({ domain }: { domain: string }) {
+  const { note, busy, act } = useAct();
 
   return (
     <div className="space-y-4">
@@ -46,25 +72,18 @@ export default function SiteTools({ domain }: { domain: string }) {
       <div className="grid gap-4 pane-lg:grid-cols-2">
         <div className="space-y-4">
           <Debugging domain={domain} busy={busy} act={act} />
-          <Maintenance domain={domain} busy={busy} act={act} />
-          <Backup domain={domain} busy={busy} act={act} />
+          <Permalinks domain={domain} busy={busy} act={act} />
         </div>
 
         <div className="space-y-4">
-          <Permalinks domain={domain} busy={busy} act={act} />
           <Language domain={domain} busy={busy} act={act} />
           <Core domain={domain} busy={busy} act={act} />
         </div>
       </div>
 
       <SiteOptions domain={domain} />
-      <Cron domain={domain} />
 
-      {note && (
-        <pre className="whitespace-pre-wrap rounded-xl border border-gray-200 bg-white p-3 font-mono text-[11px] leading-relaxed text-gray-700 shadow-sm">
-          {note}
-        </pre>
-      )}
+      <Note text={note} />
     </div>
   );
 }
@@ -73,11 +92,21 @@ type Act = (key: string, fn: () => Promise<string>) => Promise<void>;
 
 function Panel({
   title,
+  flat,
   children,
 }: {
   title: string;
+  /** A heading over the rows, as Manage has, rather than a card. */
+  flat?: boolean;
   children: React.ReactNode;
 }) {
+  if (flat)
+    return (
+      <section>
+        <h2 className="mb-3 text-sm font-semibold text-gray-900">{title}</h2>
+        {children}
+      </section>
+    );
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <h4 className="mb-3 text-sm font-semibold text-gray-900">{title}</h4>
@@ -336,10 +365,12 @@ function Maintenance({
   domain,
   busy,
   act,
+  flat,
 }: {
   domain: string;
   busy: string | null;
   act: Act;
+  flat?: boolean;
 }) {
   const [on, setOn] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -357,11 +388,12 @@ function Maintenance({
   }, [load]);
 
   return (
-    <Panel title="Maintenance">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-gray-700">
-            Maintenance mode — visitors see "briefly unavailable".
+    <Panel title="Maintenance" flat={flat}>
+      <div className="grid gap-2.5">
+        <div className="flex items-center justify-between gap-3 rounded-md border border-gray-300 bg-white px-3.5 py-2.5">
+          <p className="text-[13px] text-gray-800">
+            <span className="font-semibold text-gray-900">Maintenance mode</span> — visitors see
+            "briefly unavailable".
           </p>
           <Toggle
             on={on}
@@ -376,32 +408,28 @@ function Maintenance({
           />
         </div>
 
-        <button
-          disabled={busy === "cache"}
+        <Action
+          icon={SparklesIcon}
+          label={busy === "cache" ? "Flushing…" : "Flush object cache"}
+          busy={busy === "cache"}
+          disabled={busy !== null}
           onClick={() => void act("cache", () => api.wpFlushCache(domain))}
-          className={btn}
-        >
-          {busy === "cache" ? "Flushing…" : "Flush object cache"}
-        </button>
-
-        <button
-          disabled={busy === "transients"}
-          onClick={() =>
-            void act("transients", () => api.wpDeleteTransients(domain))
-          }
-          className={btn}
-        >
-          {busy === "transients" ? "Deleting…" : "Delete all transients"}
-        </button>
-
-        <button
-          disabled={busy === "reset"}
+        />
+        <Action
+          icon={TrashIcon}
+          label={busy === "transients" ? "Deleting…" : "Delete all transients"}
+          busy={busy === "transients"}
+          disabled={busy !== null}
+          onClick={() => void act("transients", () => api.wpDeleteTransients(domain))}
+        />
+        <Action
+          icon={ExclamationTriangleIcon}
+          label={busy === "reset" ? "Erasing…" : "Erase database & reset site"}
+          busy={busy === "reset"}
+          destructive
+          disabled={busy !== null}
           onClick={() => setConfirmReset(true)}
-          className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
-        >
-          <ArrowPathIcon className="h-4 w-4" />
-          Erase database &amp; reset site
-        </button>
+        />
       </div>
 
       <ConfirmDialog
@@ -434,10 +462,12 @@ function Backup({
   domain,
   busy,
   act,
+  flat,
 }: {
   domain: string;
   busy: string | null;
   act: Act;
+  flat?: boolean;
 }) {
   const [confirmImport, setConfirmImport] = useState<string | null>(null);
 
@@ -455,38 +485,34 @@ function Backup({
   };
 
   return (
-    <Panel title="Backup & restore">
-      <div className="space-y-3">
-        <button
-          disabled={busy === "export-db"}
+    <Panel title="Backup & restore" flat={flat}>
+      <div className="grid gap-2.5">
+        <Action
+          icon={DatabaseTableIcon}
+          label={busy === "export-db" ? "Exporting…" : "Export database"}
+          busy={busy === "export-db"}
+          disabled={busy !== null}
           onClick={() =>
             void act("export-db", async () => {
               const path = await api.wpExportDatabase(domain);
               return `Database exported to ${path}`;
             })
           }
-          className={clsx(btn, "inline-flex items-center justify-center gap-1.5")}
-        >
-          <ArrowDownTrayIcon className="h-4 w-4" />
-          {busy === "export-db" ? "Exporting…" : "Export database"}
-        </button>
-
-        <button
+        />
+        <Action
+          icon={ImportIcon}
+          label={busy === "import-db" ? "Importing…" : "Import database…"}
+          busy={busy === "import-db"}
+          disabled={busy !== null}
           onClick={() => void pickSql()}
-          className={clsx(btn, "inline-flex items-center justify-center gap-1.5")}
-        >
-          <ArrowUpTrayIcon className="h-4 w-4" />
-          Import database…
-        </button>
-
-        <button
-          disabled={busy === "export-wxr"}
+        />
+        <Action
+          icon={ExportIcon}
+          label={busy === "export-wxr" ? "Exporting…" : "Export content (WXR)"}
+          busy={busy === "export-wxr"}
+          disabled={busy !== null}
           onClick={() => void act("export-wxr", () => api.wpExportContent(domain))}
-          className={clsx(btn, "inline-flex items-center justify-center gap-1.5")}
-        >
-          <ArrowDownTrayIcon className="h-4 w-4" />
-          {busy === "export-wxr" ? "Exporting…" : "Export content (WXR)"}
-        </button>
+        />
       </div>
 
       <ConfirmDialog
@@ -1103,7 +1129,16 @@ function SiteOptions({ domain }: { domain: string }) {
 
 // -------------------------------------------------------------------- cron
 
-function Cron({ domain }: { domain: string }) {
+/** A site's scheduled events, filling the preview pane. */
+export function SiteCron({ domain }: { domain: string }) {
+  return (
+    <div className="h-full overflow-y-auto bg-white p-4">
+      <Cron domain={domain} flat />
+    </div>
+  );
+}
+
+function Cron({ domain, flat }: { domain: string; flat?: boolean }) {
   const { data, error, loading, reload } = useAsync(
     () => api.wpCronEvents(domain),
     [domain],
@@ -1133,7 +1168,7 @@ function Cron({ domain }: { domain: string }) {
   };
 
   return (
-    <Panel title="Cron">
+    <Panel title="Cron" flat={flat}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-gray-500">
           {/* Overdue events are the normal state here, and saying so stops

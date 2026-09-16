@@ -448,6 +448,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn disk_breakdown_counts_plugins_and_themes_out_of_the_total() {
+        let dir = std::env::temp_dir().join(format!("nexora-disk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let put = |rel: &str, len: usize| {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, vec![b'x'; len]).unwrap();
+        };
+        put("index.php", 10);
+        put("wp-includes/version.php", 100);
+        put("wp-content/plugins/hello/hello.php", 1_000);
+        put("wp-content/plugins/akismet/a/b.php", 2_000);
+        put("wp-content/themes/twenty/style.css", 5_000);
+        put("wp-content/uploads/2026/pic.jpg", 20_000);
+        put("wp-content/index.php", 1);
+
+        let sizes = disk_breakdown(dir.to_str().unwrap());
+        assert_eq!(sizes.plugins, 3_000);
+        assert_eq!(sizes.themes, 5_000);
+        assert_eq!(sizes.total, 28_111);
+        assert_eq!(disk_usage(dir.to_str().unwrap()), 28_111);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn site_folders_without_a_record_are_found_and_listed_again_untouched() {
         let db = Db::open_in_memory().unwrap();
         let dir = std::env::temp_dir().join(format!("nexora-unlisted-{}", std::process::id()));
@@ -585,6 +610,50 @@ mod tests {
 /// wp-content points somewhere large should not report that directory's size as
 /// its own, and a loop would not terminate.
 pub fn disk_usage(docroot: &str) -> u64 {
+    disk_breakdown(docroot).total
+}
+
+/// A site folder's size, with what WordPress keeps in plugins and themes
+/// counted out of it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct FolderSizes {
+    pub total: u64,
+    pub plugins: u64,
+    pub themes: u64,
+}
+
+/// [`disk_usage`], split as it walks: one pass over the tree, not three.
+pub fn disk_breakdown(docroot: &str) -> FolderSizes {
+    let root = std::path::Path::new(docroot);
+    let plugins = root.join("wp-content").join("plugins");
+    let themes = root.join("wp-content").join("themes");
+    let mut sizes = FolderSizes::default();
+    // A budget rather than an unbounded walk: node_modules in a linked project
+    // can be a million entries, and a size readout is not worth a hung tab.
+    let mut budget = 400_000u32;
+    for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = e.path();
+        let Ok(meta) = path.symlink_metadata() else { continue };
+        if !meta.is_dir() {
+            sizes.total += meta.len();
+        } else if path.file_name().is_some_and(|n| n == "wp-content") {
+            for c in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                let p = c.path();
+                let Ok(m) = p.symlink_metadata() else { continue };
+                let n = if m.is_dir() { walk(&p, &mut budget) } else { m.len() };
+                sizes.total += n;
+                if p == plugins && m.is_dir() {
+                    sizes.plugins = n;
+                } else if p == themes && m.is_dir() {
+                    sizes.themes = n;
+                }
+            }
+        } else {
+            sizes.total += walk(&path, &mut budget);
+        }
+    }
+    return sizes;
+
     fn walk(dir: &std::path::Path, budget: &mut u32) -> u64 {
         if *budget == 0 {
             return 0;
@@ -609,8 +678,4 @@ pub fn disk_usage(docroot: &str) -> u64 {
         }
         total
     }
-    // A budget rather than an unbounded walk: node_modules in a linked project
-    // can be a million entries, and a size readout is not worth a hung tab.
-    let mut budget = 400_000u32;
-    walk(std::path::Path::new(docroot), &mut budget)
 }

@@ -148,3 +148,66 @@ pub fn mkdir_p(p: &Path) -> crate::Result<()> {
         source: e,
     })
 }
+
+/// Copy a folder and everything in it into `to`, which is made if need be.
+///
+/// Symbolic links are copied as links rather than followed: a site folder can
+/// hold links to places outside it that a copy must not swallow whole.
+pub fn copy_tree(from: &Path, to: &Path) -> crate::Result<()> {
+    let io = |path: &Path, e: std::io::Error| crate::Error::Io {
+        path: path.to_path_buf(),
+        source: e,
+    };
+    mkdir_p(to)?;
+    for entry in std::fs::read_dir(from).map_err(|e| io(from, e))? {
+        let entry = entry.map_err(|e| io(from, e))?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        let kind = entry.file_type().map_err(|e| io(&src, e))?;
+        if kind.is_symlink() {
+            #[cfg(unix)]
+            {
+                let target = std::fs::read_link(&src).map_err(|e| io(&src, e))?;
+                let _ = std::fs::remove_file(&dst);
+                std::os::unix::fs::symlink(&target, &dst).map_err(|e| io(&dst, e))?;
+            }
+        } else if kind.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else if kind.is_file() {
+            std::fs::copy(&src, &dst).map_err(|e| io(&src, e))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod copy_tree_tests {
+    use super::copy_tree;
+
+    #[test]
+    fn a_folder_is_copied_whole_and_links_stay_links() {
+        let root = std::env::temp_dir().join(format!("nexora-copy-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let from = root.join("from");
+        std::fs::create_dir_all(from.join("wp-content/uploads")).unwrap();
+        std::fs::write(from.join("index.php"), "<?php // site").unwrap();
+        std::fs::write(from.join("wp-content/uploads/a.txt"), "upload").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/definitely/elsewhere", from.join("linked")).unwrap();
+
+        let to = root.join("to");
+        copy_tree(&from, &to).unwrap();
+
+        assert_eq!(std::fs::read_to_string(to.join("index.php")).unwrap(), "<?php // site");
+        assert_eq!(std::fs::read_to_string(to.join("wp-content/uploads/a.txt")).unwrap(), "upload");
+        #[cfg(unix)]
+        {
+            let meta = std::fs::symlink_metadata(to.join("linked")).unwrap();
+            assert!(meta.file_type().is_symlink(), "a link is copied as a link, not followed");
+            assert_eq!(std::fs::read_link(to.join("linked")).unwrap().to_str(), Some("/definitely/elsewhere"));
+        }
+        // The original is only read.
+        assert_eq!(std::fs::read_to_string(from.join("index.php")).unwrap(), "<?php // site");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

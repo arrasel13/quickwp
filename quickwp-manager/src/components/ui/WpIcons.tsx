@@ -117,3 +117,56 @@ export function UsersIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/** @wordpress/icons "copy". */
+export function DuplicateIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className={className}>
+      <path fillRule="evenodd" clipRule="evenodd"
+        d="M5 4.5h11a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-.5.5H5a.5.5 0 0 1-.5-.5V5a.5.5 0 0 1 .5-.5ZM3 5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5Zm17 3v10.75c0 .69-.56 1.25-1.25 1.25H6v1.5h12.75a2.75 2.75 0 0 0 2.75-2.75V8H20Z"
+      />
+    </svg>
+  );
+}
+
+/** @wordpress/icons "upload". */
+export function ImportIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.5" stroke="currentColor" aria-hidden className={className}>
+      <path vectorEffect="non-scaling-stroke"
+        d="M4.75 15V19.25H12M12 19.25V4.5M12 19.25H19.25V15M17.5 10L12 4.5L6.5 10"
+      />
+    </svg>
+  );
+}
+
+/** @wordpress/icons "download". */
+export function ExportIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.5" stroke="currentColor" aria-hidden className={className}>
+      <path vectorEffect="non-scaling-stroke"
+        d="M12 3V16M6 10.5L12 16L17.5 10.5M4.75 15V19.25H19.25V15"
+      />
+    </svg>
+  );
+}
+
+/** @wordpress/icons "table". */
+export function DatabaseTableIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className={className}>
+      <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2Zm.5 2v6.2h-6.8V4.4h6.2c.3 0 .5.2.5.5ZM5 4.5h6.2v6.8H4.4V5.1c0-.3.2-.5.5-.5ZM4.5 19v-6.2h6.8v6.8H5.1c-.3 0-.5-.2-.5-.5Zm14.5.5h-6.2v-6.8h6.8v6.2c0 .3-.2.5-.5.5Z" />
+    </svg>
+  );
+}
+
+/** @wordpress/icons "trash". */
+export function DeleteIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className={className}>
+      <path fillRule="evenodd" clipRule="evenodd"
+        d="M12 5.5A2.25 2.25 0 0 0 9.878 7h4.244A2.251 2.251 0 0 0 12 5.5ZM12 4a3.751 3.751 0 0 0-3.675 3H5v1.5h1.27l.818 8.997a2.75 2.75 0 0 0 2.739 2.501h4.347a2.75 2.75 0 0 0 2.738-2.5L17.73 8.5H19V7h-3.325A3.751 3.751 0 0 0 12 4Zm4.224 4.5H7.776l.806 8.861a1.25 1.25 0 0 0 1.245 1.137h4.347a1.25 1.25 0 0 0 1.245-1.137l.805-8.861Z"
+      />
+    </svg>
+  );
+}

@@ -110,7 +110,9 @@ export default function SiteHeaderMenu({ site }: { site: Site }) {
   };
 
   return (
-    <div ref={ref} className="relative w-full min-w-0">
+    // Fills a narrow pane, but stops short of stretching across a wide one:
+    // the site's name reads as a control, not a banner.
+    <div ref={ref} className="relative w-full min-w-[260px] max-w-[360px]">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -150,7 +152,7 @@ export default function SiteHeaderMenu({ site }: { site: Site }) {
         <div
           role="menu"
           aria-label={label}
-          className="absolute inset-x-0 top-full z-30 mt-1.5 min-w-[280px] rounded-xl border border-gray-200 bg-white p-1 shadow-xl shadow-black/5"
+          className="absolute inset-x-0 top-full z-30 mt-1.5 rounded-xl border border-gray-200 bg-white p-1 shadow-xl shadow-black/5"
         >
           <div className="flex items-center justify-between gap-3 px-3 py-2.5">
             <div className="min-w-0">
