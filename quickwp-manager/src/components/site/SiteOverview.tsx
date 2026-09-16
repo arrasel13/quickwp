@@ -208,7 +208,7 @@ export default function SiteOverview({ site }: { site: Site }) {
 
   return (
     <div className="p-6">
-      <div className="mx-auto grid max-w-6xl gap-x-10 gap-y-8 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
+      <div className="mx-auto grid max-w-6xl gap-x-10 gap-y-8 pane-lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
         {/* ---------------------------------------------- left: the facts */}
         <div className="space-y-8">
           {isWordPress && installState === "not_installed" && (
@@ -410,7 +410,7 @@ export default function SiteOverview({ site }: { site: Site }) {
 // ---------------------------------------------------------------- bits
 
 function Grid({ children }: { children: React.ReactNode }) {
-  return <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{children}</div>;
+  return <div className="grid gap-3 pane-sm:grid-cols-2 pane-xl:grid-cols-3">{children}</div>;
 }
 
 function Tile({

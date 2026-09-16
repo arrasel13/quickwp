@@ -167,8 +167,15 @@ fn handle(db: Db, mut stream: TcpStream) -> std::io::Result<()> {
         return respond_bytes(&mut stream, 200, ct, &data);
     }
 
+    // A folder runs its own index.php, the way nginx's `index` does. Without
+    // this `/wp-admin/` ran the site's front page: wp-admin reached by its
+    // usual address -- where WordPress sends you after logging in -- showed
+    // the home page instead.
+    let folder_index = candidate.join("index.php");
     let script = if candidate.is_file() && candidate.extension().map(|e| e == "php").unwrap_or(false) {
         candidate
+    } else if !rel.is_empty() && candidate.is_dir() && folder_index.is_file() {
+        folder_index
     } else {
         docroot.join("index.php")
     };

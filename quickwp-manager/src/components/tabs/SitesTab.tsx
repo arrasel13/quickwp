@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from "react";
-import { api, errorText, FolderStatus } from "../../lib/api";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { DrawerRightIcon } from "../ui/DrawerIcons";
+import { api, errorText, FolderStatus, hasBackend } from "../../lib/api";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAsync } from "../../lib/useAsync";
 import { Tab, Dialog, Transition } from "@headlessui/react";
@@ -19,12 +20,11 @@ import {
 import clsx from "clsx";
 import { Fragment } from "react";
 import SiteOverview from "../site/SiteOverview";
-import OpenSiteMenu from "../site/OpenSiteMenu";
+import SitePreview, { type PreviewMode } from "../site/SitePreview";
+import { usePref } from "../../lib/usePref";
 import SiteWordPress from "../site/SiteWordPress";
-import SiteDatabase from "../site/SiteDatabase";
 import SiteLogs from "../site/SiteLogs";
 import SiteSettings from "../site/SiteSettings";
-import TerminalTab from "./TerminalTab";
 import MailTab from "./MailTab";
 import SiteAvatar from "../SiteAvatar";
 import WindowDragStrip from "../WindowDragStrip";
@@ -159,6 +159,10 @@ const noAutoFill = {
   autoCapitalize: "off",
   spellCheck: false,
 } as const;
+
+/** Narrowest the details pane goes, and the least it leaves the preview. */
+const MIN_DETAILS = 360;
+const MIN_PREVIEW = 320;
 
 interface ProjectOption {
   id: ProjectType;
@@ -312,25 +316,25 @@ export default function SitesTab() {
     error: string | null;
   } | null>(null);
 
+  // The database and a terminal are not tabs here: the preview beside the
+  // details shows the database in Adminer, and its open menu starts the
+  // terminal. The panels below follow this order.
   const siteDetailTabs = [
     { name: "Overview", id: "overview" },
     { name: "WordPress", id: "wordpress" },
-    { name: "Database", id: "database" },
     { name: "Logs", id: "logs" },
-    { name: "Terminal", id: "terminal" },
     { name: "Mail", id: "mail" },
     { name: "Settings", id: "settings" },
   ];
 
   /** Overview opens first: what the site is, and where to go from it. */
   const DEFAULT_SITE_TAB = 0;
-  const DATABASE_TAB = siteDetailTabs.findIndex((t) => t.id === "database");
   // Controlled rather than defaultIndex, so switching sites can put the
   // selection back on Overview instead of wherever the last site was left.
   const [siteTab, setSiteTab] = useState(DEFAULT_SITE_TAB);
   // Tabs opened for this site stay mounted when you move between them, so
-  // going back is instant: nothing refetches, and the terminal and Adminer
-  // keep their state. Tabs never opened load nothing. A new site starts over.
+  // going back is instant: nothing refetches, and each keeps its state. Tabs
+  // never opened load nothing. A new site starts over.
   const [visited, setVisited] = useState<Set<number>>(() => new Set([DEFAULT_SITE_TAB]));
   const openSiteTab = (i: number) => {
     setSiteTab(i);
@@ -339,14 +343,25 @@ export default function SitesTab() {
   useEffect(() => {
     setSiteTab(DEFAULT_SITE_TAB);
     setVisited(new Set([DEFAULT_SITE_TAB]));
-    // The Database tab is the slow one to open cold -- MySQL, then Adminer in
-    // a frame -- so it loads quietly behind Overview and is ready when clicked.
-    const timer = setTimeout(
-      () => setVisited((v) => (v.has(DATABASE_TAB) ? v : new Set(v).add(DATABASE_TAB))),
-      600,
-    );
-    return () => clearTimeout(timer);
   }, [selectedId]);
+
+  // The live preview beside the details. Open, the details can be hidden to
+  // give it the whole sheet ("full preview"); closed, the details have it.
+  const [previewOpen, setPreviewOpen] = usePref("nexora.preview-open", true);
+  // Full preview hides the sidebar too, so it is shared with the layout.
+  const { fullPreview, setFullPreview } = useSites();
+  const [previewMode, setPreviewMode] = usePref<PreviewMode>("nexora.preview-mode", "fit");
+  const [detailsWidth, setDetailsWidth] = usePref("nexora.details-width", 480);
+  const [resizing, setResizing] = useState(false);
+  const splitRef = useRef<HTMLDivElement>(null);
+  const detailsHidden = previewOpen && fullPreview;
+
+  // A deleted site, or one moved to another domain, leaves no page behind.
+  const domainsKey = (backendSites ?? []).map((s) => s.domain).join("\n");
+  useEffect(() => {
+    if (!hasBackend || sitesLoading || sitesError) return;
+    void api.previewPrune(domainsKey ? domainsKey.split("\n") : []).catch(() => {});
+  }, [domainsKey, sitesLoading, sitesError]);
 
   // Fetched lazily: opening the dialog is the first moment the list matters,
   // and an offline machine simply keeps the fallback.
@@ -676,8 +691,23 @@ export default function SitesTab() {
           "New site" sets state with nothing there to show it. */}
       {selectedSite ? (
         <>
+      <div ref={splitRef} className="flex min-h-0 flex-1">
+      {/* The details. Hidden, not unmounted, in full preview: the terminal
+          and Adminer keep their state. */}
+      <div
+        className={clsx(
+          "flex min-w-0 flex-col",
+          previewOpen ? "flex-shrink-0" : "flex-1",
+          detailsHidden && "hidden",
+        )}
+        style={
+          previewOpen
+            ? { width: detailsWidth, minWidth: MIN_DETAILS, maxWidth: `calc(100% - ${MIN_PREVIEW}px)` }
+            : undefined
+        }
+      >
       {/* Header: the site in view, named the way the sidebar names it. */}
-      <div data-tauri-drag-region="deep" className="flex flex-shrink-0 items-center gap-3 px-6 pt-5 pb-3">
+      <div data-tauri-drag-region="deep" className="flex flex-shrink-0 items-center gap-3 px-4 pt-4 pb-3">
         <div className="inline-flex min-w-0 max-w-full items-center gap-3 rounded-md bg-gray-900 py-1.5 pl-1.5 pr-4 text-white">
           <SiteAvatar
             name={selectedBackendSite?.name || selectedSite.name}
@@ -708,11 +738,6 @@ export default function SitesTab() {
           />
           {selectedSite.status === "running" ? "Running" : "Stopped"}
         </span>
-        {selectedBackendSite && (
-          <div className="ml-auto flex-shrink-0">
-            <OpenSiteMenu site={selectedBackendSite} />
-          </div>
-        )}
       </div>
 
       {/* Main Content */}
@@ -726,13 +751,15 @@ export default function SitesTab() {
             selectedIndex={siteTab}
             onChange={openSiteTab}
           >
-            <Tab.List data-tauri-drag-region="deep" className="flex flex-shrink-0 gap-1 border-b border-gray-200 bg-white px-4">
+            {/* Scrolls sideways when the details pane is too narrow for
+                every tab. */}
+            <Tab.List data-tauri-drag-region="deep" className="no-scrollbar flex flex-shrink-0 gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-2">
               {siteDetailTabs.map((tab) => (
                 <Tab
                   key={tab.id}
                   className={({ selected }) =>
                     clsx(
-                      "relative px-3 py-3 text-[13px] font-medium transition-colors focus:outline-none focus-visible:outline-none focus:ring-0 active:outline-none",
+                      "relative flex-shrink-0 whitespace-nowrap px-2.5 py-3 text-[13px] font-medium transition-colors focus:outline-none focus-visible:outline-none focus:ring-0 active:outline-none",
                       selected ? "text-gray-900" : "text-gray-500 hover:text-gray-900"
                     )
                   }
@@ -751,7 +778,8 @@ export default function SitesTab() {
               ))}
             </Tab.List>
 
-            <Tab.Panels className="flex-1 overflow-hidden min-h-0">
+            {/* The container the tabs' pane-* breakpoints measure. */}
+            <Tab.Panels className="flex-1 overflow-hidden min-h-0 [container-type:inline-size]">
               {/* Overview */}
               <LazyPanel seen={visited.has(0)} className="h-full overflow-y-auto">
                 {selectedBackendSite && (
@@ -771,34 +799,19 @@ export default function SitesTab() {
                 )}
               </LazyPanel>
 
-              {/* Database */}
-              {/* overflow-hidden, not auto: Adminer fills the pane and scrolls
-                  inside its own frame. */}
-              <LazyPanel seen={visited.has(2)} className="h-full overflow-hidden">
-                {selectedBackendSite ? (
-                  <SiteDatabase site={selectedBackendSite} />
-                ) : null}
-              </LazyPanel>
-
               {/* Logs */}
-              <LazyPanel seen={visited.has(3)} className="h-full overflow-hidden">
+              <LazyPanel seen={visited.has(2)} className="h-full overflow-hidden">
                 <SiteLogs domain={selectedSite.name} />
-              </LazyPanel>
-
-              {/* Terminal — the xterm component, pinned to this site instead
-                  of offering a picker. */}
-              <LazyPanel seen={visited.has(4)} className="h-full overflow-hidden">
-                <TerminalTab fixedDomain={selectedSite.name} />
               </LazyPanel>
 
               {/* Mail — one Mailpit catches what every site sends; this tab
                   shows this site's share of it, or everything. */}
-              <LazyPanel seen={visited.has(5)} className="h-full overflow-hidden">
+              <LazyPanel seen={visited.has(3)} className="h-full overflow-hidden">
                 <MailTab site={selectedBackendSite ?? null} />
               </LazyPanel>
 
               {/* Settings */}
-              <LazyPanel seen={visited.has(6)} className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(4)} className="h-full overflow-y-auto">
                 {selectedBackendSite ? (
                   <SiteSettings
                     site={selectedBackendSite}
@@ -820,7 +833,46 @@ export default function SitesTab() {
           </Tab.Group>
         </div>
       </div>
+      {/* The foot of the details, where the preview is shown and hidden. */}
+      <div className="flex h-10 flex-shrink-0 items-center justify-end border-t border-gray-200 bg-white px-2">
+        <button
+          type="button"
+          onClick={() => {
+            setFullPreview(false);
+            setPreviewOpen((o) => !o);
+          }}
+          aria-pressed={previewOpen}
+          aria-label={previewOpen ? "Hide preview" : "Show preview"}
+          title={previewOpen ? "Hide preview" : "Show preview"}
+          className="grid h-8 w-8 place-items-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-blue/30"
+        >
+          <DrawerRightIcon className="h-5 w-5" />
+        </button>
+      </div>
+      </div>
 
+      {previewOpen && !detailsHidden && (
+        <Resizer
+          width={detailsWidth}
+          onWidth={setDetailsWidth}
+          onDragging={setResizing}
+          containerRef={splitRef}
+        />
+      )}
+      {/* Kept mounted while closed, so it remembers the page it was on. */}
+      {selectedBackendSite && (
+        <div className={clsx("min-w-0 flex-1", !previewOpen && "hidden")}>
+          <SitePreview
+            site={selectedBackendSite}
+            visible={previewOpen && !resizing}
+            mode={previewMode}
+            onModeChange={setPreviewMode}
+            fullPreview={detailsHidden}
+            onFullPreviewChange={setFullPreview}
+          />
+        </div>
+      )}
+      </div>
         </>
       ) : (
         <div data-tauri-drag-region="deep" className="flex-1 overflow-y-auto bg-gradient-to-b from-gray-50 to-white">
@@ -1341,6 +1393,74 @@ export default function SitesTab() {
           <WindowDragStrip />
         </Dialog>
       </Transition>
+    </div>
+  );
+}
+
+/**
+ * The line between the details and the preview, dragged to share the sheet.
+ *
+ * The preview is hidden for the drag: it is a native view, and a pointer that
+ * crosses onto it would be its pointer, not the drag's.
+ */
+function Resizer({
+  width,
+  onWidth,
+  onDragging,
+  containerRef,
+}: {
+  width: number;
+  onWidth: (w: number) => void;
+  onDragging: (dragging: boolean) => void;
+  containerRef: React.RefObject<HTMLDivElement>;
+}) {
+  const clamp = (w: number) => {
+    const max = (containerRef.current?.clientWidth ?? 1200) - MIN_PREVIEW;
+    return Math.round(Math.max(MIN_DETAILS, Math.min(w, max)));
+  };
+
+  const start = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const handle = e.currentTarget;
+    const startX = e.clientX;
+    // The width on screen, which the min and max may hold away from the
+    // remembered one.
+    const startWidth = handle.previousElementSibling?.getBoundingClientRect().width ?? width;
+    handle.setPointerCapture(e.pointerId);
+    document.body.style.cursor = "col-resize";
+    onDragging(true);
+    const move = (ev: PointerEvent) => onWidth(clamp(startWidth + ev.clientX - startX));
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      document.body.style.cursor = "";
+      onDragging(false);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  };
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the details pane"
+      aria-valuenow={width}
+      tabIndex={0}
+      onPointerDown={start}
+      onKeyDown={(e) => {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        e.preventDefault();
+        onWidth(clamp(width + (e.key === "ArrowRight" ? 24 : -24)));
+      }}
+      className="group relative w-px flex-shrink-0 cursor-col-resize bg-gray-200 focus:outline-none"
+    >
+      {/* A wider grip than the line it draws. */}
+      <span className="absolute inset-y-0 -left-1.5 -right-1.5 z-10" />
+      <span className="absolute inset-y-0 -left-px -right-px bg-wp-blue opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-active:opacity-100" />
     </div>
   );
 }

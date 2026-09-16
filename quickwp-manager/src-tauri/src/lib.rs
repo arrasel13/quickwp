@@ -13,6 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod overlay;
+mod preview;
+
 struct AppState {
     app: Nexora,
     edge: Mutex<Option<server::Edge>>,
@@ -2816,6 +2819,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(preview::Previews::default())
+        .manage(overlay::Overlay::default())
         .manage(AppState {
             app,
             edge,
@@ -3009,6 +3014,14 @@ pub fn run() {
             mail_headers,
             mail_mark_read,
             mail_delete,
+            preview::preview_layout,
+            preview::preview_preload,
+            preview::preview_go,
+            preview::preview_prune,
+            overlay::overlay_prepare,
+            overlay::overlay_show,
+            overlay::overlay_hide,
+            overlay::overlay_current,
         ])
         .on_window_event(|window, event| match event {
             // Closing the window is quitting: it goes through the same choice

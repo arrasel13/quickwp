@@ -31,7 +31,7 @@ export default function SiteManage({ site, onDeleted }: { site: Site; onDeleted?
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <h4 className="mb-3 text-sm font-semibold text-gray-900">Manage</h4>
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 pane-sm:grid-cols-3">
         <Action
           icon={ArrowUpTrayIcon}
           label={busy === "export-all" ? "Exporting…" : "Export entire site"}

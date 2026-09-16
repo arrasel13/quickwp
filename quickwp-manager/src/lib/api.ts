@@ -437,6 +437,32 @@ export interface InstallProgress {
   total: number | null;
 }
 
+/** Where one preview webview goes, in CSS pixels of the window. */
+export interface PreviewFrame {
+  /** "main", or "mobile" beside it. */
+  slot: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** 1 fills the frame; less shows a wider page shrunk to fit. */
+  zoom: number;
+}
+
+/** What a preview shows: the site, WordPress admin, or the database in Adminer. */
+export type PreviewView = "site" | "admin" | "database";
+
+export type PreviewAction = "reload" | "back" | "forward" | "home" | "login";
+
+export interface PreviewPage {
+  domain: string;
+  view: PreviewView;
+  slot: string;
+  url: string;
+  /** True when a page starts loading, false once it has. */
+  loading: boolean;
+}
+
 /** True when running inside Tauri. The browser dev server has no backend. */
 export const hasBackend = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -745,6 +771,40 @@ export const api = {
   /** Log in to wp-admin without a password, in a chosen browser. */
   wpMagicLoginIn: (domain: string, browser: string | null, privateWindow: boolean) =>
     call<void>("wp_magic_login_in", { domain, browser, private: privateWindow }),
+  /**
+   * Show one view of `domain`'s live preview where `frames` say and hide every
+   * other one. `null`, or no frames, hides them all. `url` is Adminer's
+   * address, for the database view.
+   */
+  previewLayout: (
+    domain: string | null,
+    view: PreviewView | null,
+    frames: PreviewFrame[],
+    url?: string | null,
+  ) => call<void>("preview_layout", { domain, view, frames, url: url ?? null }),
+  /** Load a view hidden, so switching to it is instant. */
+  previewPreload: (domain: string, view: PreviewView, frame: PreviewFrame, url?: string | null) =>
+    call<void>("preview_preload", { domain, view, frame, url: url ?? null }),
+  /**
+   * Drive one view of a preview. "home" goes where the view starts -- the
+   * database view needs Adminer's `url` -- and "login" logs wp-admin in.
+   */
+  previewGo: (domain: string, view: PreviewView, action: PreviewAction, url?: string | null) =>
+    call<void>("preview_go", { domain, view, action, url: url ?? null }),
+  /** Load the menu overlay, hidden. See src/lib/overlay.ts. */
+  overlayPrepare: () => call<void>("overlay_prepare"),
+  /** Show a menu in the overlay, over a window of this size. */
+  overlayShow: (menu: unknown, width: number, height: number) =>
+    call<void>("overlay_show", { menu, width, height }),
+  overlayHide: () => call<void>("overlay_hide"),
+  /** The menu the overlay should be showing, for an overlay that just loaded. */
+  overlayCurrent: () => call<unknown | null>("overlay_current"),
+  /** Close the previews of sites no longer in `domains`. */
+  previewPrune: (domains: string[]) => call<void>("preview_prune", { domains }),
+  onPreviewPage: (cb: (p: PreviewPage) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<PreviewPage>("preview-page", (e) => cb(e.payload));
+  },
   /** Answer the quit prompt. The app exits; the promise may never settle. */
   appQuit: (mode: Exclude<QuitBehavior, "ask">, remember: boolean) =>
     call<void>("app_quit", { mode, remember }),

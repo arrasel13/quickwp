@@ -26,6 +26,10 @@ function useSitesState() {
   // A counter rather than a flag: every press of "+" is a new request, even
   // when the last one has not been "consumed" by a re-render yet.
   const [newSiteRequest, setNewSiteRequest] = useState(0);
+  // The site preview filling the whole window: no sidebar, no details. Shared
+  // because the sidebar belongs to the layout around the Sites screen. Not
+  // remembered, so Nexora never opens without its sidebar.
+  const [fullPreview, setFullPreview] = useState(false);
 
   const sites = data ?? [];
   // Falls back to the first site, so deleting the open one lands somewhere
@@ -50,6 +54,8 @@ function useSitesState() {
     },
     newSiteRequest,
     requestNewSite: () => setNewSiteRequest((n) => n + 1),
+    fullPreview,
+    setFullPreview,
   };
 }
 

@@ -43,7 +43,7 @@ export default function SiteTools({ domain }: { domain: string }) {
     <div className="space-y-4">
       <SearchReplace domain={domain} />
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 pane-lg:grid-cols-2">
         <div className="space-y-4">
           <Debugging domain={domain} busy={busy} act={act} />
           <Maintenance domain={domain} busy={busy} act={act} />
@@ -1043,7 +1043,7 @@ function SiteOptions({ domain }: { domain: string }) {
 
   return (
     <Panel title="Site options">
-      <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+      <div className="grid gap-x-6 gap-y-3 pane-sm:grid-cols-2">
         {OPTION_FIELDS.map((f) =>
           f.kind === "timezone" ? (
             <TimezoneField key={f.key} domain={domain} />

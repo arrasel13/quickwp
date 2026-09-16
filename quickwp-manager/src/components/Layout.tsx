@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FolderOpenIcon, PlayIcon, PlusIcon, StopIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { PlayIcon as PlaySolidIcon, StopIcon as StopSolidIcon } from "@heroicons/react/24/solid";
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { DrawerLeftIcon } from "./ui/DrawerIcons";
 import clsx from "clsx";
 import { api, errorText, hasBackend, type Site } from "../lib/api";
 import { setLanguage, useT } from "../lib/i18n";
@@ -47,7 +47,13 @@ export default function Layout({ openNewSite = false }: { openNewSite?: boolean 
 
 function Shell({ openNewSite }: { openNewSite: boolean }) {
   const t = useT();
-  const { requestNewSite } = useSites();
+  const { requestNewSite, fullPreview, setFullPreview, selected } = useSites();
+  // Full preview gives the site the whole window. With no site to show --
+  // the last one deleted -- it ends, or the sidebar would be gone for nothing.
+  const immersive = fullPreview && selected !== null;
+  useEffect(() => {
+    if (fullPreview && !selected) setFullPreview(false);
+  }, [fullPreview, selected]);
   // Arriving from setup's "Start Build": open the New site dialog at once.
   // Once only -- the ref survives StrictMode's second effect run.
   const openedNewSite = useRef(false);
@@ -85,6 +91,7 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
           className={clsx(
             "flex-shrink-0 flex flex-col text-gray-300 transition-[width] duration-150 ease-out",
             collapsed ? "w-20" : "w-60",
+            immersive && "hidden",
           )}
         >
           {/* Dragging the window by this strip stands in for the title bar
@@ -131,13 +138,10 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
                 onClick={() => setCollapsed((c) => !c)}
                 aria-label={collapsed ? t("expandSidebar") : t("collapseSidebar")}
                 title={collapsed ? t("expandSidebar") : t("collapseSidebar")}
-                className="rounded-md p-2 text-gray-400 hover:bg-white/5 hover:text-white transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
+                aria-pressed={!collapsed}
+                className="rounded-md p-1.5 text-gray-400 hover:bg-white/5 hover:text-white transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
               >
-                {collapsed ? (
-                  <PanelLeftOpen className="h-4 w-4" />
-                ) : (
-                  <PanelLeftClose className="h-4 w-4" />
-                )}
+                <DrawerLeftIcon className="h-5 w-5" />
               </button>
             </div>
           </div>
@@ -145,7 +149,13 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
 
         {/* Content: a white sheet inset from the window edge, the way the
             sidebar reads as the frame around it. */}
-        <main className="flex-1 min-w-0 my-2 mr-2 rounded-lg bg-white overflow-hidden ring-1 ring-black/5">
+        <main
+          className={clsx(
+            "flex-1 min-w-0 bg-white overflow-hidden",
+            // In full preview the sheet is the whole window, edge to edge.
+            immersive ? "m-0" : "my-2 mr-2 rounded-lg ring-1 ring-black/5",
+          )}
+        >
           <SitesTab />
         </main>
       </div>

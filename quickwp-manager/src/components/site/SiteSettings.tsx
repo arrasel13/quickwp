@@ -44,7 +44,7 @@ export default function SiteSettings({
 
   return (
     <div className="space-y-4 p-4">
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 pane-lg:grid-cols-2">
         <div className="space-y-4">
           <SiteName site={site} onChanged={onChanged} setNote={setNote} />
           <DomainPanel site={site} onChanged={onChanged} setNote={setNote} />

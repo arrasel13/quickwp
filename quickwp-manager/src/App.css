@@ -21,6 +21,14 @@ body,
   overscroll-behavior: none;
 }
 
+/* The menu overlay is a second copy of this page laid over the window: only
+   its menu may paint, or it would hide the app beneath it. */
+html.overlay,
+html.overlay body,
+html.overlay #root {
+  background-color: transparent;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
@@ -38,6 +46,15 @@ body,
 
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
+}
+
+/* Scrolls without drawing a bar: a row of tabs in a narrow pane. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* The sidebar sits on the dark frame; a light thumb there glares. */

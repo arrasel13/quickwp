@@ -23,6 +23,7 @@ pub mod paths;
 pub mod php;
 pub mod phpscan;
 pub mod ports;
+pub mod probe;
 pub mod proc;
 pub mod pty;
 pub mod privileged;

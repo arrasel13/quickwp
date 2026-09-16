@@ -861,7 +861,7 @@ function ThemeGrid({
           {total === 0 ? "None installed." : "Nothing matches."}
         </p>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-4 pane-sm:grid-cols-2 pane-xl:grid-cols-3">
           {items.map((item) => {
             const active = isActive(item);
             const hasUpdate = Boolean(item.update) && item.update !== "none";
