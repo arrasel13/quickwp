@@ -979,7 +979,7 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
                   {modalStep === "select" && (
                     <>
                       <div className="flex-1 overflow-y-auto p-6">
-                        <div className="grid gap-3 sm:grid-cols-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                           {projectOptions.map((option) => {
                             const tone = optionTones[option.color];
                             const disabled = option.available === false;

@@ -90,7 +90,7 @@ export default function SiteManage({ site, onDeleted }: { site: Site; onDeleted?
   return (
     <section>
       <h2 className="mb-3 text-sm font-semibold text-gray-900">Manage</h2>
-      <div className="grid gap-2.5">
+      <div className="grid grid-cols-1 gap-2.5">
         <Action
           icon={DuplicateIcon}
           label={label("duplicate", "Duplicate", "Duplicating…")}

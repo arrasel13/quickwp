@@ -112,7 +112,7 @@ export default function SiteHeaderMenu({ site }: { site: Site }) {
   return (
     // Fills a narrow pane, but stops short of stretching across a wide one:
     // the site's name reads as a control, not a banner.
-    <div ref={ref} className="relative w-full min-w-[260px] max-w-[360px]">
+    <div ref={ref} className="relative w-full min-w-[200px] max-w-[300px]">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}

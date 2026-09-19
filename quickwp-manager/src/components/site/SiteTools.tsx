@@ -69,24 +69,26 @@ export default function SiteTools({ domain }: { domain: string }) {
 
   return (
     <div className="space-y-4">
-      <SearchReplace domain={domain} />
-
-      <div className="grid gap-4 pane-lg:grid-cols-2">
-        <div className="space-y-4">
-          <Permalinks domain={domain} busy={busy} act={act} snapshot={snapshot} />
-        </div>
-
-        <div className="space-y-4">
-          <Language domain={domain} busy={busy} act={act} locale={data?.locale} />
-          <Core domain={domain} busy={busy} act={act} />
-        </div>
-      </div>
-
-      <SiteOptions domain={domain} snapshot={snapshot} />
+      <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <SearchReplace domain={domain} bare />
+        <Rule />
+        <Permalinks domain={domain} busy={busy} act={act} snapshot={snapshot} bare />
+        <Rule />
+        <Language domain={domain} busy={busy} act={act} locale={data?.locale} bare />
+        <Rule />
+        <Core domain={domain} busy={busy} act={act} bare />
+        <Rule />
+        <SiteOptions domain={domain} snapshot={snapshot} bare />
+      </section>
 
       <Note text={note} />
     </div>
   );
+}
+
+/** What separates the parts of one panel. */
+function Rule() {
+  return <div className="my-4 h-px bg-gray-100" />;
 }
 
 type Act = (key: string, fn: () => Promise<string>) => Promise<void>;
@@ -94,13 +96,25 @@ type Act = (key: string, fn: () => Promise<string>) => Promise<void>;
 export function Panel({
   title,
   flat,
+  bare,
   children,
 }: {
   title: string;
   /** A heading over the rows, as Manage has, rather than a card. */
   flat?: boolean;
+  /** One part of a card that holds several, headed like the others. */
+  bare?: boolean;
   children: React.ReactNode;
 }) {
+  if (bare)
+    return (
+      <div>
+        <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+          {title}
+        </h4>
+        {children}
+      </div>
+    );
   if (flat)
     return (
       <section>
@@ -153,7 +167,7 @@ export function Toggle({
 
 // -------------------------------------------------------- search & replace
 
-function SearchReplace({ domain }: { domain: string }) {
+function SearchReplace({ domain, bare }: { domain: string; bare?: boolean }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [dryRun, setDryRun] = useState(true);
@@ -176,7 +190,7 @@ function SearchReplace({ domain }: { domain: string }) {
   const ready = Boolean(from.trim() && to.trim());
 
   return (
-    <Panel title="Search & replace">
+    <Panel title="Search & replace" bare={bare}>
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={from}
@@ -288,7 +302,7 @@ function Maintenance({
 
   return (
     <Panel title="Maintenance" flat={flat}>
-      <div className="grid gap-2.5">
+      <div className="grid grid-cols-1 gap-2.5">
         <div className="flex items-center justify-between gap-3 rounded-md border border-gray-300 bg-white px-3.5 py-2.5">
           <p className="text-[13px] text-gray-800">
             <span className="font-semibold text-gray-900">Maintenance mode</span> — visitors see
@@ -385,7 +399,7 @@ function Backup({
 
   return (
     <Panel title="Backup & restore" flat={flat}>
-      <div className="grid gap-2.5">
+      <div className="grid grid-cols-1 gap-2.5">
         <Action
           icon={DatabaseTableIcon}
           label={busy === "export-db" ? "Exporting…" : "Export database"}
@@ -456,11 +470,13 @@ function Permalinks({
   busy,
   act,
   snapshot,
+  bare,
 }: {
   domain: string;
   busy: string | null;
   act: Act;
   snapshot: Snapshot;
+  bare?: boolean;
 }) {
   const structure = snapshot.data ? (snapshot.data.options.permalink_structure ?? "") : null;
   const load = snapshot.reload;
@@ -468,7 +484,7 @@ function Permalinks({
   const known = PERMALINK_STRUCTURES.find(([v]) => v === structure);
 
   return (
-    <Panel title="Permalinks">
+    <Panel title="Permalinks" bare={bare}>
       <select
         value={structure ?? ""}
         disabled={busy === "permalinks" || structure === null}
@@ -515,12 +531,14 @@ function Language({
   busy,
   act,
   locale,
+  bare,
 }: {
   domain: string;
   busy: string | null;
   act: Act;
   /** The site's locale from the snapshot, shown until the list arrives. */
   locale?: string;
+  bare?: boolean;
 }) {
   const { data: languages, reload } = useAsync(
     () => api.wpLanguages(domain),
@@ -532,7 +550,7 @@ function Language({
   const active = list.find((l) => l.status === "active");
 
   return (
-    <Panel title="Language">
+    <Panel title="Language" bare={bare}>
       <select
         value={active?.language ?? (locale || "en_US")}
         disabled={busy === "language" || list.length === 0}
@@ -568,10 +586,12 @@ function Core({
   domain,
   busy,
   act,
+  bare,
 }: {
   domain: string;
   busy: string | null;
   act: Act;
+  bare?: boolean;
 }) {
   const { data: version, reload } = useAsync(
     () => api.wpCoreVersion(domain),
@@ -613,7 +633,15 @@ function Core({
   }, []);
 
   return (
-    <Panel title="Core">
+    <Panel title="Core" bare={bare}>
+      {/* What is installed, before anything offers to change it. */}
+      <div className="mb-3 flex items-baseline justify-between gap-3 border-b border-gray-100 pb-3">
+        <span className="text-xs text-gray-600">Installed version</span>
+        <span className="font-mono text-xs text-gray-900">
+          {version ? `WordPress ${version}` : "…"}
+        </span>
+      </div>
+
       <div className="space-y-3">
         <button
           disabled={busy === "core-update"}
@@ -652,24 +680,34 @@ function Core({
         </button>
 
         <div className="border-t border-gray-100 pt-3">
-          <p className="mb-2 text-xs text-gray-500">
-            Core version ·{" "}
-            <span className="font-mono text-gray-900">{version ?? "…"}</span>
+          <label
+            htmlFor={`core-version-${domain}`}
+            className="mb-1.5 block text-xs font-medium text-gray-700"
+          >
+            Install a different version
+          </label>
+          <select
+            id={`core-version-${domain}`}
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            className={clsx(field, "w-full")}
+          >
+            <option value="">
+              {available.length ? "Choose a WordPress version…" : "Version list unavailable"}
+            </option>
+            {available.map((v) => (
+              <option key={v} value={v}>
+                WordPress {v}
+                {version && v === version ? " (installed)" : ""}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-gray-500">
+            Core files are replaced. Going back to an older version is a downgrade — WordPress
+            does not migrate a database backwards, so export it first.
           </p>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              className={clsx(field, "min-w-0 flex-1")}
-            >
-              <option value="">Pick a version…</option>
-              {available.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
             <button
               disabled={busy === "export-db"}
               onClick={() =>
@@ -680,14 +718,18 @@ function Core({
               }
               className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
             >
-              Export DB first
+              {busy === "export-db" ? "Exporting…" : "Export database first"}
             </button>
             <button
-              disabled={!target || busy === "switch"}
+              disabled={!target || target === version || busy === "switch"}
               onClick={() => setConfirmSwitch(true)}
               className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Switch version
+              {busy === "switch"
+                ? "Installing…"
+                : target
+                  ? `Install ${target}`
+                  : "Install version"}
             </button>
           </div>
         </div>
@@ -920,7 +962,15 @@ const ZONES: string[] = (() => {
   ];
 })();
 
-function SiteOptions({ domain, snapshot }: { domain: string; snapshot: Snapshot }) {
+function SiteOptions({
+  domain,
+  snapshot,
+  bare,
+}: {
+  domain: string;
+  snapshot: Snapshot;
+  bare?: boolean;
+}) {
   const [values, setValues] = useState<Record<string, string>>(
     () => snapshot.data?.options ?? {},
   );
@@ -961,8 +1011,8 @@ function SiteOptions({ domain, snapshot }: { domain: string; snapshot: Snapshot 
   };
 
   return (
-    <Panel title="Site options">
-      <div className="grid gap-x-6 gap-y-3 pane-sm:grid-cols-2">
+    <Panel title="Site options" bare={bare}>
+      <div className="grid grid-cols-1 gap-x-6 gap-y-3 pane-sm:grid-cols-2">
         {OPTION_FIELDS.map((f) =>
           f.kind === "timezone" ? (
             <TimezoneField key={f.key} domain={domain} snapshot={snapshot} />

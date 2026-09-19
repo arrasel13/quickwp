@@ -42,10 +42,10 @@ export default function SiteSettings({
 
   return (
     <div className="space-y-4 p-4">
-      <div className="grid gap-4 pane-lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 pane-lg:grid-cols-2">
         <div className="space-y-4">
           <SiteName site={site} onChanged={onChanged} setNote={setNote} />
-          <DomainPanel site={site} onChanged={onChanged} setNote={setNote} />
+          <DomainSection site={site} onChanged={onChanged} setNote={setNote} />
           <FolderPanel site={site} onChanged={onChanged} setNote={setNote} />
         </div>
 
@@ -55,7 +55,6 @@ export default function SiteSettings({
         </div>
       </div>
 
-      <DomainsPanel site={site} onChanged={onChanged} setNote={setNote} />
       <EnvPanel site={site} setNote={setNote} />
 
       {/* Through WP-CLI: search & replace, debugging, permalinks, language,
@@ -139,7 +138,7 @@ function EnvironmentPanel({
   // pr-8 leaves room for the arrow the forms plugin draws; with px-2 alone
   // it lands on top of the value.
   const select =
-    "rounded-lg border border-gray-300 bg-white py-1 pl-2 pr-8 text-xs focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 disabled:opacity-50";
+    "min-w-[5rem] rounded-lg border border-gray-300 bg-white py-1 pl-2 pr-8 text-xs focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 disabled:opacity-50";
   return (
     <Panel title="Environment">
       <dl className="divide-y divide-gray-100 text-xs">
@@ -155,14 +154,6 @@ function EnvironmentPanel({
               </option>
             ))}
           </select>
-        </EnvRow>
-
-        {/* Not a picker. Nexora serves sites from its own edge rather than
-            shipping nginx and Caddy, so there is nothing to choose between
-            and a dropdown would imply one. */}
-        <EnvRow label="Web server">
-          <span className="text-gray-900">Nexora edge</span>
-          <span className="text-[11px] text-gray-400">built in</span>
         </EnvRow>
 
         {/* Node is a build-tool concern; a WordPress site has none. */}
@@ -262,6 +253,26 @@ function SiteName({
 
 // ----------------------------------------------------------------- domain
 
+/** What separates the parts of one panel. */
+function Rule() {
+  return <div className="my-4 h-px bg-gray-100" />;
+}
+
+/** The site's address: the primary domain, and every other name it answers on. */
+function DomainSection(props: {
+  site: Site;
+  onChanged: () => Promise<void> | void;
+  setNote: SetNote;
+}) {
+  return (
+    <Panel title="Domain">
+      <DomainPanel {...props} />
+      <Rule />
+      <DomainNames {...props} />
+    </Panel>
+  );
+}
+
 function DomainPanel({
   site,
   onChanged,
@@ -277,15 +288,11 @@ function DomainPanel({
   const [busy, setBusy] = useState(false);
 
   return (
-    <Panel title="Domain">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-mono text-sm text-gray-900">{site.domain}</p>
-          <p className={hint}>
-            Changing the domain rewrites every URL in the database. A backup is
-            exported to Downloads first.
-          </p>
-        </div>
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <p className="min-w-0 truncate font-mono text-sm text-gray-900" title={site.domain}>
+          {site.domain}
+        </p>
         <button
           onClick={() => {
             setNext(site.domain);
@@ -296,6 +303,10 @@ function DomainPanel({
           Change domain…
         </button>
       </div>
+      <p className={hint}>
+        Changing the domain rewrites every URL in the database. A backup is exported to Downloads
+        first.
+      </p>
 
       {editing && (
         <div className="mt-3 flex items-center gap-2">
@@ -351,7 +362,7 @@ function DomainPanel({
           })();
         }}
       />
-    </Panel>
+    </div>
   );
 }
 
@@ -384,31 +395,25 @@ function FolderPanel({
 
   return (
     <Panel title="Site folder">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate font-mono text-xs text-gray-900" title={site.docroot}>
-            {site.docroot}
-          </p>
-          <p className={hint}>
-            Move the site's files to another folder — domain, database and
-            certificate stay the same.
-          </p>
-        </div>
-        <div className="flex flex-shrink-0 items-center gap-1">
-          <CopyButton value={site.docroot} title="Copy path" />
-          <button
-            title="Reveal in Finder"
-            onClick={() =>
-              void api.pathOpen(site.docroot).catch((e) => setNote(errorText(e)))
-            }
-            className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
-          >
-            <FolderOpenIcon className="h-3.5 w-3.5" />
-          </button>
-          <button onClick={() => void pick()} className={ghost}>
-            Move…
-          </button>
-        </div>
+      {/* The whole path, wrapped rather than cut off: it is the one thing
+          this panel is for. */}
+      <p className="break-all font-mono text-xs text-gray-900">{site.docroot}</p>
+      <p className={hint}>
+        Move the site's files to another folder — domain, database and certificate stay the same.
+      </p>
+
+      <div className="mt-3 flex flex-wrap items-center gap-1">
+        <CopyButton value={site.docroot} title="Copy path" />
+        <button
+          title="Reveal in Finder"
+          onClick={() => void api.pathOpen(site.docroot).catch((e) => setNote(errorText(e)))}
+          className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+        >
+          <FolderOpenIcon className="h-3.5 w-3.5" />
+        </button>
+        <button onClick={() => void pick()} className={clsx(ghost, "ml-auto")}>
+          Move…
+        </button>
       </div>
 
       <ConfirmDialog
@@ -465,6 +470,11 @@ function InfoPanel({ site }: { site: Site }) {
         <Row label="Type">
           <span className="capitalize">{info?.kind ?? site.kind}</span>
         </Row>
+        {/* Not a choice: Nexora serves every site from its own edge rather
+            than shipping nginx and Caddy. */}
+        <Row label="Web server">
+          Nexora edge <span className="text-[11px] text-gray-400">built in</span>
+        </Row>
         <Row label="Database name">
           {info?.db_name ? (
             <span className="flex items-center gap-1">
@@ -515,7 +525,7 @@ function Row({
 
 // ---------------------------------------------------------------- domains
 
-function DomainsPanel({
+function DomainNames({
   site,
   onChanged,
   setNote,
@@ -542,7 +552,7 @@ function DomainsPanel({
   };
 
   return (
-    <Panel title="Domains">
+    <div>
       <ul className="space-y-1.5">
         <li className="flex items-center gap-2">
           <span className="font-mono text-sm text-gray-900">{site.domain}</span>
@@ -581,7 +591,7 @@ function DomainsPanel({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          className={clsx(field, "w-56 font-mono text-xs")}
+          className={clsx(field, "min-w-0 flex-1 font-mono text-xs")}
         />
         <button
           disabled={busy || !alias.trim()}
@@ -618,7 +628,7 @@ function DomainsPanel({
           if (a) void run(() => api.siteRemoveDomain(site.domain, a));
         }}
       />
-    </Panel>
+    </div>
   );
 }
 
@@ -670,7 +680,7 @@ function EnvPanel({ site, setNote }: { site: Site; setNote: SetNote }) {
                 autoCorrect="off"
                 autoCapitalize="off"
                 spellCheck={false}
-                className={clsx(field, "w-56 font-mono text-xs")}
+                className={clsx(field, "min-w-0 flex-1 basis-28 font-mono text-xs")}
               />
               <span className="text-gray-400">=</span>
               <input
@@ -681,7 +691,7 @@ function EnvPanel({ site, setNote }: { site: Site; setNote: SetNote }) {
                 autoCorrect="off"
                 autoCapitalize="off"
                 spellCheck={false}
-                className={clsx(field, "min-w-0 flex-1 font-mono text-xs")}
+                className={clsx(field, "min-w-0 flex-[2] basis-32 font-mono text-xs")}
               />
               <button
                 title="Remove"
