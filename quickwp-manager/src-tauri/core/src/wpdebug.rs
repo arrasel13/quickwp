@@ -1,4 +1,4 @@
-//! WordPress debug logging, switched from Nexora's Logs tab.
+//! WordPress debug logging, switched from Nexora's Debugging tab.
 //!
 //! Nexora writes one marked block into wp-config.php, right after `<?php`, so
 //! its definitions come before any in the file: in PHP the first `define` of
@@ -17,14 +17,14 @@ use crate::{db::Db, runtime, site::Site, Error, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const BEGIN: &str = "/* BEGIN Nexora debug: managed from Nexora's Logs tab */";
+const BEGIN: &str = "/* BEGIN Nexora debug: managed from Nexora's Debugging tab */";
 const BEGIN_PREFIX: &str = "/* BEGIN Nexora debug";
 const END: &str = "/* END Nexora debug */";
 const STANDARD: &str = "/* Nexora: debug logging */";
 const CUSTOM: &str = "/* Nexora: custom debug code */";
 const PARKED: &str = "// Nexora debug (restored when turned off): ";
 
-/// The two lines "Enable debug log" adds.
+/// The two lines the WP_DEBUG switch adds.
 pub const STANDARD_CODE: &str = "define( 'WP_DEBUG', true );\ndefine( 'WP_DEBUG_LOG', true );";
 
 #[derive(Debug, Clone, serde::Serialize)]

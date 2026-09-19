@@ -52,7 +52,6 @@ export default function SiteSettings({
         <div className="space-y-4">
           <EnvironmentPanel site={site} {...environment} />
           <InfoPanel site={site} />
-          <XdebugPanel site={site} onChanged={onChanged} setNote={setNote} />
         </div>
       </div>
 
@@ -513,60 +512,6 @@ function Row({
 }
 
 // ----------------------------------------------------------------- xdebug
-
-function XdebugPanel({
-  site,
-  onChanged,
-  setNote,
-}: {
-  site: Site;
-  onChanged: () => Promise<void> | void;
-  setNote: SetNote;
-}) {
-  const [busy, setBusy] = useState(false);
-
-  return (
-    <Panel title="Xdebug">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs leading-relaxed text-gray-700">
-          Enable step debugging for this site only — its PHP moves to a
-          separate debug pool with Xdebug loaded; every other site stays on the
-          shared pool at full speed.
-        </p>
-        <button
-          role="switch"
-          aria-checked={site.xdebug}
-          disabled={busy}
-          onClick={() =>
-            void (async () => {
-              setBusy(true);
-              setNote(null);
-              try {
-                setNote(await api.siteSetXdebug(site.domain, !site.xdebug));
-                await onChanged();
-              } catch (e) {
-                setNote(errorText(e));
-              } finally {
-                setBusy(false);
-              }
-            })()
-          }
-          className={clsx(
-            "relative h-6 w-11 flex-shrink-0 rounded-full transition-colors disabled:opacity-50",
-            site.xdebug ? "bg-blue-600" : "bg-gray-300",
-          )}
-        >
-          <span
-            className={clsx(
-              "absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
-              site.xdebug ? "translate-x-5" : "translate-x-0",
-            )}
-          />
-        </button>
-      </div>
-    </Panel>
-  );
-}
 
 // ---------------------------------------------------------------- domains
 

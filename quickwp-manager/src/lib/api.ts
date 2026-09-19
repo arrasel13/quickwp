@@ -91,6 +91,15 @@ export interface WpItem {
   title: string;
 }
 
+/** What the Settings tab reads from a WordPress site, in one call. */
+export interface WpSettingsSnapshot {
+  /** wp-config.php's known switches: true only when defined true. */
+  constants: Record<string, boolean>;
+  options: Record<string, string>;
+  /** get_locale(); empty when WordPress could not load. */
+  locale: string;
+}
+
 export interface WpLanguage {
   language: string;
   english_name: string;
@@ -613,6 +622,8 @@ export const api = {
     call<string | null>("wp_config_get", { domain, key }),
   wpConfigSetBool: (domain: string, key: string, on: boolean) =>
     call<string>("wp_config_set_bool", { domain, key, on }),
+  wpSettingsSnapshot: (domain: string, options: string[]) =>
+    call<WpSettingsSnapshot>("wp_settings_snapshot", { domain, options }),
   wpOptionGet: (domain: string, key: string) =>
     call<string>("wp_option_get", { domain, key }),
   wpOptionSet: (domain: string, key: string, value: string) =>

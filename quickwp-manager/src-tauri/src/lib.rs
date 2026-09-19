@@ -1858,7 +1858,9 @@ fn wp_delete_user(
 
 macro_rules! site_cmd {
     ($name:ident, $ret:ty, |$site:ident $(, $arg:ident : $ty:ty)*| $body:expr) => {
-        #[tauri::command]
+        // Async: each is a WP-CLI process, and a plain command runs on the main
+        // thread -- the window froze for as long as every one of them took.
+        #[tauri::command(async)]
         fn $name(state: State<'_, AppState>, domain: String $(, $arg: $ty)*) -> Res<$ret> {
             let $site = site_by_domain(&state, &domain)?;
             Ok($body?)
@@ -1869,6 +1871,7 @@ macro_rules! site_cmd {
 site_cmd!(wp_config_get, Option<String>, |site, key: String| wptools::config_get(&site, &key));
 site_cmd!(wp_config_set_bool, String, |site, key: String, on: bool| wptools::config_set_bool(&site, &key, on));
 site_cmd!(wp_option_get, String, |site, key: String| wptools::option_get(&site, &key));
+site_cmd!(wp_settings_snapshot, wptools::SettingsSnapshot, |site, options: Vec<String>| wptools::settings_snapshot(&site, &options));
 site_cmd!(wp_option_set, String, |site, key: String, value: String| wptools::option_set(&site, &key, &value));
 site_cmd!(wp_set_permalinks, String, |site, structure: String| wptools::set_permalinks(&site, &structure));
 site_cmd!(wp_flush_rewrites, String, |site| wptools::flush_rewrites(&site));
@@ -2983,6 +2986,7 @@ pub fn run() {
             wp_config_get,
             wp_config_set_bool,
             wp_option_get,
+            wp_settings_snapshot,
             wp_option_set,
             wp_set_permalinks,
             wp_flush_rewrites,

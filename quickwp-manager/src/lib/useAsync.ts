@@ -14,6 +14,34 @@ export function putCache(key: string, value: unknown) {
   cache.set(key, value);
 }
 
+// Requests still on their way, per key: a screen that mounts while the same
+// data is being fetched ahead of it waits for that answer instead of asking
+// WP-CLI a second time.
+const pending = new Map<string, Promise<unknown>>();
+
+function shared<T>(key: string | undefined, fn: () => Promise<T>): Promise<T> {
+  if (!key) return fn();
+  const inflight = pending.get(key) as Promise<T> | undefined;
+  if (inflight) return inflight;
+  const p = fn().finally(() => {
+    if (pending.get(key) === p) pending.delete(key);
+  });
+  pending.set(key, p);
+  return p;
+}
+
+/**
+ * Fetch into the cache ahead of the screen that shows it, so that screen
+ * opens with its values already there. Does nothing when the key is known or
+ * already on its way.
+ */
+export function prefetch<T>(key: string, fn: () => Promise<T>) {
+  if (cache.has(key) || pending.has(key)) return;
+  void shared(key, fn)
+    .then((v) => cache.set(key, v))
+    .catch(() => {});
+}
+
 /**
  * Load, expose a reload, and surface the error text rather than swallowing it.
  *
@@ -44,7 +72,7 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = [], key?: st
       setLoading(true);
     }
     try {
-      const value = await fn();
+      const value = await shared(key, fn);
       if (mine !== latest.current) return;
       if (key) cache.set(key, value);
       setDataState(value);

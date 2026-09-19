@@ -206,7 +206,6 @@ export default function SiteLogs({ domain }: { domain: string }) {
             size={current?.exists ? human(current.bytes) : null}
             path={current?.path ?? ""}
             actions={renderActions(false)}
-            onChanged={() => void Promise.all([loadStreams(), loadBody()])}
           />
         )}
 

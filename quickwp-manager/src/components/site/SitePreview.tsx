@@ -792,6 +792,35 @@ export default function SitePreview({
                 WordPress
               </Segment>
             )}
+            {isWordPress && (
+              <Segment
+                selected={current === "cron"}
+                onClick={() => choose("cron")}
+                disabled={!live}
+                label="Cron"
+                icon={<ClockIcon className="h-4 w-4" />}
+              >
+                Cron
+              </Segment>
+            )}
+            <Segment
+              selected={current === "mail"}
+              onClick={() => choose("mail")}
+              disabled={!live}
+              label="Mail"
+              icon={<EnvelopeIcon className="h-4 w-4" />}
+            >
+              Mail
+            </Segment>
+            <Segment
+              selected={current === "logs"}
+              onClick={() => choose("logs")}
+              disabled={!live}
+              label="Logs"
+              icon={<DocumentTextIcon className="h-4 w-4" />}
+            >
+              Logs
+            </Segment>
             {site.db_name && (
               <Segment
                 selected={current === "database"}
@@ -810,35 +839,6 @@ export default function SitePreview({
                 }
               >
                 Database
-              </Segment>
-            )}
-            <Segment
-              selected={current === "logs"}
-              onClick={() => choose("logs")}
-              disabled={!live}
-              label="Logs"
-              icon={<DocumentTextIcon className="h-4 w-4" />}
-            >
-              Logs
-            </Segment>
-            <Segment
-              selected={current === "mail"}
-              onClick={() => choose("mail")}
-              disabled={!live}
-              label="Mail"
-              icon={<EnvelopeIcon className="h-4 w-4" />}
-            >
-              Mail
-            </Segment>
-            {isWordPress && (
-              <Segment
-                selected={current === "cron"}
-                onClick={() => choose("cron")}
-                disabled={!live}
-                label="Cron"
-                icon={<ClockIcon className="h-4 w-4" />}
-              >
-                Cron
               </Segment>
             )}
           </div>

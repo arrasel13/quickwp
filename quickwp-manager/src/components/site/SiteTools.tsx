@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowPathIcon,
-  ArrowRightEndOnRectangleIcon,
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
   SparklesIcon,
@@ -12,6 +11,7 @@ import clsx from "clsx";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorText, CronEvent, WpLanguage } from "../../lib/api";
 import { useAsync } from "../../lib/useAsync";
+import { useSettingsSnapshot, type Snapshot } from "../../lib/wpSettings";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import { Action } from "./SiteManage";
 import { DatabaseTableIcon, ExportIcon, ImportIcon } from "../ui/WpIcons";
@@ -64,6 +64,8 @@ export function MaintenanceAndBackup({ domain }: { domain: string }) {
 
 export default function SiteTools({ domain }: { domain: string }) {
   const { note, busy, act } = useAct();
+  const snapshot = useSettingsSnapshot(domain);
+  const { data } = snapshot;
 
   return (
     <div className="space-y-4">
@@ -71,17 +73,16 @@ export default function SiteTools({ domain }: { domain: string }) {
 
       <div className="grid gap-4 pane-lg:grid-cols-2">
         <div className="space-y-4">
-          <Debugging domain={domain} busy={busy} act={act} />
-          <Permalinks domain={domain} busy={busy} act={act} />
+          <Permalinks domain={domain} busy={busy} act={act} snapshot={snapshot} />
         </div>
 
         <div className="space-y-4">
-          <Language domain={domain} busy={busy} act={act} />
+          <Language domain={domain} busy={busy} act={act} locale={data?.locale} />
           <Core domain={domain} busy={busy} act={act} />
         </div>
       </div>
 
-      <SiteOptions domain={domain} />
+      <SiteOptions domain={domain} snapshot={snapshot} />
 
       <Note text={note} />
     </div>
@@ -90,7 +91,7 @@ export default function SiteTools({ domain }: { domain: string }) {
 
 type Act = (key: string, fn: () => Promise<string>) => Promise<void>;
 
-function Panel({
+export function Panel({
   title,
   flat,
   children,
@@ -120,7 +121,7 @@ const btn =
 const field =
   "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30";
 
-function Toggle({
+export function Toggle({
   on,
   busy,
   onChange,
@@ -256,108 +257,6 @@ function SearchReplace({ domain }: { domain: string }) {
 }
 
 // --------------------------------------------------------------- debugging
-
-const DEBUG_CONSTANTS = [
-  ["WP_DEBUG_LOG", "write errors to wp-content/debug.log"],
-  ["WP_DEBUG_DISPLAY", "print errors on pages"],
-  ["SCRIPT_DEBUG", "use unminified core JS/CSS"],
-] as const;
-
-function Debugging({
-  domain,
-  busy,
-  act,
-}: {
-  domain: string;
-  busy: string | null;
-  act: Act;
-}) {
-  const [flags, setFlags] = useState<Record<string, boolean>>({});
-
-  const load = useCallback(async () => {
-    const keys = ["WP_DEBUG", ...DEBUG_CONSTANTS.map(([k]) => k)];
-    const entries = await Promise.all(
-      keys.map(async (k) => {
-        try {
-          const v = await api.wpConfigGet(domain, k);
-          // Undefined and "false" are both off; only a true literal is on.
-          return [k, v === "true" || v === "1"] as const;
-        } catch {
-          return [k, false] as const;
-        }
-      }),
-    );
-    setFlags(Object.fromEntries(entries));
-  }, [domain]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const setOne = (key: string, on: boolean) =>
-    void act(key, async () => {
-      const msg = await api.wpConfigSetBool(domain, key, on);
-      await load();
-      return msg;
-    });
-
-  // The recommended trio for local work: log everything, show nothing. Errors
-  // printed into a page break JSON responses and leak into markup.
-  const setTrio = (on: boolean) =>
-    void act("WP_DEBUG", async () => {
-      await api.wpConfigSetBool(domain, "WP_DEBUG", on);
-      await api.wpConfigSetBool(domain, "WP_DEBUG_LOG", on);
-      await api.wpConfigSetBool(domain, "WP_DEBUG_DISPLAY", false);
-      await load();
-      return on
-        ? "WP_DEBUG on, logging to wp-content/debug.log, display off."
-        : "Debugging off.";
-    });
-
-  return (
-    <Panel title="Debugging">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3 border-b border-gray-100 pb-3">
-          <p className="text-xs text-gray-700">
-            <span className="font-mono font-medium text-gray-900">WP_DEBUG</span>{" "}
-            — sets the recommended trio (log on, display off).
-          </p>
-          <Toggle
-            on={flags.WP_DEBUG ?? false}
-            busy={busy === "WP_DEBUG"}
-            onChange={setTrio}
-          />
-        </div>
-
-        {DEBUG_CONSTANTS.map(([key, blurb]) => (
-          <div key={key} className="flex items-center justify-between gap-3">
-            <p className="text-xs text-gray-700">
-              <span className="font-mono font-medium text-gray-900">{key}</span>{" "}
-              — {blurb}
-            </p>
-            <Toggle
-              on={flags[key] ?? false}
-              busy={busy === key}
-              onChange={(v) => setOne(key, v)}
-            />
-          </div>
-        ))}
-
-        <button
-          onClick={() =>
-            void api
-              .wpMagicLogin(domain, "admin")
-              .catch((e) => alert(errorText(e)))
-          }
-          className={clsx(btn, "mt-1 inline-flex items-center justify-center gap-1.5")}
-        >
-          <ArrowRightEndOnRectangleIcon className="h-4 w-4" />
-          One-click admin login
-        </button>
-      </div>
-    </Panel>
-  );
-}
 
 // ------------------------------------------------------------- maintenance
 
@@ -556,24 +455,15 @@ function Permalinks({
   domain,
   busy,
   act,
+  snapshot,
 }: {
   domain: string;
   busy: string | null;
   act: Act;
+  snapshot: Snapshot;
 }) {
-  const [structure, setStructure] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setStructure(await api.wpOptionGet(domain, "permalink_structure"));
-    } catch {
-      setStructure("");
-    }
-  }, [domain]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const structure = snapshot.data ? (snapshot.data.options.permalink_structure ?? "") : null;
+  const load = snapshot.reload;
 
   const known = PERMALINK_STRUCTURES.find(([v]) => v === structure);
 
@@ -624,10 +514,13 @@ function Language({
   domain,
   busy,
   act,
+  locale,
 }: {
   domain: string;
   busy: string | null;
   act: Act;
+  /** The site's locale from the snapshot, shown until the list arrives. */
+  locale?: string;
 }) {
   const { data: languages, reload } = useAsync(
     () => api.wpLanguages(domain),
@@ -641,7 +534,7 @@ function Language({
   return (
     <Panel title="Language">
       <select
-        value={active?.language ?? "en_US"}
+        value={active?.language ?? (locale || "en_US")}
         disabled={busy === "language" || list.length === 0}
         onChange={(e) =>
           void act("language", async () => {
@@ -653,7 +546,7 @@ function Language({
         className={field}
       >
         {list.length === 0 ? (
-          <option>Loading…</option>
+          <option value={locale || "en_US"}>{locale || "Loading…"}</option>
         ) : (
           list.map((l) => (
             <option key={l.language} value={l.language}>
@@ -898,25 +791,18 @@ const OPTION_FIELDS: {
  * Saving mirrors what wp-admin does: whichever one you pick is written and the
  * other is cleared, so they can never disagree.
  */
-function TimezoneField({ domain }: { domain: string }) {
-  const [value, setValue] = useState<string | null>(null);
+function TimezoneField({ domain, snapshot }: { domain: string; snapshot: Snapshot }) {
+  const options = snapshot.data?.options;
+  const read = options
+    ? (options.timezone_string ?? "").trim() || `UTC${formatOffset(options.gmt_offset ?? "0")}`
+    : null;
+  // What was picked here, shown until the snapshot is read again.
+  const [picked, setPicked] = useState<string | null>(null);
+  useEffect(() => setPicked(null), [read, domain]);
+  const value = picked ?? read;
+  const setValue = setPicked;
+  const load = snapshot.reload;
   const [saving, setSaving] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const [zone, offset] = await Promise.all([
-        api.wpOptionGet(domain, "timezone_string"),
-        api.wpOptionGet(domain, "gmt_offset"),
-      ]);
-      setValue(zone.trim() ? zone.trim() : `UTC${formatOffset(offset)}`);
-    } catch {
-      setValue("UTC+0");
-    }
-  }, [domain]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   const save = async (next: string) => {
     setSaving(true);
@@ -924,11 +810,14 @@ function TimezoneField({ domain }: { domain: string }) {
     try {
       if (next.startsWith("UTC")) {
         const offset = next.slice(3);
-        await api.wpOptionSet(domain, "gmt_offset", offset === "+0" ? "0" : offset);
+        const gmt = offset === "+0" ? "0" : offset;
+        await api.wpOptionSet(domain, "gmt_offset", gmt);
         await api.wpOptionSet(domain, "timezone_string", "");
+        snapshot.patch({ gmt_offset: gmt, timezone_string: "" });
       } else {
         await api.wpOptionSet(domain, "timezone_string", next);
         await api.wpOptionSet(domain, "gmt_offset", "");
+        snapshot.patch({ timezone_string: next, gmt_offset: "" });
       }
     } catch (e) {
       alert(errorText(e));
@@ -1031,27 +920,29 @@ const ZONES: string[] = (() => {
   ];
 })();
 
-function SiteOptions({ domain }: { domain: string }) {
-  const [values, setValues] = useState<Record<string, string>>({});
+function SiteOptions({ domain, snapshot }: { domain: string; snapshot: Snapshot }) {
+  const [values, setValues] = useState<Record<string, string>>(
+    () => snapshot.data?.options ?? {},
+  );
   const [saving, setSaving] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
+  // Fields typed into and not saved yet: a snapshot landing meanwhile must
+  // not wipe what is being typed.
+  const dirty = useRef(new Set<string>());
+
+  // Filled from the snapshot as it lands -- at once when it was read ahead.
   useEffect(() => {
-    let cancelled = false;
-    void Promise.all(
-      OPTION_FIELDS.filter((f) => f.kind !== "timezone").map(async (f) => {
-        try {
-          return [f.key, await api.wpOptionGet(domain, f.key)] as const;
-        } catch {
-          return [f.key, ""] as const;
-        }
-      }),
-    ).then((entries) => {
-      if (!cancelled) setValues(Object.fromEntries(entries));
+    const read = snapshot.data?.options ?? {};
+    setValues((prev) => {
+      const next = { ...read };
+      for (const k of dirty.current) if (k in prev) next[k] = prev[k];
+      return next;
     });
-    return () => {
-      cancelled = true;
-    };
+  }, [snapshot.data]);
+
+  useEffect(() => {
+    dirty.current.clear();
   }, [domain]);
 
   const save = async (key: string, value: string) => {
@@ -1059,6 +950,8 @@ function SiteOptions({ domain }: { domain: string }) {
     setNote(null);
     try {
       await api.wpOptionSet(domain, key, value);
+      dirty.current.delete(key);
+      snapshot.patch({ [key]: value });
       setNote(`${key} saved.`);
     } catch (e) {
       setNote(errorText(e));
@@ -1072,7 +965,7 @@ function SiteOptions({ domain }: { domain: string }) {
       <div className="grid gap-x-6 gap-y-3 pane-sm:grid-cols-2">
         {OPTION_FIELDS.map((f) =>
           f.kind === "timezone" ? (
-            <TimezoneField key={f.key} domain={domain} />
+            <TimezoneField key={f.key} domain={domain} snapshot={snapshot} />
           ) : (
           <div key={f.key} className="flex items-center gap-3">
             <label className="w-36 flex-shrink-0 text-xs text-gray-600">
@@ -1098,9 +991,10 @@ function SiteOptions({ domain }: { domain: string }) {
               <input
                 value={values[f.key] ?? ""}
                 disabled={saving === f.key}
-                onChange={(e) =>
-                  setValues((v) => ({ ...v, [f.key]: e.target.value }))
-                }
+                onChange={(e) => {
+                  dirty.current.add(f.key);
+                  setValues((v) => ({ ...v, [f.key]: e.target.value }));
+                }}
                 // Saved on blur, not per keystroke: each save is a WP-CLI
                 // process, and one per character would be absurd.
                 onBlur={(e) => void save(f.key, e.target.value)}

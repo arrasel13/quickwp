@@ -109,6 +109,89 @@ fn check_option(key: &str) -> Result<()> {
     }
 }
 
+/// Everything the Settings tab reads, in two WP-CLI runs side by side rather
+/// than one per field: wp-config.php's switches, the options asked for, and
+/// the site's locale.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct SettingsSnapshot {
+    /// Each known constant: true only when wp-config.php defines it true.
+    pub constants: std::collections::BTreeMap<String, bool>,
+    pub options: std::collections::BTreeMap<String, String>,
+    /// get_locale(), e.g. "en_US". Empty when WordPress could not load.
+    pub locale: String,
+}
+
+/// Whether a `wp config list` value is a true literal. WP-CLI reports
+/// `define('X', true)` as JSON true, and older releases as "1" or "true".
+fn truthy(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
+        serde_json::Value::String(s) => matches!(s.trim(), "true" | "1" | "TRUE"),
+        _ => false,
+    }
+}
+
+/// Only the constants on [`KNOWN_CONSTANTS`] are kept: the rest of the list is
+/// the database password and the salts, which have no business in the UI.
+fn known_constants(json: &str) -> std::collections::BTreeMap<String, bool> {
+    let mut out: std::collections::BTreeMap<String, bool> =
+        KNOWN_CONSTANTS.iter().map(|k| (k.to_string(), false)).collect();
+    let rows: Vec<serde_json::Value> = serde_json::from_str(json.trim()).unwrap_or_default();
+    for row in rows {
+        let (Some(name), Some(kind)) = (row.get("name").and_then(|v| v.as_str()), row.get("type").and_then(|v| v.as_str())) else {
+            continue;
+        };
+        if kind == "constant" && KNOWN_CONSTANTS.contains(&name) {
+            out.insert(name.to_string(), row.get("value").is_some_and(truthy));
+        }
+    }
+    out
+}
+
+/// Prints the options named in `$args` and the locale as JSON. The names are
+/// checked against [`KNOWN_OPTIONS`] first and reach PHP as arguments, never
+/// as code.
+const SNAPSHOT_PHP: &str = r#"$o = array();
+foreach ( $args as $k ) { $v = get_option( $k ); $o[ $k ] = is_scalar( $v ) ? (string) $v : ''; }
+echo wp_json_encode( array( 'options' => (object) $o, 'locale' => get_locale() ) );"#;
+
+pub fn settings_snapshot(site: &Site, options: &[String]) -> Result<SettingsSnapshot> {
+    for key in options {
+        check_option(key)?;
+    }
+    let (constants, loaded) = std::thread::scope(|s| {
+        let constants = s.spawn(|| -> Result<_> {
+            let mut c = wp(site)?;
+            c.args(["config", "list", "--format=json", "--fields=name,value,type"]);
+            Ok(known_constants(&run(c, "Reading wp-config.php")?))
+        });
+        let loaded = s.spawn(|| -> Result<String> {
+            let mut c = wp(site)?;
+            c.args(["eval", SNAPSHOT_PHP]).args(options);
+            run(c, "Reading the site's options")
+        });
+        (constants.join(), loaded.join())
+    });
+    let constants = constants.map_err(|_| Error::other("reading wp-config.php panicked"))??;
+    // WordPress may not load (its database stopped): the switches in
+    // wp-config.php are still worth showing, so this half is allowed to fail.
+    let mut snapshot = SettingsSnapshot { constants, ..Default::default() };
+    if let Ok(Ok(out)) = loaded {
+        // Anything a plugin prints while WordPress boots comes first.
+        let json = out.find("{\"options\"").map(|i| &out[i..]).unwrap_or(&out);
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json.trim()) {
+            if let Some(map) = v.get("options").and_then(|m| m.as_object()) {
+                for (k, val) in map {
+                    snapshot.options.insert(k.clone(), val.as_str().unwrap_or("").to_string());
+                }
+            }
+            snapshot.locale = v.get("locale").and_then(|l| l.as_str()).unwrap_or("").to_string();
+        }
+    }
+    Ok(snapshot)
+}
+
 pub fn option_get(site: &Site, key: &str) -> Result<String> {
     check_option(key)?;
     let mut c = wp(site)?;
@@ -435,5 +518,49 @@ mod tests {
         assert!(check_option("siteurl").is_err());
         assert!(check_option("home").is_err());
         assert!(check_option("active_plugins").is_err());
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn only_known_constants_leave_wp_config_and_only_true_is_on() {
+        let json = r#"[{"name":"DB_PASSWORD","value":"secret","type":"constant"},
+            {"name":"WP_DEBUG","value":true,"type":"constant"},
+            {"name":"WP_DEBUG_LOG","value":"1","type":"constant"},
+            {"name":"WP_DEBUG_DISPLAY","value":false,"type":"constant"},
+            {"name":"SCRIPT_DEBUG","value":"","type":"constant"},
+            {"name":"table_prefix","value":"wp_","type":"variable"}]"#;
+        let c = known_constants(json);
+        assert!(!c.contains_key("DB_PASSWORD"));
+        assert_eq!(c.get("WP_DEBUG"), Some(&true));
+        assert_eq!(c.get("WP_DEBUG_LOG"), Some(&true));
+        assert_eq!(c.get("WP_DEBUG_DISPLAY"), Some(&false));
+        assert_eq!(c.get("SCRIPT_DEBUG"), Some(&false));
+        // Not in the file at all reads as off, and is still listed.
+        assert_eq!(c.get("WP_CACHE"), Some(&false));
+        assert_eq!(c.len(), KNOWN_CONSTANTS.len());
+    }
+
+    #[test]
+    fn snapshot_refuses_options_off_the_list() {
+        let site = Site {
+            id: 0,
+            name: "x".into(),
+            domain: "x.test".into(),
+            docroot: "/nonexistent".into(),
+            kind: "wordpress".into(),
+            php_minor: "8.3".into(),
+            server: String::new(),
+            enabled: false,
+            is_linked: false,
+            db_name: None,
+            db_engine: None,
+            xdebug: false,
+            aliases: vec![],
+        };
+        assert!(settings_snapshot(&site, &["siteurl".to_string()]).is_err());
     }
 }

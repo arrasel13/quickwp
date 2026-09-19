@@ -25,6 +25,8 @@ import SiteHeaderMenu from "../site/SiteHeaderMenu";
 import { usePref } from "../../lib/usePref";
 import SiteWordPress from "../site/SiteWordPress";
 import SiteSettings from "../site/SiteSettings";
+import SiteDebugging from "../site/SiteDebugging";
+import { prefetchSiteSettings } from "../../lib/wpSettings";
 import WindowDragStrip from "../WindowDragStrip";
 import { unlessWindowDrag } from "../../lib/windowDrag";
 import { useSites } from "../../lib/sites";
@@ -325,6 +327,7 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
     { name: "Overview", id: "overview" },
     { name: "WordPress", id: "wordpress" },
     { name: "Settings", id: "settings" },
+    { name: "Debugging", id: "debugging" },
   ];
 
   /** Overview opens first: what the site is, and where to go from it. */
@@ -344,6 +347,26 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
     setSiteTab(DEFAULT_SITE_TAB);
     setVisited(new Set([DEFAULT_SITE_TAB]));
   }, [selectedId]);
+
+  // Settings is ready before it is clicked. Once Overview has had its turn,
+  // its WordPress values are read in the background and the tab is built
+  // hidden, so opening it shows everything at once instead of a wait on
+  // WP-CLI behind "Loading…".
+  const settingsDomain = selectedBackendSite?.domain;
+  const settingsWordPress = selectedBackendSite?.kind === "wordpress";
+  useEffect(() => {
+    if (!settingsDomain || !hasBackend) return;
+    const timer = window.setTimeout(() => {
+      if (settingsWordPress) prefetchSiteSettings(settingsDomain);
+      // Settings, and Debugging for a WordPress site.
+      setVisited((v) => {
+        const next = new Set(v).add(2);
+        if (settingsWordPress) next.add(3);
+        return next;
+      });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [settingsDomain, settingsWordPress]);
 
   // The live preview beside the details. Open, the details can be hidden to
   // give it the whole sheet ("full preview"); closed, the details have it.
@@ -795,6 +818,21 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
                     }}
                   />
                 ) : null}
+              </LazyPanel>
+
+              {/* Debugging */}
+              <LazyPanel seen={visited.has(3)} className="h-full overflow-y-auto">
+                {selectedBackendSite &&
+                  (selectedBackendSite.kind === "wordpress" ? (
+                    <SiteDebugging
+                      site={selectedBackendSite}
+                      onChanged={() => void reloadSites()}
+                    />
+                  ) : (
+                    <p className="p-4 text-xs text-gray-500">
+                      Debugging is WordPress's own: this site has no wp-config.php to set it in.
+                    </p>
+                  ))}
               </LazyPanel>
             </Tab.Panels>
           </Tab.Group>
