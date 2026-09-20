@@ -26,7 +26,7 @@ import { usePref } from "../../lib/usePref";
 import SiteWordPress from "../site/SiteWordPress";
 import SiteSettings from "../site/SiteSettings";
 import SiteDebugging from "../site/SiteDebugging";
-import { prefetchSiteSettings } from "../../lib/wpSettings";
+import { prefetchSiteSettings, useCoreUpdate, useItemUpdates } from "../../lib/wpSettings";
 import WindowDragStrip from "../WindowDragStrip";
 import { unlessWindowDrag } from "../../lib/windowDrag";
 import { useSites } from "../../lib/sites";
@@ -329,6 +329,14 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
     { name: "Settings", id: "settings" },
     { name: "Debugging", id: "debugging" },
   ];
+
+  // A dot on Settings while WordPress has a newer release: the update is
+  // applied there, and this is the only hint of it from the other tabs.
+  const wpDomain = selectedBackendSite?.kind === "wordpress" ? selectedBackendSite.domain : "";
+  const { data: coreUpdate } = useCoreUpdate(wpDomain);
+  // And on WordPress while a plugin or a theme has one.
+  const itemUpdates =
+    useItemUpdates("plugin", wpDomain) + useItemUpdates("theme", wpDomain);
 
   /** Overview opens first: what the site is, and where to go from it. */
   const DEFAULT_SITE_TAB = 0;
@@ -769,6 +777,18 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
                   {({ selected }) => (
                     <>
                       {tab.name}
+                      {tab.id === "wordpress" && itemUpdates > 0 && (
+                        <span
+                          title={`${itemUpdates} update${itemUpdates === 1 ? "" : "s"} waiting`}
+                          className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle"
+                        />
+                      )}
+                      {tab.id === "settings" && coreUpdate && (
+                        <span
+                          title={`WordPress ${coreUpdate.version} is available`}
+                          className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle"
+                        />
+                      )}
                       {/* An element, not a border: the global tab focus
                           rule strips borders, hiding the marker on click. */}
                       {selected && (
@@ -783,14 +803,14 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
             {/* The container the tabs' pane-* breakpoints measure. */}
             <Tab.Panels className="flex-1 overflow-hidden min-h-0 [container-type:inline-size]">
               {/* Overview */}
-              <LazyPanel seen={visited.has(0)} className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(0)} className="h-full overflow-y-auto [scrollbar-gutter:stable]">
                 {selectedBackendSite && (
                   <SiteOverview site={selectedBackendSite} />
                 )}
               </LazyPanel>
 
               {/* WordPress */}
-              <LazyPanel seen={visited.has(1)} className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(1)} className="h-full overflow-y-auto [scrollbar-gutter:stable]">
                 {selectedBackendSite && (
                   <SiteWordPress
                     domain={selectedSite.name}
@@ -802,7 +822,7 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
               </LazyPanel>
 
               {/* Settings */}
-              <LazyPanel seen={visited.has(2)} className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(2)} className="h-full overflow-y-auto [scrollbar-gutter:stable]">
                 {selectedBackendSite ? (
                   <SiteSettings
                     site={selectedBackendSite}
@@ -821,7 +841,7 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
               </LazyPanel>
 
               {/* Debugging */}
-              <LazyPanel seen={visited.has(3)} className="h-full overflow-y-auto">
+              <LazyPanel seen={visited.has(3)} className="h-full overflow-y-auto [scrollbar-gutter:stable]">
                 {selectedBackendSite &&
                   (selectedBackendSite.kind === "wordpress" ? (
                     <SiteDebugging

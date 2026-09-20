@@ -12,6 +12,26 @@ export function peekCache<T>(key: string): T | undefined {
 
 export function putCache(key: string, value: unknown) {
   cache.set(key, value);
+  publish(key, value);
+}
+
+// Screens reading the same key: an answer that lands for one is shown by all
+// of them. Without this, updating core from Settings left the notice above it
+// and the mark on the tab saying an update was still waiting.
+const watchers = new Map<string, Set<(value: unknown) => void>>();
+
+function publish(key: string, value: unknown) {
+  for (const fn of watchers.get(key) ?? []) fn(value);
+}
+
+function watch(key: string, fn: (value: unknown) => void) {
+  const set = watchers.get(key) ?? new Set();
+  set.add(fn);
+  watchers.set(key, set);
+  return () => {
+    set.delete(fn);
+    if (!set.size) watchers.delete(key);
+  };
 }
 
 // Requests still on their way, per key: a screen that mounts while the same
@@ -38,7 +58,10 @@ function shared<T>(key: string | undefined, fn: () => Promise<T>): Promise<T> {
 export function prefetch<T>(key: string, fn: () => Promise<T>) {
   if (cache.has(key) || pending.has(key)) return;
   void shared(key, fn)
-    .then((v) => cache.set(key, v))
+    .then((v) => {
+      cache.set(key, v);
+      publish(key, v);
+    })
     .catch(() => {});
 }
 
@@ -74,7 +97,10 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = [], key?: st
     try {
       const value = await shared(key, fn);
       if (mine !== latest.current) return;
-      if (key) cache.set(key, value);
+      if (key) {
+        cache.set(key, value);
+        publish(key, value);
+      }
       setDataState(value);
       setError(null);
     } catch (e) {
@@ -89,13 +115,26 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = [], key?: st
     void run();
   }, [run]);
 
+  // Another screen reading the same key refreshed it: show that.
+  useEffect(() => {
+    if (!key) return;
+    return watch(key, (value) => {
+      latest.current++;
+      setDataState(value as T);
+      setLoading(false);
+    });
+  }, [key]);
+
   // Optimistic updates go to the cache too, so the next visit starts from
   // what the screen last showed rather than from before the change.
   const setData = useCallback(
     (v: SetStateAction<T | null>) =>
       setDataState((prev) => {
         const next = typeof v === "function" ? (v as (p: T | null) => T | null)(prev) : v;
-        if (key) cache.set(key, next);
+        if (key) {
+          cache.set(key, next);
+          publish(key, next);
+        }
         return next;
       }),
     [key],

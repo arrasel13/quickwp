@@ -59,11 +59,38 @@ pub(crate) fn wp(site: &Site) -> Result<Command> {
     Ok(c)
 }
 
+/// Run WP-CLI with `input` on its standard input.
+///
+/// How a value that WP-CLI would otherwise read as a flag is passed: `wp
+/// option update <key>` takes the value from stdin when none is given, so
+/// "-5" is a value rather than an unknown option.
+pub(crate) fn run_with_stdin(mut cmd: Command, input: &str, what: &str) -> Result<String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let io = |e: std::io::Error| Error::Io { path: what.into(), source: e };
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(io)?;
+    // Dropped before waiting: WP-CLI reads until end of input.
+    child.stdin.take().expect("stdin piped").write_all(input.as_bytes()).map_err(io)?;
+    let out = child.wait_with_output().map_err(io)?;
+    check(out, what)
+}
+
 pub(crate) fn run(mut cmd: Command, what: &str) -> Result<String> {
     let out = cmd.output().map_err(|e| Error::Io {
         path: what.into(),
         source: e,
     })?;
+    check(out, what)
+}
+
+/// What WP-CLI said, or its error line as the error.
+fn check(out: std::process::Output, what: &str) -> Result<String> {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -847,6 +874,7 @@ pub fn create_user(
     email: &str,
     password: &str,
     role: &str,
+    send_email: bool,
 ) -> Result<String> {
     if login.trim().is_empty() || email.trim().is_empty() {
         return Err(Error::other("A username and an email are both required."));
@@ -860,6 +888,11 @@ pub fn create_user(
         &format!("--role={role}"),
         "--prompt=user_pass",
     ]);
+    // WordPress's own welcome mail. Locally that goes to Mailpit, where the
+    // Mail tab shows it.
+    if send_email {
+        c.arg("--send-email");
+    }
     run_with_secret(c, password, "wp user create")?;
     Ok(format!("{} created as {role}.", login.trim()))
 }

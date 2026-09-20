@@ -28,7 +28,8 @@ import {
 } from "../ui/WpIcons";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import SiteManage from "./SiteManage";
-import { MaintenanceAndBackup } from "./SiteTools";
+import { MaintenanceSection } from "./SiteTools";
+import { useSettingsSnapshot } from "../../lib/wpSettings";
 
 type WpStatus = Awaited<ReturnType<typeof api.wpStatus>>;
 type WpItems = Awaited<ReturnType<typeof api.wpItems>>;
@@ -69,6 +70,10 @@ export default function SiteOverview({ site }: { site: Site }) {
   const [shot, setShot] = useState<string | null>(null);
   const [disk, setDisk] = useState<DiskBreakdown | null>(null);
   const [admin, setAdmin] = useState<{ login: string; email: string } | null>(null);
+  // Whoever the administrator is, the site's own admin_email is the address
+  // WordPress writes from -- and it is known even when the user list is not.
+  const { data: settings } = useSettingsSnapshot(site.domain);
+  const adminEmail = admin?.email || settings?.options.admin_email || null;
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The admin password: the one saved in the login keychain at install, or
@@ -324,7 +329,7 @@ export default function SiteOverview({ site }: { site: Site }) {
           <SiteManage site={site} />
 
           {/* Through WP-CLI, so for WordPress sites. */}
-          {isWordPress && <MaintenanceAndBackup domain={site.domain} />}
+          {isWordPress && <MaintenanceSection domain={site.domain} />}
 
           {isWordPress && (
             <section>
@@ -344,7 +349,7 @@ export default function SiteOverview({ site }: { site: Site }) {
                     return null;
                   }}
                 />
-                <CopyField label="Email" value={admin?.email || null} />
+                <CopyField label="Email" value={adminEmail} />
               </div>
             </section>
           )}

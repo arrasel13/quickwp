@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  ChevronDownIcon,
+  ArrowPathIcon,
   DocumentDuplicateIcon,
   FolderOpenIcon,
   PlusIcon,
@@ -10,7 +12,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorText, NodeVersion, Site, SiteInfo } from "../../lib/api";
 import { useAsync } from "../../lib/useAsync";
 import ConfirmDialog from "../ui/ConfirmDialog";
-import SiteTools from "./SiteTools";
+import SiteTools, { CORE_SECTION_ID } from "./SiteTools";
+import { useCoreUpdate } from "../../lib/wpSettings";
 
 /**
  * What this site is, what it answers on, and where its files live.
@@ -42,6 +45,8 @@ export default function SiteSettings({
 
   return (
     <div className="space-y-4 p-4">
+      {site.kind === "wordpress" && <CoreUpdateNotice domain={site.domain} />}
+
       <div className="grid grid-cols-1 gap-4 pane-lg:grid-cols-2">
         <div className="space-y-4">
           <SiteName site={site} onChanged={onChanged} setNote={setNote} />
@@ -249,6 +254,35 @@ function SiteName({
       setBusy(false);
     }
   }
+}
+
+// ------------------------------------------------------------ core update
+
+/**
+ * The dashboard's "WordPress x.y is available" notice, where the update is
+ * applied from. Clicking it goes to Core, further down this tab.
+ */
+function CoreUpdateNotice({ domain }: { domain: string }) {
+  const { data: update } = useCoreUpdate(domain);
+  if (!update) return null;
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        document
+          .getElementById(CORE_SECTION_ID)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" })
+      }
+      className="flex w-full items-center gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-left transition-colors hover:bg-amber-100"
+    >
+      <ArrowPathIcon className="h-4 w-4 flex-shrink-0 text-amber-700" />
+      <span className="min-w-0 flex-1 text-xs text-amber-900">
+        <span className="font-semibold">WordPress {update.version} is available.</span> Update it
+        under Core.
+      </span>
+      <ChevronDownIcon className="h-4 w-4 flex-shrink-0 text-amber-700" strokeWidth={2.5} />
+    </button>
+  );
 }
 
 // ----------------------------------------------------------------- domain

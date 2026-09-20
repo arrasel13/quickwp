@@ -1668,12 +1668,24 @@ fn wp_magic_login(state: State<'_, AppState>, domain: String, user: String) -> R
 /// Not WP-CLI's job: `plugin install` takes a zip, not a working tree. A clone
 /// is what you want for something you are developing -- the folder stays a git
 /// checkout you can pull and commit from.
+/// One page of the WordPress.org directory, for the Add plugin / Add theme
+/// dialog.
+#[tauri::command(async)]
+async fn wporg_search(
+    kind: String,
+    query: String,
+    page: Option<u32>,
+) -> Res<Vec<core::wporg::DirectoryItem>> {
+    Ok(core::wporg::search(&kind, &query, page.unwrap_or(1)).await?)
+}
+
 #[tauri::command(async)]
 fn wp_install_from_git(
     state: State<'_, AppState>,
     domain: String,
     kind: String,
     url: String,
+    branch: Option<String>,
 ) -> Res<String> {
     let site = site_by_domain(&state, &domain)?;
     if kind != "plugin" && kind != "theme" {
@@ -1715,10 +1727,29 @@ fn wp_install_from_git(
         ));
     }
 
+    // A branch name reaches git as an argument, so anything that could read
+    // as a flag or a shell trick is refused rather than passed on.
+    let branch = branch.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    if let Some(b) = &branch {
+        let ok = b
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c))
+            && !b.starts_with('-')
+            && !b.contains("..");
+        if !ok {
+            return Err(format!("`{b}` is not a branch name."));
+        }
+    }
+
     // Shallow by default: a plugin checkout is for running, and full history
     // on a large repo turns a click into a long wait with no progress shown.
-    let out = std::process::Command::new("/usr/bin/git")
-        .args(["clone", "--depth", "1", &clone_url])
+    let mut cmd = std::process::Command::new("/usr/bin/git");
+    cmd.args(["clone", "--depth", "1"]);
+    if let Some(b) = &branch {
+        cmd.args(["--branch", b]);
+    }
+    let out = cmd
+        .arg(&clone_url)
         .arg(&target)
         .output()
         .map_err(|e| format!("git could not be run: {e}. Install the Xcode command line tools."))?;
@@ -1728,7 +1759,10 @@ fn wp_install_from_git(
         return Err(format!("git clone failed:\n{}", err.trim()));
     }
 
-    Ok(format!("Cloned {clone_url} into wp-content/{kind}s/{folder}."))
+    Ok(match &branch {
+        Some(b) => format!("Cloned {clone_url} ({b}) into wp-content/{kind}s/{folder}."),
+        None => format!("Cloned {clone_url} into wp-content/{kind}s/{folder}."),
+    })
 }
 
 #[tauri::command(async)]
@@ -1745,9 +1779,17 @@ fn wp_create_user(
     email: String,
     password: String,
     role: String,
+    send_email: Option<bool>,
 ) -> Res<String> {
     let site = site_by_domain(&state, &domain)?;
-    Ok(wordpress::create_user(&site, &login, &email, &password, &role)?)
+    Ok(wordpress::create_user(
+        &site,
+        &login,
+        &email,
+        &password,
+        &role,
+        send_email.unwrap_or(false),
+    )?)
 }
 
 #[tauri::command(async)]
@@ -1871,6 +1913,7 @@ macro_rules! site_cmd {
 site_cmd!(wp_config_get, Option<String>, |site, key: String| wptools::config_get(&site, &key));
 site_cmd!(wp_config_set_bool, String, |site, key: String, on: bool| wptools::config_set_bool(&site, &key, on));
 site_cmd!(wp_option_get, String, |site, key: String| wptools::option_get(&site, &key));
+site_cmd!(wp_core_update_check, Option<wptools::CoreUpdate>, |site| wptools::core_update_check(&site));
 site_cmd!(wp_settings_snapshot, wptools::SettingsSnapshot, |site, options: Vec<String>| wptools::settings_snapshot(&site, &options));
 site_cmd!(wp_option_set, String, |site, key: String, value: String| wptools::option_set(&site, &key, &value));
 site_cmd!(wp_set_permalinks, String, |site, structure: String| wptools::set_permalinks(&site, &structure));
@@ -2987,6 +3030,7 @@ pub fn run() {
             wp_config_set_bool,
             wp_option_get,
             wp_settings_snapshot,
+            wp_core_update_check,
             wp_option_set,
             wp_set_permalinks,
             wp_flush_rewrites,
@@ -3019,6 +3063,7 @@ pub fn run() {
             wp_item_screenshot,
             site_terminal_at,
             wp_install_from_git,
+            wporg_search,
             wp_install_item,
             wp_set_item_state,
             wp_delete_item,

@@ -6,7 +6,7 @@
 //! command execution against someone's site.
 
 use crate::site::Site;
-use crate::wordpress::{run, wp};
+use crate::wordpress::{run, run_with_stdin, wp};
 use crate::{Error, Result};
 
 // ------------------------------------------------------------------ config
@@ -109,6 +109,37 @@ fn check_option(key: &str) -> Result<()> {
     }
 }
 
+/// A core release newer than what the site runs.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CoreUpdate {
+    pub version: String,
+    /// "minor", "major" or "development", as WordPress classes it.
+    pub update_type: String,
+}
+
+/// What WordPress itself offers the dashboard: the newest release for this
+/// site, or `None` when it is up to date.
+///
+/// Asks wordpress.org, so it is slow enough to be worth reading once and
+/// remembering.
+pub fn core_update_check(site: &Site) -> Result<Option<CoreUpdate>> {
+    let mut c = wp(site)?;
+    c.args(["core", "check-update", "--format=json", "--fields=version,update_type"]);
+    let out = run(c, "Checking for a WordPress update")?;
+    Ok(newest_update(&out))
+}
+
+/// The first row of `wp core check-update`. Up to date, WP-CLI prints a
+/// success line rather than a list, which is no update.
+fn newest_update(out: &str) -> Option<CoreUpdate> {
+    let start = out.find('[')?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(out[start..].trim()).ok()?;
+    let row = rows.into_iter().next()?;
+    let get = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let version = get("version");
+    (!version.is_empty()).then(|| CoreUpdate { version, update_type: get("update_type") })
+}
+
 /// Everything the Settings tab reads, in two WP-CLI runs side by side rather
 /// than one per field: wp-config.php's switches, the options asked for, and
 /// the site's locale.
@@ -149,17 +180,35 @@ fn known_constants(json: &str) -> std::collections::BTreeMap<String, bool> {
     out
 }
 
-/// Prints the options named in `$args` and the locale as JSON. The names are
-/// checked against [`KNOWN_OPTIONS`] first and reach PHP as arguments, never
-/// as code.
-const SNAPSHOT_PHP: &str = r#"$o = array();
-foreach ( $args as $k ) { $v = get_option( $k ); $o[ $k ] = is_scalar( $v ) ? (string) $v : ''; }
-echo wp_json_encode( array( 'options' => (object) $o, 'locale' => get_locale() ) );"#;
-
-pub fn settings_snapshot(site: &Site, options: &[String]) -> Result<SettingsSnapshot> {
+/// PHP that prints the named options and the locale as JSON.
+///
+/// The names are written into the code because `wp eval` takes no arguments
+/// of its own -- it answers "Too many positional arguments" -- and each is
+/// checked against [`KNOWN_OPTIONS`] first, so only bare names get there.
+fn snapshot_php(options: &[String]) -> Result<String> {
+    let mut list = String::new();
     for key in options {
         check_option(key)?;
+        // Belt and braces: everything on the list is a plain name already.
+        if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(Error::other(format!("`{key}` is not a name Nexora will read")));
+        }
+        if !list.is_empty() {
+            list.push_str(", ");
+        }
+        list.push('\'');
+        list.push_str(key);
+        list.push('\'');
     }
+    Ok(format!(
+        "$o = array();
+foreach ( array( {list} ) as $k ) {{ $v = get_option( $k ); $o[ $k ] = is_scalar( $v ) ? (string) $v : ''; }}
+echo wp_json_encode( array( 'options' => (object) $o, 'locale' => get_locale() ) );"
+    ))
+}
+
+pub fn settings_snapshot(site: &Site, options: &[String]) -> Result<SettingsSnapshot> {
+    let php = snapshot_php(options)?;
     let (constants, loaded) = std::thread::scope(|s| {
         let constants = s.spawn(|| -> Result<_> {
             let mut c = wp(site)?;
@@ -168,7 +217,7 @@ pub fn settings_snapshot(site: &Site, options: &[String]) -> Result<SettingsSnap
         });
         let loaded = s.spawn(|| -> Result<String> {
             let mut c = wp(site)?;
-            c.args(["eval", SNAPSHOT_PHP]).args(options);
+            c.args(["eval", &php]);
             run(c, "Reading the site's options")
         });
         (constants.join(), loaded.join())
@@ -204,9 +253,11 @@ pub fn option_get(site: &Site, key: &str) -> Result<String> {
 pub fn option_set(site: &Site, key: &str, value: &str) -> Result<String> {
     check_option(key)?;
     let mut c = wp(site)?;
-    // `--` so a value starting with a dash is a value, not a flag.
-    c.args(["option", "update", key, "--", value]);
-    run(c, "Saving an option")?;
+    // The value on stdin, not as an argument: WP-CLI counts `--` itself as an
+    // argument ("Too many positional arguments"), and a value like the "-5"
+    // of a UTC offset would otherwise read as a flag.
+    c.args(["option", "update", key]);
+    run_with_stdin(c, value, "Saving an option")?;
     Ok(format!("{key} saved."))
 }
 
@@ -218,7 +269,8 @@ pub fn option_set(site: &Site, key: &str, value: &str) -> Result<String> {
 /// old rules and every new URL 404s.
 pub fn set_permalinks(site: &Site, structure: &str) -> Result<String> {
     let mut c = wp(site)?;
-    c.args(["rewrite", "structure", "--", structure]);
+    // No `--`: WP-CLI counts it as an argument of its own.
+    c.args(["rewrite", "structure", structure]);
     run(c, "Setting the permalink structure")?;
     flush_rewrites(site)?;
     Ok("Permalinks saved and rewrite rules flushed.".into())
@@ -542,6 +594,74 @@ mod snapshot_tests {
         // Not in the file at all reads as off, and is still listed.
         assert_eq!(c.get("WP_CACHE"), Some(&false));
         assert_eq!(c.len(), KNOWN_CONSTANTS.len());
+    }
+
+    #[test]
+    fn an_update_is_read_from_the_list_and_nothing_else() {
+        let out = r#"[{"version":"7.1.1","update_type":"minor"}]"#;
+        let up = newest_update(out).expect("an update");
+        assert_eq!(up.version, "7.1.1");
+        assert_eq!(up.update_type, "minor");
+        // Up to date: WP-CLI says so in words, or lists nothing.
+        assert!(newest_update("Success: WordPress is at the latest version.").is_none());
+        assert!(newest_update("[]").is_none());
+        // A plugin printing before the list does not hide it.
+        assert!(newest_update("Notice: something\n[{\"version\":\"7.2\"}]").is_some());
+    }
+
+    #[test]
+    fn snapshot_php_writes_the_names_into_the_code() {
+        // `wp eval` takes no arguments, so the names have to be in the code.
+        let php = snapshot_php(&["blogname".into(), "gmt_offset".into()]).unwrap();
+        assert!(php.contains("array( 'blogname', 'gmt_offset' )"), "{php}");
+        assert!(php.contains("get_locale()"));
+        assert!(snapshot_php(&["siteurl".into()]).is_err());
+    }
+
+    /// End to end against a real site, for the paths WP-CLI decides:
+    /// `NEXORA_LIVE_SITE=~/Nexora/Sites/example cargo test -p nexora-core
+    /// live_ -- --ignored --nocapture`. Writes each option back as it is, so
+    /// the site is left as it was found.
+    #[test]
+    #[ignore = "needs a real site and a running database"]
+    fn live_reads_and_writes_a_site_s_options() {
+        let Ok(docroot) = std::env::var("NEXORA_LIVE_SITE") else {
+            panic!("set NEXORA_LIVE_SITE to a site's docroot");
+        };
+        let site = Site {
+            id: 0,
+            name: "live".into(),
+            domain: "live.test".into(),
+            docroot,
+            kind: "wordpress".into(),
+            php_minor: std::env::var("NEXORA_LIVE_PHP").unwrap_or_else(|_| "8.3".into()),
+            server: String::new(),
+            enabled: true,
+            is_linked: false,
+            db_name: None,
+            db_engine: None,
+            xdebug: false,
+            aliases: vec![],
+        };
+
+        let keys: Vec<String> = ["blogname", "admin_email", "gmt_offset", "timezone_string", "start_of_week", "posts_per_page", "blog_public"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let snap = settings_snapshot(&site, &keys).expect("snapshot");
+        println!("locale: {:?}", snap.locale);
+        println!("options: {:?}", snap.options);
+        println!("constants: {:?}", snap.constants);
+        assert_eq!(snap.options.len(), keys.len(), "every option comes back");
+        assert!(!snap.locale.is_empty(), "the locale comes back");
+
+        // Written straight back, so nothing about the site changes.
+        for key in ["blogname", "gmt_offset"] {
+            let value = snap.options.get(key).cloned().unwrap_or_default();
+            option_set(&site, key, &value).unwrap_or_else(|e| panic!("writing {key}: {e}"));
+        }
+        let again = settings_snapshot(&site, &keys).expect("snapshot again");
+        assert_eq!(again.options, snap.options, "the site is as it was");
     }
 
     #[test]

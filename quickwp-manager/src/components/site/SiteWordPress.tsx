@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowPathIcon,
-  ArrowUpTrayIcon,
+  PlayCircleIcon,
   ArrowRightEndOnRectangleIcon,
   ArrowUpCircleIcon,
   CommandLineIcon,
-  EyeIcon,
-  EyeSlashIcon,
   KeyIcon,
   LockClosedIcon,
   FolderOpenIcon,
@@ -18,9 +16,10 @@ import {
 import clsx from "clsx";
 import { api, errorText, Site, WpItem } from "../../lib/api";
 import { peekCache, useAsync } from "../../lib/useAsync";
-import { open } from "@tauri-apps/plugin-dialog";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import SiteManage from "./SiteManage";
+import AddItemDialog from "./AddItemDialog";
+import AddUserDialog from "./AddUserDialog";
 
 type Section = "plugins" | "themes" | "users";
 type Kind = "plugin" | "theme";
@@ -78,6 +77,66 @@ export default function SiteWordPress({
   const themes = useItems(domain, "theme");
   const users = useAsync(() => api.wpUsers(domain), [domain], `wp-users:${domain}`);
 
+  const [auto, setAuto] = useState(true);
+  const [spinning, setSpinning] = useState(false);
+  const reloadAll = useCallback(async () => {
+    await Promise.all([plugins.reload(), themes.reload(), users.reload()]);
+  }, [plugins.reload, themes.reload, users.reload]);
+
+  /**
+   * One refresh path for the button, the timer, the window coming back and
+   * the preview.
+   *
+   * The spinner is held for a beat: WP-CLI often answers faster than the eye
+   * can catch, and a spinner that never appears looks like a dead button.
+   */
+  const refreshAll = useCallback(async () => {
+    setSpinning(true);
+    const started = Date.now();
+    try {
+      await reloadAll();
+    } finally {
+      const held = Date.now() - started;
+      if (held < 400) await new Promise((r) => setTimeout(r, 400 - held));
+      setSpinning(false);
+    }
+  }, [reloadAll]);
+
+  // Refresh on a timer, when the window comes back, and -- the one that
+  // matters most here -- whenever the preview loads a page. Activating a
+  // plugin in wp-admin beside this list is a change made outside Nexora, and
+  // the preview is a separate webview, so the window never loses focus and
+  // nothing else would tell this list it is stale.
+  //
+  // The timer is deliberately slow: every tick spawns WP-CLI, which boots PHP
+  // and loads all of WordPress to answer.
+  useEffect(() => {
+    if (!auto) return;
+    let settle: number | undefined;
+    const tick = () => {
+      if (document.hidden) return;
+      void reloadAll();
+    };
+    // A page load fires as the admin page arrives; the write behind it has
+    // already happened, so a short wait is only to let several settle.
+    const soon = () => {
+      window.clearTimeout(settle);
+      settle = window.setTimeout(tick, 600);
+    };
+
+    const timer = window.setInterval(tick, 5 * 60 * 1000);
+    window.addEventListener("focus", tick);
+    const off = api.onPreviewPage((p) => {
+      if (p.domain === domain && !p.loading) soon();
+    });
+    return () => {
+      window.clearInterval(timer);
+      window.clearTimeout(settle);
+      window.removeEventListener("focus", tick);
+      void off.then((f) => f());
+    };
+  }, [auto, domain, reloadAll]);
+
   if (loading) {
     return <p className="p-4 text-xs text-gray-500">Reading the install…</p>;
   }
@@ -106,39 +165,45 @@ export default function SiteWordPress({
     );
   }
 
-  const sections: { id: Section; label: string; count?: number }[] = [
-    { id: "plugins", label: "Plugins", count: plugins.data?.length },
-    { id: "themes", label: "Themes", count: themes.data?.length },
+  const waiting = (items?: WpItem[]) =>
+    (items ?? []).filter((i) => i.update && i.update !== "none").length;
+  const sections: { id: Section; label: string; count?: number; updates?: number }[] = [
+    { id: "plugins", label: "Plugins", count: plugins.data?.length, updates: waiting(plugins.data ?? undefined) },
+    { id: "themes", label: "Themes", count: themes.data?.length, updates: waiting(themes.data ?? undefined) },
     { id: "users", label: "Users", count: users.data?.length },
   ];
 
   return (
     <div className="space-y-4 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <nav className="inline-flex flex-wrap gap-1 rounded-xl bg-gray-100 p-1">
+      <div className="-mt-1 flex flex-wrap items-center justify-between gap-x-3 border-b border-gray-200">
+        <nav className="flex flex-wrap gap-4">
           {sections.map((s) => (
             <button
               key={s.id}
               onClick={() => setSection(s.id)}
+              aria-current={section === s.id ? "page" : undefined}
               className={clsx(
-                "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-                section === s.id
-                  ? "bg-white text-blue-700 shadow-sm"
-                  : "text-gray-600 hover:text-gray-900",
+                "relative whitespace-nowrap py-2.5 text-[13px] font-medium transition-colors focus:outline-none",
+                section === s.id ? "text-gray-900" : "text-gray-500 hover:text-gray-900",
               )}
             >
               {s.label}
               {s.count !== undefined && (
-                <span className="ml-1.5 text-xs font-normal text-gray-400">
-                  {s.count}
-                </span>
+                <span className="ml-1.5 text-xs font-normal text-gray-400">{s.count}</span>
+              )}
+              {s.updates ? (
+                <span
+                  title={`${s.updates} update${s.updates === 1 ? "" : "s"} waiting`}
+                  className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle"
+                />
+              ) : null}
+              {section === s.id && (
+                <span className="absolute inset-x-0 -bottom-px h-0.5 bg-gray-900" />
               )}
             </button>
           ))}
         </nav>
-        <span className="font-mono text-[11px] text-gray-400">
-          WordPress {status.version}
-        </span>
+        <AutoRefresh auto={auto} setAuto={setAuto} spinning={spinning} refresh={refreshAll} />
       </div>
 
       {section === "plugins" && (
@@ -231,59 +296,15 @@ function ItemSection({
   const { data, error, loading, reload } = state;
   const items = useMemo(() => data ?? [], [data]);
 
+  const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "active" | "updates">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
-  const [auto, setAuto] = useState(true);
-  const [spinning, setSpinning] = useState(false);
   const [pending, setPending] = useState<WpItem | null>(null);
   const [pendingBulk, setPendingBulk] = useState(false);
   const busyRef = useRef<string | null>(null);
   busyRef.current = busy;
-
-  /**
-   * One refresh path for the button, the auto timer and the focus listener.
-   *
-   * The spinner is held for a beat: WP-CLI often answers faster than the eye
-   * can catch, and a spinner that never appears looks like a dead button.
-   */
-  const refresh = async () => {
-    setSpinning(true);
-    const started = Date.now();
-    try {
-      await reload();
-    } finally {
-      const held = Date.now() - started;
-      if (held < 400) await new Promise((r) => setTimeout(r, 400 - held));
-      setSpinning(false);
-    }
-  };
-
-  // Auto refresh, and again whenever the window comes back to the front --
-  // the usual way this list goes stale is a change made outside Nexora.
-  //
-  // The timer is deliberately slow: every tick spawns WP-CLI, which boots PHP
-  // and loads all of WordPress to answer, so on a site with a few hundred
-  // plugins it is a real process each time. Coming back to the window is the
-  // signal that actually matters, and that fires immediately regardless.
-  useEffect(() => {
-    if (!auto) return;
-
-    const tick = () => {
-      // Never refetch mid-mutation: the reply would race the write and the
-      // row would flicker back to its old state.
-      if (busyRef.current || document.hidden) return;
-      void reload();
-    };
-
-    const timer = setInterval(tick, 5 * 60 * 1000);
-    window.addEventListener("focus", tick);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener("focus", tick);
-    };
-  }, [auto, reload]);
 
   const hasUpdate = (i: WpItem) => Boolean(i.update) && i.update !== "none";
   const counts = {
@@ -316,8 +337,8 @@ function ItemSection({
 
   // Bulk work runs one item at a time: WP-CLI is a process per call, and a
   // burst of them is how you get a half-applied change with no error.
-  const bulk = async (fn: (name: string) => Promise<unknown>) => {
-    const names = [...selected];
+  const bulk = async (fn: (name: string) => Promise<unknown>, only?: string[]) => {
+    const names = only ?? [...selected];
     if (!names.length) return;
     setBusy("bulk");
     try {
@@ -331,6 +352,12 @@ function ItemSection({
     }
   };
 
+  /** Of what is ticked, the ones an update is waiting for. */
+  const withUpdates = [...selected].filter((n) =>
+    items.some((i) => i.name === n && hasUpdate(i)),
+  );
+  const selectedUpdates = withUpdates.length;
+
   const toggleAll = () =>
     setSelected((prev) =>
       prev.size === shown.length
@@ -340,119 +367,131 @@ function ItemSection({
 
   return (
     <div className="space-y-3">
-      <InstallBar domain={domain} kind={kind} onDone={reload} />
-
       <div className="flex flex-wrap items-center gap-3">
+        {kind === "plugin" && (
+          <div className="relative min-w-0 flex-1">
+            <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search plugins…"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+            />
+          </div>
+        )}
         {kind === "theme" && (
           <p className="text-xs text-gray-500">
-            {items.length} theme{items.length === 1 ? "" : "s"} ·{" "}
-            {counts.active} active
+            {items.length} theme{items.length === 1 ? "" : "s"} · {counts.active} active
           </p>
         )}
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="ml-auto inline-flex flex-shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700"
+        >
+          <PlusIcon className="h-4 w-4" strokeWidth={2.5} />
+          {kind === "plugin" ? "Add plugin" : "Add theme"}
+        </button>
+      </div>
 
+      <AddItemDialog
+        open={adding}
+        kind={kind}
+        domain={domain}
+        onClose={() => setAdding(false)}
+        onInstalled={reload}
+      />
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {kind === "plugin" && (
-        <div className="relative">
-          <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Search ${kind}s…`}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            className="w-64 rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-          />
-        </div>
+          <nav className="flex items-center gap-4 border-b border-gray-200">
+            {(["all", "active", "updates"] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                aria-current={filter === f ? "page" : undefined}
+                className={clsx(
+                  "relative whitespace-nowrap py-2 text-[13px] font-medium capitalize transition-colors focus:outline-none",
+                  filter === f ? "text-gray-900" : "text-gray-500 hover:text-gray-900",
+                )}
+              >
+                {f}
+                <span className="ml-1.5 text-xs font-normal text-gray-400">{counts[f]}</span>
+                {filter === f && (
+                  <span className="absolute inset-x-0 -bottom-px h-0.5 bg-gray-900" />
+                )}
+              </button>
+            ))}
+          </nav>
         )}
 
-        {kind === "plugin" && (
-        <div className="inline-flex gap-1 rounded-xl bg-gray-100 p-1">
-          {(["all", "active", "updates"] as const).map((f) => (
+      </div>
+
+      {/* What to do with what is ticked, over the table it applies to. */}
+      {selected.size > 0 && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50/60 px-3 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs font-medium text-gray-700">
+              {selected.size} selected
+            </span>
             <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={clsx(
-                "rounded-lg px-3 py-1.5 text-sm font-medium capitalize transition-colors",
-                filter === f
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-600 hover:text-gray-900",
-              )}
+              onClick={() => setSelected(new Set())}
+              className="text-xs text-gray-500 transition-colors hover:text-gray-900"
             >
-              {f}
-              <span className="ml-1.5 text-xs font-normal text-gray-400">
-                {counts[f]}
-              </span>
+              Clear
             </button>
-          ))}
-        </div>
-        )}
+          </div>
 
-        {selected.size > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">{selected.size} selected</span>
-            {kind === "plugin" && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+          {kind === "plugin" && (
+            <>
               <button
                 disabled={busy === "bulk"}
-                onClick={() =>
-                  void bulk((n) => api.wpSetItemState(domain, kind, n, true))
-                }
-                className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                onClick={() => void bulk((n) => api.wpSetItemState(domain, kind, n, true))}
+                className={BULK_BUTTON}
               >
                 Activate
               </button>
-            )}
-            {/* Themes have no deactivate: one is always active, and you
-                change it by activating another. */}
-            {kind === "plugin" && (
+              {/* Themes have no deactivate: one is always active, and you
+                  change it by activating another. */}
               <button
                 disabled={busy === "bulk"}
-                onClick={() =>
-                  void bulk((n) => api.wpSetItemState(domain, kind, n, false))
-                }
-                className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                onClick={() => void bulk((n) => api.wpSetItemState(domain, kind, n, false))}
+                className={BULK_BUTTON}
               >
                 Deactivate
               </button>
-            )}
-            <button
-              disabled={busy === "bulk"}
-              onClick={() => setPendingBulk(true)}
-              className="rounded-md border border-red-300 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
-            >
-              Delete
-            </button>
-          </div>
-        )}
-
-        <div className="ml-auto flex items-center gap-2">
-          <label
-            className="flex items-center gap-1.5 text-[11px] text-gray-600"
-            title="Re-read the list every 5 minutes, and whenever this window comes to the front"
-          >
-            <input
-              type="checkbox"
-              checked={auto}
-              onChange={(e) => setAuto(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
-            />
-            Auto
-          </label>
+            </>
+          )}
           <button
-            onClick={() => void refresh()}
-            disabled={spinning}
-            title="Reload now"
-            className="rounded-lg border border-gray-300 bg-white p-1.5 text-gray-500 transition-colors hover:bg-gray-50 disabled:opacity-60"
+            disabled={busy === "bulk" || selectedUpdates === 0}
+            title={
+              selectedUpdates === 0
+                ? "None of these has an update"
+                : `Update ${selectedUpdates} of them, one after another`
+            }
+            onClick={() => void bulk((n) => api.wpUpdateItem(domain, kind, n), withUpdates)}
+            className={BULK_BUTTON}
           >
-            <ArrowPathIcon
-              className={clsx(
-                "h-3.5 w-3.5",
-                (spinning || loading) && "animate-spin",
-              )}
-            />
+            {busy === "bulk" ? "Working…" : `Update${selectedUpdates ? ` ${selectedUpdates}` : ""}`}
           </button>
+          {/* The icon alone, so the four fit on one line. */}
+          <button
+            disabled={busy === "bulk"}
+            onClick={() => setPendingBulk(true)}
+            title={`Delete ${selected.size} ${kind}${selected.size === 1 ? "" : "s"}`}
+            aria-label={`Delete ${selected.size} ${kind}${selected.size === 1 ? "" : "s"}`}
+            className="rounded-md border border-red-300 bg-white p-1.5 text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <TrashIcon className="h-4 w-4" />
+          </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {kind === "theme" ? (
         <ThemeGrid
@@ -476,18 +515,20 @@ function ItemSection({
         />
       ) : (
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-2.5">
-          <input
-            type="checkbox"
-            checked={shown.length > 0 && selected.size === shown.length}
-            onChange={toggleAll}
-            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
-          />
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-            {kind}
-          </span>
-          <span className="ml-auto text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-            Status
+        <div className={clsx(ROW_GRID, "border-b border-gray-200 px-4 py-2.5")}>
+          <div className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={shown.length > 0 && selected.size === shown.length}
+              onChange={toggleAll}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
+            />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+              {kind} name
+            </span>
+          </div>
+          <span className="text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+            Action
           </span>
         </div>
 
@@ -582,6 +623,149 @@ function ItemSection({
   );
 }
 
+const BULK_BUTTON =
+  "rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50";
+
+/**
+ * A user's picture: their Gravatar, as wp-admin shows, and their initial
+ * when there is none.
+ *
+ * The address is hashed here and only the hash is asked for, and `d=404`
+ * means an address with no Gravatar answers 404 rather than a placeholder --
+ * so the initial shows instead. Offline, the request fails and the initial
+ * shows too.
+ */
+function Avatar({ name, email }: { name: string; email: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setSrc(null);
+    const address = email.trim().toLowerCase();
+    if (!address || !crypto.subtle) return;
+    void crypto.subtle
+      .digest("SHA-256", new TextEncoder().encode(address))
+      .then((buf) => {
+        const hash = [...new Uint8Array(buf)]
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+        if (live) setSrc(`https://gravatar.com/avatar/${hash}?s=96&d=404`);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [email]);
+
+  if (!src) {
+    return (
+      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-blue-50 text-xs font-semibold uppercase text-blue-700">
+        {name.charAt(0)}
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      onError={() => setSrc(null)}
+      className="h-7 w-7 flex-shrink-0 rounded-full bg-gray-100 object-cover"
+    />
+  );
+}
+
+/** Follow the list, and read it again now. */
+function AutoRefresh({
+  auto,
+  setAuto,
+  spinning,
+  refresh,
+}: {
+  auto: boolean;
+  setAuto: (v: boolean) => void;
+  spinning: boolean;
+  refresh: () => Promise<void> | void;
+}) {
+  return (
+    <div className="flex flex-shrink-0 items-center gap-2">
+      <label
+        className="flex items-center gap-1.5 text-[11px] text-gray-600"
+        title="Re-read the list every 5 minutes, and whenever this window comes to the front"
+      >
+        <input
+          type="checkbox"
+          checked={auto}
+          onChange={(e) => setAuto(e.target.checked)}
+          className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
+        />
+        Auto
+      </label>
+      <button
+        onClick={() => void refresh()}
+        disabled={spinning}
+        title="Reload now"
+        className="rounded-lg border border-gray-300 bg-white p-1.5 text-gray-500 transition-colors hover:bg-gray-50 disabled:opacity-60"
+      >
+        <ArrowPathIcon className={clsx("h-3.5 w-3.5", spinning && "animate-spin")} />
+      </button>
+    </div>
+  );
+}
+
+/** The three columns, shared by the header and every row. */
+const ROW_GRID = "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3";
+
+/** Said over a must-use plugin's switch and its delete button. */
+const KEEP_WARNING = "Keep this one — WordPress loads it on every request, and removing it can break the site.";
+
+/** WP-CLI's status word, as something to read. */
+function statusLook(item: WpItem): string {
+  switch (item.status) {
+    case "active":
+    case "active-network":
+      return "Active";
+    case "must-use":
+      return "Must-use";
+    case "dropin":
+      return "Drop-in";
+    case "parent":
+      return "Parent theme";
+    default:
+      return "Inactive";
+  }
+}
+
+/** An action: the icon alone, no border or padding around it. */
+function RowAction({
+  title,
+  onClick,
+  disabled,
+  tone,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  tone?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      onClick={onClick}
+      className={clsx(
+        "rounded transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+        tone ?? "text-gray-400 hover:text-gray-900",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 function Row({
   docroot,
   kind,
@@ -609,143 +793,138 @@ function Row({
   const toggleable = canToggleOff(item, kind);
   const [iconFailed, setIconFailed] = useState(false);
   const hasUpdate = Boolean(item.update) && item.update !== "none";
+  const statusLabel = statusLook(item);
+  // Loaded by the filesystem rather than by an option: on, with nothing to
+  // switch and nothing to activate.
+  const alwaysOn = item.status === "must-use" || item.status === "dropin";
 
   return (
-    <li className="flex items-center gap-3 px-4 py-3">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onCheck}
-        className="h-4 w-4 flex-shrink-0 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
-      />
-
-      {/* Icons come from wordpress.org by slug. A plugin developed locally has
-          none there, so the letter tile is the normal case, not an error. */}
-      {iconFailed ? (
-        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-gray-100 text-xs font-semibold uppercase text-gray-500">
-          {(item.title || item.name).charAt(0)}
-        </div>
-      ) : (
-        <img
-          src={`https://ps.w.org/${item.name}/assets/icon-128x128.png`}
-          alt=""
-          onError={() => setIconFailed(true)}
-          className="h-8 w-8 flex-shrink-0 rounded-lg object-cover"
+    <li className={clsx(ROW_GRID, "px-4 py-3")}>
+      {/* The plugin: its icon, its name under it. */}
+      <div className="flex min-w-0 items-center gap-3">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onCheck}
+          className="h-4 w-4 flex-shrink-0 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
         />
-      )}
-
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm text-gray-900">
-            {item.title || item.name}
-          </span>
-          {hasUpdate && (
-            <span
-              className="flex-shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
-              title={`Update available: ${item.update_version || "newer version"}`}
-            >
-              update
-            </span>
+        <div className="flex min-w-0 flex-col items-start gap-1.5">
+          {/* Icons come from wordpress.org by slug. A plugin developed
+              locally has none there, so the letter tile is the normal case,
+              not an error. */}
+          {iconFailed ? (
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-gray-100 text-sm font-semibold uppercase text-gray-500">
+              {(item.title || item.name).charAt(0)}
+            </div>
+          ) : (
+            <img
+              src={`https://ps.w.org/${item.name}/assets/icon-128x128.png`}
+              alt=""
+              onError={() => setIconFailed(true)}
+              className="h-10 w-10 flex-shrink-0 rounded-lg object-cover"
+            />
           )}
-        </div>
-        <div className="mt-0.5 truncate font-mono text-[11px] text-gray-400">
-          {item.name} · v{item.version}
+          <div className="min-w-0 max-w-full text-left">
+            <p className="truncate text-[13px] font-medium text-gray-900" title={item.title || item.name}>
+              {item.title || item.name}
+            </p>
+            <p className="truncate font-mono text-[10px] text-gray-400">
+              v{item.version}
+              {hasUpdate && ` → ${item.update_version || "newer"}`}
+            </p>
+          </div>
         </div>
       </div>
 
-      <span
-        className={clsx(
-          "flex-shrink-0 text-xs capitalize",
-          active ? "text-gray-900" : "text-gray-500",
-        )}
-      >
-        {/* The real status, not a two-way guess: "must-use" and "parent" are
-            things WP reports and neither is "inactive". */}
-        {active ? "Active" : item.status || "unknown"}
-      </span>
-
-      {toggleable ? (
-        <button
-          role="switch"
-          aria-checked={active}
-          aria-label={active ? "Deactivate" : "Activate"}
-          disabled={busy}
-          onClick={onToggle}
-          className={clsx(
-            "relative h-6 w-11 flex-shrink-0 rounded-full transition-colors disabled:opacity-50",
-            active ? "bg-blue-600" : "bg-gray-300",
-          )}
-        >
-          {/* left-0.5 is load-bearing. With no horizontal anchor an absolutely
-              positioned child falls at its static position -- and a button
-              centres its content -- so the knob started mid-track and the
-              translate pushed it off the end. */}
-          <span
+      {/* Everything that can be done, icons only. */}
+      <div className="flex items-center justify-end gap-2.5">
+        {toggleable ? (
+          <button
+            role="switch"
+            aria-checked={active}
+            title={active ? "Deactivate" : "Activate"}
+            aria-label={active ? "Deactivate" : "Activate"}
+            disabled={busy}
+            onClick={onToggle}
             className={clsx(
-              "absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
-              active ? "translate-x-5" : "translate-x-0",
+              "relative h-4 w-7 flex-shrink-0 rounded-full transition-colors disabled:opacity-50",
+              active ? "bg-blue-600" : "bg-gray-300",
             )}
+          >
+            {/* left-0.5 is load-bearing. With no horizontal anchor an
+                absolutely positioned child falls at its static position --
+                and a button centres its content -- so the knob started
+                mid-track and the translate pushed it off the end. */}
+            <span
+              className={clsx(
+                "absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform",
+                active ? "translate-x-3" : "translate-x-0",
+              )}
+            />
+          </button>
+        ) : alwaysOn ? (
+          // Loaded from the filesystem: there is no switch to throw, and
+          // taking it away is what breaks a site.
+          <span
+            title={KEEP_WARNING}
+            className="flex h-4 w-7 flex-shrink-0 items-center justify-center rounded-full bg-indigo-100 text-indigo-600"
+          >
+            <LockClosedIcon className="h-3 w-3" aria-hidden />
+            <span className="sr-only">{statusLabel}</span>
+          </span>
+        ) : active ? (
+          // The active theme: nothing to switch off.
+          <span
+            title={`${statusLabel} — always on`}
+            className="h-4 w-7 flex-shrink-0 rounded-full bg-green-200"
           />
-        </button>
-      ) : active ? (
-        // An active theme, or a must-use plugin: nothing to switch off.
-        <span className="flex h-6 w-11 flex-shrink-0 items-center justify-center rounded-full bg-green-100 text-[10px] font-medium text-green-700">
-          on
-        </span>
-      ) : (
-        <button
-          disabled={busy}
-          onClick={onToggle}
-          className="h-6 flex-shrink-0 rounded-full border border-gray-300 bg-white px-3 text-[11px] font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+        ) : (
+          <RowAction title="Activate" disabled={busy} onClick={onToggle}>
+            <PlayCircleIcon className="h-5 w-5" />
+          </RowAction>
+        )}
+
+        {hasUpdate && (
+          <RowAction
+            title={`Update to ${item.update_version || "the latest"}`}
+            disabled={busy}
+            onClick={onUpdate}
+            tone="text-amber-600 hover:text-amber-700"
+          >
+            <ArrowUpCircleIcon className="h-5 w-5" />
+          </RowAction>
+        )}
+
+        <RowAction title="Open a shell in this folder" onClick={onTerminal}>
+          <CommandLineIcon className="h-4 w-4" />
+        </RowAction>
+
+        <RowAction
+          title="Reveal folder in Finder"
+          onClick={() =>
+            void api
+              .pathOpen(`${docroot}/wp-content/${kind}s/${item.name}`)
+              .catch((e) => alert(errorText(e)))
+          }
         >
-          {busy ? "…" : "Activate"}
-        </button>
-      )}
+          <FolderOpenIcon className="h-4 w-4" />
+        </RowAction>
 
-      {/* Only offered when there is something to update to. */}
-      {hasUpdate && (
-        <button
-          title={`Update to ${item.update_version || "the latest"}`}
-          disabled={busy}
-          onClick={onUpdate}
-          className="flex-shrink-0 rounded-lg border border-amber-300 bg-amber-50 p-1 text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50"
+        <RowAction
+          title={
+            alwaysOn
+              ? KEEP_WARNING
+              : kind === "theme" && active
+                ? "The active theme cannot be deleted"
+                : "Delete"
+          }
+          disabled={busy || (kind === "theme" && active)}
+          onClick={onDelete}
+          tone="text-gray-400 hover:text-red-600"
         >
-          <ArrowUpCircleIcon className="h-3.5 w-3.5" />
-        </button>
-      )}
-
-      <button
-        title="Open a shell in this folder"
-        onClick={onTerminal}
-        className="flex-shrink-0 rounded-lg border border-gray-300 p-1 text-gray-500 transition-colors hover:bg-gray-50"
-      >
-        <CommandLineIcon className="h-3.5 w-3.5" />
-      </button>
-
-      <button
-        title="Reveal folder in Finder"
-        onClick={() =>
-          void api
-            .pathOpen(`${docroot}/wp-content/${kind}s/${item.name}`)
-            .catch((e) => alert(errorText(e)))
-        }
-        className="flex-shrink-0 rounded-lg border border-gray-300 p-1 text-gray-500 transition-colors hover:bg-gray-50"
-      >
-        <FolderOpenIcon className="h-3.5 w-3.5" />
-      </button>
-
-      <button
-        title={
-          kind === "theme" && active
-            ? "The active theme cannot be deleted"
-            : "Delete"
-        }
-        disabled={busy || (kind === "theme" && active)}
-        onClick={onDelete}
-        className="flex-shrink-0 rounded-lg border border-gray-300 p-1 text-gray-500 transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-      >
-        <TrashIcon className="h-3.5 w-3.5" />
-      </button>
+          <TrashIcon className="h-4 w-4" />
+        </RowAction>
+      </div>
     </li>
   );
 }
@@ -954,290 +1133,6 @@ function ThemeGrid({
   );
 }
 
-// ---------------------------------------------------------------- install
-
-function InstallBar({
-  domain,
-  kind,
-  onDone,
-}: {
-  domain: string;
-  kind: Kind;
-  onDone: () => Promise<void>;
-}) {
-  const [source, setSource] = useState<"wporg" | "upload" | "git">("wporg");
-  const [slug, setSlug] = useState("");
-  const [zipPath, setZipPath] = useState<string | null>(null);
-  const [gitUrl, setGitUrl] = useState("");
-  const [activate, setActivate] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [clash, setClash] = useState<{ value: string; message: string } | null>(
-    null,
-  );
-
-  const finish = async (work: () => Promise<string>) => {
-    setBusy(true);
-    try {
-      const msg = await work();
-      await onDone();
-      if (msg) alert(msg);
-    } catch (e) {
-      alert(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // WP-CLI takes a slug and a zip path through the same argument, so both of
-  // these are one call; only the source of the string differs.
-  const installSource = async (value: string, force: boolean): Promise<void> => {
-    setBusy(true);
-    try {
-      const msg = await api.wpInstallItem(domain, kind, value, activate, force);
-      setSlug("");
-      setZipPath(null);
-      await onDone();
-      if (msg) alert(msg);
-    } catch (e) {
-      const text = errorText(e);
-      // The backend names what is in the way, so offering to replace it is a
-      // real choice rather than a guess. Held in state for the dialog, since
-      // window.confirm does not reliably block here.
-      if (!force && /already|exists/i.test(text)) {
-        setClash({ value, message: text });
-      } else {
-        alert(text);
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const chooseZip = async () => {
-    try {
-      // The native panel, so what comes back is a real path WP-CLI can read.
-      // A browser <input type="file"> hands over a File with no path at all.
-      const picked = await open({
-        multiple: false,
-        directory: false,
-        filters: [{ name: "Zip archive", extensions: ["zip"] }],
-      });
-      if (typeof picked === "string") setZipPath(picked);
-    } catch (e) {
-      alert(errorText(e));
-    }
-  };
-
-  const sources = [
-    ["wporg", "WordPress.org"],
-    ["upload", "Upload"],
-    ["git", "From Git"],
-  ] as const;
-
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
-      <div className="mb-2 inline-flex gap-1 rounded-lg bg-gray-100 p-1">
-        {sources.map(([id, label]) => (
-          <button
-            key={id}
-            onClick={() => setSource(id)}
-            className={clsx(
-              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-              source === id
-                ? "bg-white text-gray-900 shadow-sm"
-                : "text-gray-600 hover:text-gray-900",
-            )}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {source === "wporg" && (
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            value={slug}
-            onChange={(e) => setSlug(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && slug.trim())
-                void installSource(slug.trim(), false);
-            }}
-            placeholder={`Enter a ${kind} slug, e.g. ${
-              kind === "plugin" ? "wordpress-seo" : "twentytwentyfour"
-            }`}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            disabled={busy}
-            className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 font-mono text-xs focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-          />
-          <ActivateBox checked={activate} onChange={setActivate} />
-          <InstallButton
-            disabled={busy || !slug.trim()}
-            busy={busy}
-            onClick={() => void installSource(slug.trim(), false)}
-          />
-        </div>
-      )}
-
-      {source === "upload" && (
-        <>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => void chooseZip()}
-              disabled={busy}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
-            >
-              <ArrowUpTrayIcon className="h-4 w-4" />
-              Choose .zip file…
-            </button>
-            {zipPath && (
-              <span
-                className="min-w-0 flex-1 truncate font-mono text-[11px] text-gray-600"
-                title={zipPath}
-              >
-                {zipPath.split("/").pop()}
-              </span>
-            )}
-            <ActivateBox checked={activate} onChange={setActivate} />
-            <button
-              disabled={busy || !zipPath}
-              onClick={() => zipPath && void installSource(zipPath, false)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <ArrowUpTrayIcon className="h-4 w-4" />
-              {busy ? "Installing…" : "Upload"}
-            </button>
-          </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-gray-500">
-            Installs a {kind} from a .zip on this Mac — the same thing
-            wp-admin's "Upload plugin" does, run through WP-CLI. The file is
-            read where it sits; nothing is uploaded anywhere.
-          </p>
-        </>
-      )}
-
-      {source === "git" && (
-        <>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              value={gitUrl}
-              onChange={(e) => setGitUrl(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && gitUrl.trim()) {
-                  void finish(async () => {
-                    const m = await api.wpInstallFromGit(
-                      domain,
-                      kind,
-                      gitUrl.trim(),
-                    );
-                    setGitUrl("");
-                    return m;
-                  });
-                }
-              }}
-              placeholder="https://github.com/owner/repo  or  owner/repo"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              disabled={busy}
-              className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 font-mono text-xs focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-            />
-            <button
-              disabled={busy || !gitUrl.trim()}
-              onClick={() =>
-                void finish(async () => {
-                  const m = await api.wpInstallFromGit(
-                    domain,
-                    kind,
-                    gitUrl.trim(),
-                  );
-                  setGitUrl("");
-                  return m;
-                })
-              }
-              className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {busy ? "Fetching…" : "Fetch"}
-            </button>
-          </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-gray-500">
-            <span className="font-mono">owner/repo</span> means github.com ·
-            private repos use your own SSH keys · cloned shallow into
-            wp-content/{kind}s, so it stays a checkout you can pull from.
-            {" "}A repo that needs a build step still needs one.
-          </p>
-        </>
-      )}
-      <ConfirmDialog
-        open={clash !== null}
-        title="Already installed"
-        body={
-          <>
-            {clash?.message}
-            <br />
-            <br />
-            Replacing overwrites that folder with the new copy.
-          </>
-        }
-        confirmLabel="Replace"
-        busy={busy}
-        onCancel={() => setClash(null)}
-        onConfirm={() => {
-          const again = clash;
-          setClash(null);
-          if (again) void installSource(again.value, true);
-        }}
-      />
-    </div>
-  );
-}
-
-function ActivateBox({
-  checked,
-  onChange,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex items-center gap-1.5 text-xs text-gray-700">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
-      />
-      Activate
-    </label>
-  );
-}
-
-function InstallButton({
-  disabled,
-  busy,
-  onClick,
-}: {
-  disabled: boolean;
-  busy: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      disabled={disabled}
-      onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      <PlusIcon className="h-4 w-4" />
-      {busy ? "Installing…" : "Install"}
-    </button>
-  );
-}
-
-// ------------------------------------------------------------------ users
-
 function Users({
   domain,
   state,
@@ -1248,11 +1143,7 @@ function Users({
   const { data, error, loading, reload } = state;
   const { data: roles } = useAsync(() => api.wpRoles(domain), [domain], `wp-roles:${domain}`);
 
-  const [login, setLogin] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [role, setRole] = useState("subscriber");
-  const [showPassword, setShowPassword] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [resetting, setResetting] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
@@ -1267,21 +1158,10 @@ function Users({
   const field =
     "rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30";
 
-  const addUser = async () => {
-    setBusy("add");
-    try {
-      const msg = await api.wpCreateUser(domain, login, email, password, role);
-      setLogin("");
-      setEmail("");
-      setPassword("");
-      await reload();
-      if (msg) alert(msg);
-    } catch (e) {
-      alert(errorText(e));
-    } finally {
-      setBusy(null);
-    }
-  };
+  /** How many administrators the site has, for the one that cannot go. */
+  const admins = (data ?? []).filter((u) =>
+    u.roles.split(",").some((r) => r.trim() === "administrator"),
+  ).length;
 
   /** WP-CLI reports roles comma-separated; the picker sets exactly one. */
   const currentRole = (roles: string) => roles.split(",")[0]?.trim() ?? "";
@@ -1318,84 +1198,27 @@ function Users({
 
   return (
     <div className="space-y-3">
-      {/* Create a user */}
-      <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            value={login}
-            onChange={(e) => setLogin(e.target.value)}
-            placeholder="username"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            disabled={busy === "add"}
-            className={clsx(field, "w-40")}
-          />
-          <input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder={`email@${domain}`}
-            type="email"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            disabled={busy === "add"}
-            className={clsx(field, "min-w-0 flex-1")}
-          />
-          <div className="relative">
-            <input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="password"
-              type={showPassword ? "text" : "password"}
-              autoComplete="new-password"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              disabled={busy === "add"}
-              className={clsx(field, "w-44 pr-9")}
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword((v) => !v)}
-              title={showPassword ? "Hide" : "Show"}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 transition-colors hover:text-gray-600"
-            >
-              {showPassword ? (
-                <EyeSlashIcon className="h-4 w-4" />
-              ) : (
-                <EyeIcon className="h-4 w-4" />
-              )}
-            </button>
-          </div>
-          <select
-            value={role}
-            onChange={(e) => setRole(e.target.value)}
-            disabled={busy === "add"}
-            className={clsx(field, "capitalize")}
-          >
-            {roleOptions.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-          <button
-            disabled={busy === "add" || !login.trim() || !email.trim()}
-            onClick={() => void addUser()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <UserPlusIcon className="h-4 w-4" />
-            {busy === "add" ? "Adding…" : "Add user"}
-          </button>
-        </div>
-        <p className="mt-2 text-[11px] text-gray-500">
-          Leave the password blank and WordPress generates one and emails it —
-          which on a local site means it goes to Mailpit.
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-gray-500">
+          {(data ?? []).length} user{(data ?? []).length === 1 ? "" : "s"}
         </p>
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700"
+        >
+          <UserPlusIcon className="h-4 w-4" />
+          Add user
+        </button>
       </div>
+
+      <AddUserDialog
+        open={adding}
+        domain={domain}
+        roles={roleOptions}
+        onClose={() => setAdding(false)}
+        onAdded={reload}
+      />
 
       {/* The users */}
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -1417,12 +1240,13 @@ function Users({
             {(data ?? []).map((u) => {
               const admin = u.roles.includes("administrator");
               const working = busy === u.login;
+              // Deleting the only administrator leaves a site nobody can
+              // manage, so it is not offered.
+              const lastAdmin = admin && admins === 1;
               return (
                 <li key={u.id} className="px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-50 text-sm font-semibold uppercase text-blue-700">
-                      {(u.display_name || u.login).charAt(0)}
-                    </div>
+                  <div className="flex items-center gap-2.5">
+                    <Avatar name={u.display_name || u.login} email={u.email} />
 
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm text-gray-900">
@@ -1442,7 +1266,7 @@ function Users({
                         read from `wp role list` -- a plugin can add or remove
                         them, so a fixed list would offer roles that do not
                         exist here. */}
-                    <div className="flex flex-shrink-0 items-center gap-1.5">
+                    <div className="flex min-w-0 flex-shrink items-center gap-1.5">
                       {admin && (
                         <LockClosedIcon
                           className="h-3.5 w-3.5 text-blue-600"
@@ -1455,8 +1279,12 @@ function Users({
                         onChange={(e) =>
                           void changeRole(u.login, e.target.value)
                         }
+                        // Wide enough for the longest role this install has,
+                        // so none of them reads half-cut.
                         className={clsx(
-                          "rounded-lg border px-2 py-1 text-xs capitalize focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 disabled:opacity-50",
+                          // pr-6 leaves the arrow its own space; without it the
+                          // role name runs under it in a narrow pane.
+                          "min-w-0 rounded-lg border py-1 pl-2 pr-6 text-xs capitalize focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 disabled:opacity-50",
                           admin
                             ? "border-blue-200 bg-blue-50 text-blue-800"
                             : "border-gray-300 bg-white text-gray-700",
@@ -1474,38 +1302,42 @@ function Users({
                       </select>
                     </div>
 
-                    <button
-                      title="Set a new password"
-                      onClick={() => {
-                        setResetting(resetting === u.login ? null : u.login);
-                        setNewPassword("");
-                      }}
-                      className="flex-shrink-0 rounded-lg border border-gray-300 p-1.5 text-gray-500 transition-colors hover:bg-gray-50"
-                    >
-                      <KeyIcon className="h-3.5 w-3.5" />
-                    </button>
+                    {/* Icons alone, as the plugin rows have. */}
+                    <div className="flex flex-shrink-0 items-center gap-2.5">
+                      <RowAction
+                        title="Set a new password"
+                        onClick={() => {
+                          setResetting(resetting === u.login ? null : u.login);
+                          setNewPassword("");
+                        }}
+                      >
+                        <KeyIcon className="h-4 w-4" />
+                      </RowAction>
 
-                    <button
-                      title={`Open wp-admin signed in as ${u.login}`}
-                      onClick={() =>
-                        void api
-                          .wpMagicLogin(domain, u.login)
-                          .catch((e) => alert(errorText(e)))
-                      }
-                      className="inline-flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50"
-                    >
-                      <ArrowRightEndOnRectangleIcon className="h-3.5 w-3.5" />
-                      Log in
-                    </button>
+                      <RowAction
+                        title={`Open wp-admin signed in as ${u.login}`}
+                        onClick={() =>
+                          void api
+                            .wpMagicLogin(domain, u.login)
+                            .catch((e) => alert(errorText(e)))
+                        }
+                      >
+                        <ArrowRightEndOnRectangleIcon className="h-4 w-4" />
+                      </RowAction>
 
-                    <button
-                      title="Delete this user"
-                      disabled={working}
-                      onClick={() => setPendingDelete(u)}
-                      className="flex-shrink-0 rounded-lg border border-gray-300 p-1.5 text-gray-500 transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-                    >
-                      <TrashIcon className="h-3.5 w-3.5" />
-                    </button>
+                      <RowAction
+                        title={
+                          lastAdmin
+                            ? "The only administrator cannot be deleted"
+                            : "Delete this user"
+                        }
+                        disabled={working || lastAdmin}
+                        onClick={() => setPendingDelete(u)}
+                        tone="text-gray-400 hover:text-red-600"
+                      >
+                        <TrashIcon className="h-4 w-4" />
+                      </RowAction>
+                    </div>
                   </div>
 
                   {resetting === u.login && (

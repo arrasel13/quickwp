@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
@@ -8,13 +8,11 @@ import {
   ShieldCheckIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
-import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorText, CronEvent, WpLanguage } from "../../lib/api";
 import { useAsync } from "../../lib/useAsync";
-import { useSettingsSnapshot, type Snapshot } from "../../lib/wpSettings";
+import { useCoreUpdate, useSettingsSnapshot, type Snapshot } from "../../lib/wpSettings";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import { Action } from "./SiteManage";
-import { DatabaseTableIcon, ExportIcon, ImportIcon } from "../ui/WpIcons";
 
 /**
  * Maintenance for one WordPress site.
@@ -50,13 +48,12 @@ function Note({ text }: { text: string | null }) {
   );
 }
 
-/** Maintenance and Backup & restore, shown in Overview beside Manage. */
-export function MaintenanceAndBackup({ domain }: { domain: string }) {
+/** Maintenance, shown in Overview under Manage. */
+export function MaintenanceSection({ domain }: { domain: string }) {
   const { note, busy, act } = useAct();
   return (
-    <div className="space-y-7">
+    <div className="space-y-3">
       <Maintenance domain={domain} busy={busy} act={act} flat />
-      <Backup domain={domain} busy={busy} act={act} flat />
       <Note text={note} />
     </div>
   );
@@ -93,13 +90,19 @@ function Rule() {
 
 type Act = (key: string, fn: () => Promise<string>) => Promise<void>;
 
+/** Where the update notice at the top of Settings scrolls to. */
+export const CORE_SECTION_ID = "settings-core";
+
 export function Panel({
   title,
   flat,
   bare,
+  id,
   children,
 }: {
   title: string;
+  /** For linking to this part of the page. */
+  id?: string;
   /** A heading over the rows, as Manage has, rather than a card. */
   flat?: boolean;
   /** One part of a card that holds several, headed like the others. */
@@ -108,7 +111,7 @@ export function Panel({
 }) {
   if (bare)
     return (
-      <div>
+      <div id={id}>
         <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
           {title}
         </h4>
@@ -117,13 +120,13 @@ export function Panel({
     );
   if (flat)
     return (
-      <section>
+      <section id={id}>
         <h2 className="mb-3 text-sm font-semibold text-gray-900">{title}</h2>
         {children}
       </section>
     );
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+    <section id={id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <h4 className="mb-3 text-sm font-semibold text-gray-900">{title}</h4>
       {children}
     </section>
@@ -134,6 +137,9 @@ const btn =
   "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50";
 const field =
   "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30";
+/** Site options: many controls in a grid, so they are filled rather than outlined. */
+const optionField =
+  "min-w-0 flex-1 rounded-lg border border-transparent bg-gray-100 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 disabled:opacity-60";
 
 export function Toggle({
   on,
@@ -369,92 +375,6 @@ function Maintenance({
   );
 }
 
-// ------------------------------------------------------------------ backup
-
-function Backup({
-  domain,
-  busy,
-  act,
-  flat,
-}: {
-  domain: string;
-  busy: string | null;
-  act: Act;
-  flat?: boolean;
-}) {
-  const [confirmImport, setConfirmImport] = useState<string | null>(null);
-
-  const pickSql = async () => {
-    try {
-      const picked = await open({
-        multiple: false,
-        directory: false,
-        filters: [{ name: "SQL dump", extensions: ["sql"] }],
-      });
-      if (typeof picked === "string") setConfirmImport(picked);
-    } catch (e) {
-      alert(errorText(e));
-    }
-  };
-
-  return (
-    <Panel title="Backup & restore" flat={flat}>
-      <div className="grid grid-cols-1 gap-2.5">
-        <Action
-          icon={DatabaseTableIcon}
-          label={busy === "export-db" ? "Exporting…" : "Export database"}
-          busy={busy === "export-db"}
-          disabled={busy !== null}
-          onClick={() =>
-            void act("export-db", async () => {
-              const path = await api.wpExportDatabase(domain);
-              return `Database exported to ${path}`;
-            })
-          }
-        />
-        <Action
-          icon={ImportIcon}
-          label={busy === "import-db" ? "Importing…" : "Import database…"}
-          busy={busy === "import-db"}
-          disabled={busy !== null}
-          onClick={() => void pickSql()}
-        />
-        <Action
-          icon={ExportIcon}
-          label={busy === "export-wxr" ? "Exporting…" : "Export content (WXR)"}
-          busy={busy === "export-wxr"}
-          disabled={busy !== null}
-          onClick={() => void act("export-wxr", () => api.wpExportContent(domain))}
-        />
-      </div>
-
-      <ConfirmDialog
-        open={confirmImport !== null}
-        title="Import this database?"
-        body={
-          <>
-            <span className="break-all font-mono text-[11px]">
-              {confirmImport}
-            </span>
-            <br />
-            <br />
-            Importing replaces the tables it contains. Export the current
-            database first if you might want it back.
-          </>
-        }
-        confirmLabel="Import"
-        busy={busy === "import-db"}
-        onCancel={() => setConfirmImport(null)}
-        onConfirm={() => {
-          const file = confirmImport;
-          setConfirmImport(null);
-          if (file) void act("import-db", () => api.wpImportDatabase(domain, file));
-        }}
-      />
-    </Panel>
-  );
-}
-
 // -------------------------------------------------------------- permalinks
 
 const PERMALINK_STRUCTURES: [string, string, string][] = [
@@ -598,6 +518,7 @@ function Core({
     [domain],
     `wp-core-version:${domain}`,
   );
+  const { data: update, reload: recheck } = useCoreUpdate(domain);
   const [target, setTarget] = useState("");
   const [confirmSwitch, setConfirmSwitch] = useState(false);
   const [available, setAvailable] = useState<string[]>([]);
@@ -633,29 +554,47 @@ function Core({
   }, []);
 
   return (
-    <Panel title="Core" bare={bare}>
-      {/* What is installed, before anything offers to change it. */}
-      <div className="mb-3 flex items-baseline justify-between gap-3 border-b border-gray-100 pb-3">
+    <Panel title="Core" bare={bare} id={CORE_SECTION_ID}>
+      {/* What is installed, and whether WordPress has anything newer. */}
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-gray-100 pb-3">
         <span className="text-xs text-gray-600">Installed version</span>
-        <span className="font-mono text-xs text-gray-900">
-          {version ? `WordPress ${version}` : "…"}
+        <span className="flex items-center gap-2">
+          {update && (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-900">
+              {update.version} available
+            </span>
+          )}
+          <span className="font-mono text-xs text-gray-900">
+            {version ? `WordPress ${version}` : "…"}
+          </span>
         </span>
       </div>
 
-      <div className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 pane-sm:grid-cols-2">
         <button
-          disabled={busy === "core-update"}
+          // Nothing to do when the site is already on the newest release.
+          disabled={busy === "core-update" || !update}
+          title={update ? `Update to WordPress ${update.version}` : "WordPress is up to date"}
           onClick={() =>
             void act("core-update", async () => {
               const msg = await api.wpCoreUpdate(domain, null);
-              await reload();
+              await Promise.all([reload(), recheck()]);
               return msg;
             })
           }
-          className={clsx(btn, "inline-flex items-center justify-center gap-1.5")}
+          className={clsx(
+            "inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+            update
+              ? "bg-blue-600 text-white hover:bg-blue-700"
+              : "border border-gray-300 bg-white text-gray-700",
+          )}
         >
-          <ArrowPathIcon className="h-4 w-4" />
-          {busy === "core-update" ? "Updating…" : "Update core"}
+          <ArrowPathIcon className={clsx("h-4 w-4", busy === "core-update" && "animate-spin")} />
+          {busy === "core-update"
+            ? "Updating…"
+            : update
+              ? `Update to ${update.version}`
+              : "Up to date"}
         </button>
 
         <button
@@ -679,7 +618,7 @@ function Core({
           {busy === "checksums" ? "Verifying…" : "Verify core checksums"}
         </button>
 
-        <div className="border-t border-gray-100 pt-3">
+        <div className="border-t border-gray-100 pt-3 pane-sm:col-span-2">
           <label
             htmlFor={`core-version-${domain}`}
             className="mb-1.5 block text-xs font-medium text-gray-700"
@@ -753,7 +692,7 @@ function Core({
           setConfirmSwitch(false);
           void act("switch", async () => {
             const msg = await api.wpCoreUpdate(domain, target);
-            await reload();
+            await Promise.all([reload(), recheck()]);
             return msg;
           });
         }}
@@ -830,77 +769,11 @@ const OPTION_FIELDS: {
  * UTC offset. Reading only the first shows an empty box on the very common
  * default, where the string is unset and the offset is 0.
  *
- * Saving mirrors what wp-admin does: whichever one you pick is written and the
- * other is cleared, so they can never disagree.
+ * Saving mirrors what wp-admin does: whichever one is picked is written and
+ * the other cleared, so they can never disagree.
  */
-function TimezoneField({ domain, snapshot }: { domain: string; snapshot: Snapshot }) {
-  const options = snapshot.data?.options;
-  const read = options
-    ? (options.timezone_string ?? "").trim() || `UTC${formatOffset(options.gmt_offset ?? "0")}`
-    : null;
-  // What was picked here, shown until the snapshot is read again.
-  const [picked, setPicked] = useState<string | null>(null);
-  useEffect(() => setPicked(null), [read, domain]);
-  const value = picked ?? read;
-  const setValue = setPicked;
-  const load = snapshot.reload;
-  const [saving, setSaving] = useState(false);
-
-  const save = async (next: string) => {
-    setSaving(true);
-    setValue(next);
-    try {
-      if (next.startsWith("UTC")) {
-        const offset = next.slice(3);
-        const gmt = offset === "+0" ? "0" : offset;
-        await api.wpOptionSet(domain, "gmt_offset", gmt);
-        await api.wpOptionSet(domain, "timezone_string", "");
-        snapshot.patch({ gmt_offset: gmt, timezone_string: "" });
-      } else {
-        await api.wpOptionSet(domain, "timezone_string", next);
-        await api.wpOptionSet(domain, "gmt_offset", "");
-        snapshot.patch({ timezone_string: next, gmt_offset: "" });
-      }
-    } catch (e) {
-      alert(errorText(e));
-      await load();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="flex items-center gap-3">
-      <label className="w-36 flex-shrink-0 text-xs text-gray-600">Timezone</label>
-      <select
-        value={value ?? ""}
-        disabled={saving || value === null}
-        onChange={(e) => void save(e.target.value)}
-        className={clsx(field, "min-w-0 flex-1")}
-      >
-        {value === null && <option value="">Loading…</option>}
-        {/* A zone the machine's Intl does not know about still has to be
-            selectable, or opening this panel would silently change it. */}
-        {value !== null && !value.startsWith("UTC") && !ZONES.includes(value) && (
-          <option value={value}>{value}</option>
-        )}
-        <optgroup label="UTC offset">
-          {UTC_OFFSETS.map((o) => (
-            <option key={o} value={`UTC${o}`}>
-              {o === "+0" ? "None (UTC offset)" : `UTC${o}`}
-            </option>
-          ))}
-        </optgroup>
-        <optgroup label="City">
-          {ZONES.map((z) => (
-            <option key={z} value={z}>
-              {z.replace(/_/g, " ")}
-            </option>
-          ))}
-        </optgroup>
-      </select>
-    </div>
-  );
+function timezoneOf(options: Record<string, string>): string {
+  return (options.timezone_string ?? "").trim() || `UTC${formatOffset(options.gmt_offset ?? "0")}`;
 }
 
 /** "0" and "6" and "5.75" all have to come back as WordPress writes them. */
@@ -911,16 +784,24 @@ function formatOffset(raw: string): string {
 }
 
 /**
- * The offsets wp-admin offers: half-hour steps, plus the four quarter-hour
- * zones that actually exist (Nepal, Chatham, and the Pacific pair).
+ * The offsets wp-admin offers, as [value, label]: half-hour steps plus the
+ * four quarter-hour zones that actually exist (Nepal, Chatham, and the
+ * Pacific pair).
+ *
+ * The value is what WordPress stores ("UTC+5.5"); the label is what wp-admin
+ * shows for it ("UTC+5:30"), so the two screens agree.
  */
-const UTC_OFFSETS: string[] = (() => {
+const UTC_OFFSETS: [string, string][] = (() => {
   const out: number[] = [];
   for (let n = -12; n <= 14; n += 0.5) out.push(n);
   out.push(5.75, 8.75, 12.75, 13.75);
   return [...new Set(out)]
     .sort((a, b) => a - b)
-    .map((n) => (n >= 0 ? `+${n}` : `${n}`));
+    .map((n) => {
+      const value = n >= 0 ? `+${n}` : `${n}`;
+      const label = value.replace(".25", ":15").replace(".5", ":30").replace(".75", ":45");
+      return [`UTC${value}`, `UTC${label}`];
+    });
 })();
 
 /**
@@ -971,103 +852,197 @@ function SiteOptions({
   snapshot: Snapshot;
   bare?: boolean;
 }) {
-  const [values, setValues] = useState<Record<string, string>>(
-    () => snapshot.data?.options ?? {},
-  );
-  const [saving, setSaving] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  const read = snapshot.data?.options;
+  /** What the site has, as the fields show it. */
+  const saved = useMemo(() => {
+    const out: Record<string, string> = {};
+    if (!read) return out;
+    for (const f of OPTION_FIELDS) {
+      out[f.key] = f.kind === "timezone" ? timezoneOf(read) : (read[f.key] ?? "");
+    }
+    return out;
+  }, [read]);
 
-  // Fields typed into and not saved yet: a snapshot landing meanwhile must
-  // not wipe what is being typed.
-  const dirty = useRef(new Set<string>());
+  const [draft, setDraft] = useState<Record<string, string>>(saved);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const edited = useRef(false);
 
-  // Filled from the snapshot as it lands -- at once when it was read ahead.
+  // Filled from the site as it is read -- at once when it was read ahead.
+  // What is being edited is never overwritten by a refresh landing behind it.
   useEffect(() => {
-    const read = snapshot.data?.options ?? {};
-    setValues((prev) => {
-      const next = { ...read };
-      for (const k of dirty.current) if (k in prev) next[k] = prev[k];
-      return next;
-    });
-  }, [snapshot.data]);
+    if (!edited.current) setDraft(saved);
+  }, [saved]);
 
   useEffect(() => {
-    dirty.current.clear();
+    edited.current = false;
+    setNote(null);
   }, [domain]);
 
-  const save = async (key: string, value: string) => {
-    setSaving(key);
+  const changed = OPTION_FIELDS.filter((f) => (draft[f.key] ?? "") !== (saved[f.key] ?? ""));
+  const loaded = read !== undefined;
+
+  const set = (key: string, value: string) => {
+    edited.current = true;
+    setDraft((v) => ({ ...v, [key]: value }));
+  };
+
+  const reset = () => {
+    edited.current = false;
+    setDraft(saved);
     setNote(null);
+  };
+
+  const save = async () => {
+    setBusy(true);
+    setNote(null);
+    const patch: Record<string, string> = {};
     try {
-      await api.wpOptionSet(domain, key, value);
-      dirty.current.delete(key);
-      snapshot.patch({ [key]: value });
-      setNote(`${key} saved.`);
+      for (const f of changed) {
+        const value = draft[f.key] ?? "";
+        if (f.kind === "timezone") {
+          // One of the pair holds the answer and the other is emptied.
+          if (value.startsWith("UTC")) {
+            // As WordPress writes it: a plain number, so "UTC+5:30" is 5.5.
+            const gmt = value.slice(3).replace(/^\+/, "") || "0";
+            await api.wpOptionSet(domain, "gmt_offset", gmt);
+            await api.wpOptionSet(domain, "timezone_string", "");
+            Object.assign(patch, { gmt_offset: gmt, timezone_string: "" });
+          } else {
+            await api.wpOptionSet(domain, "timezone_string", value);
+            await api.wpOptionSet(domain, "gmt_offset", "");
+            Object.assign(patch, { timezone_string: value, gmt_offset: "" });
+          }
+        } else {
+          await api.wpOptionSet(domain, f.key, value);
+          patch[f.key] = value;
+        }
+      }
+      snapshot.patch(patch);
+      edited.current = false;
+      setNote({ ok: true, text: `${changed.length} ${changed.length === 1 ? "option" : "options"} saved.` });
     } catch (e) {
-      setNote(errorText(e));
+      // Whatever did save is in the site now: read it all back rather than
+      // leaving the form claiming otherwise.
+      snapshot.patch(patch);
+      await snapshot.reload();
+      setNote({ ok: false, text: errorText(e) });
     } finally {
-      setSaving(null);
+      setBusy(false);
     }
   };
 
   return (
     <Panel title="Site options" bare={bare}>
       <div className="grid grid-cols-1 gap-x-6 gap-y-3 pane-sm:grid-cols-2">
-        {OPTION_FIELDS.map((f) =>
-          f.kind === "timezone" ? (
-            <TimezoneField key={f.key} domain={domain} snapshot={snapshot} />
-          ) : (
+        {OPTION_FIELDS.map((f) => (
           <div key={f.key} className="flex items-center gap-3">
-            <label className="w-36 flex-shrink-0 text-xs text-gray-600">
+            <label
+              htmlFor={`opt-${f.key}-${domain}`}
+              className="w-32 flex-shrink-0 text-xs text-gray-600"
+            >
               {f.label}
             </label>
-            {f.kind === "select" ? (
+            {f.kind === "text" ? (
+              <input
+                id={`opt-${f.key}-${domain}`}
+                value={draft[f.key] ?? ""}
+                disabled={busy || !loaded}
+                onChange={(e) => set(f.key, e.target.value)}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                className={clsx(optionField, "font-mono")}
+              />
+            ) : (
               <select
-                value={values[f.key] ?? ""}
-                disabled={saving === f.key}
-                onChange={(e) => {
-                  setValues((v) => ({ ...v, [f.key]: e.target.value }));
-                  void save(f.key, e.target.value);
-                }}
-                className={clsx(field, "min-w-0 flex-1")}
+                id={`opt-${f.key}-${domain}`}
+                value={draft[f.key] ?? ""}
+                disabled={busy || !loaded}
+                onChange={(e) => set(f.key, e.target.value)}
+                className={optionField}
               >
+                {!loaded && <option value="">Loading…</option>}
+                {f.kind === "timezone" ? <TimezoneOptions value={draft[f.key] ?? ""} /> : null}
                 {f.choices?.map(([v, label]) => (
                   <option key={v} value={v}>
                     {label}
                   </option>
                 ))}
               </select>
-            ) : (
-              <input
-                value={values[f.key] ?? ""}
-                disabled={saving === f.key}
-                onChange={(e) => {
-                  dirty.current.add(f.key);
-                  setValues((v) => ({ ...v, [f.key]: e.target.value }));
-                }}
-                // Saved on blur, not per keystroke: each save is a WP-CLI
-                // process, and one per character would be absurd.
-                onBlur={(e) => void save(f.key, e.target.value)}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                className={clsx(field, "min-w-0 flex-1")}
-              />
             )}
           </div>
-          ),
-        )}
+        ))}
       </div>
 
-      <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
-        Only this curated, known-safe set is editable — site URLs, plugin/theme
-        state and serialized options can't be changed here. Text fields save
-        when you click away; there is no undo.
-      </p>
+      <div className="mt-3 flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
+        {/* Nothing is written until Save, so there is always a way back. */}
+        <div className="flex items-center gap-2">
+          {changed.length > 0 && (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void save()}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {busy ? "Saving…" : `Save ${changed.length} change${changed.length === 1 ? "" : "s"}`}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={reset}
+                className="rounded-lg px-3 py-2 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </>
+          )}
+        </div>
 
-      {note && <p className="mt-2 text-[11px] text-gray-600">{note}</p>}
+        <p className="max-w-[30rem] text-[11px] leading-relaxed text-gray-500">
+          Only this curated, known-safe set is editable — site URLs, plugin/theme state and
+          serialized options can't be changed here.
+        </p>
+      </div>
+
+      {note && (
+        <p
+          role={note.ok ? "status" : "alert"}
+          className={clsx("mt-2 text-[11px]", note.ok ? "text-green-700" : "text-red-700")}
+        >
+          {note.text}
+        </p>
+      )}
     </Panel>
+  );
+}
+
+/** The zones and offsets wp-admin offers, plus whatever the site is set to. */
+function TimezoneOptions({ value }: { value: string }) {
+  return (
+    <>
+      {/* A zone the machine's Intl does not know about still has to be
+          selectable, or opening this panel would silently change it. */}
+      {value && !value.startsWith("UTC") && !ZONES.includes(value) && (
+        <option value={value}>{value}</option>
+      )}
+      <optgroup label="City">
+        {ZONES.map((z) => (
+          <option key={z} value={z}>
+            {z.replace(/_/g, " ")}
+          </option>
+        ))}
+      </optgroup>
+      <optgroup label="UTC offset">
+        {UTC_OFFSETS.map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </optgroup>
+    </>
   );
 }
 

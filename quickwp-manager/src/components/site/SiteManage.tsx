@@ -12,7 +12,7 @@ import {
   ImportIcon,
 } from "../ui/WpIcons";
 
-type Busy = "duplicate" | "import" | "export-all" | "export-db";
+type Busy = "duplicate" | "import" | "export-all" | "export-db" | "export-wxr";
 
 /**
  * What is done to a site as a whole: copy it, load a database into it, export
@@ -85,12 +85,17 @@ export default function SiteManage({ site, onDeleted }: { site: Site; onDeleted?
       return { text: `Database exported to ${file}`, file };
     });
 
+  // WordPress's own export: posts, pages and media as a WXR file, which is
+  // what another WordPress install can import.
+  const exportContent = () =>
+    void run("export-wxr", async () => ({ text: await api.wpExportContent(site.domain) }));
+
   const label = (key: Busy, idle: string, working: string) => (busy === key ? working : idle);
 
   return (
     <section>
       <h2 className="mb-3 text-sm font-semibold text-gray-900">Manage</h2>
-      <div className="grid grid-cols-1 gap-2.5">
+      <div className="grid grid-cols-1 gap-2.5 pane-sm:grid-cols-2">
         <Action
           icon={DuplicateIcon}
           label={label("duplicate", "Duplicate", "Duplicating…")}
@@ -100,7 +105,7 @@ export default function SiteManage({ site, onDeleted }: { site: Site; onDeleted?
         />
         <Action
           icon={ImportIcon}
-          label={label("import", "Import", "Importing…")}
+          label={label("import", "Import database…", "Importing…")}
           busy={busy === "import"}
           disabled={busy !== null || !hasDb}
           title={hasDb ? "Load a .sql dump into this site's database" : "This site has no database"}
@@ -121,6 +126,16 @@ export default function SiteManage({ site, onDeleted }: { site: Site; onDeleted?
           title={hasDb ? undefined : "This site has no database"}
           onClick={exportDb}
         />
+        {isWordPress && (
+          <Action
+            icon={ExportIcon}
+            label={label("export-wxr", "Export content (WXR)", "Exporting…")}
+            busy={busy === "export-wxr"}
+            disabled={busy !== null}
+            title="Posts, pages and media as a WordPress export file"
+            onClick={exportContent}
+          />
+        )}
         <Action
           icon={DeleteIcon}
           label="Delete"
@@ -237,7 +252,7 @@ export function Action({
       title={title}
       aria-busy={busy || undefined}
       className={clsx(
-        "flex items-center gap-3 rounded-md border border-gray-300 bg-white px-3.5 py-2.5 text-left text-[13px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        "flex items-center gap-2.5 rounded-md border border-gray-300 bg-white px-3 py-2.5 text-left text-[13px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50",
         destructive ? "text-red-900 hover:bg-red-50" : "text-gray-900 hover:bg-gray-50",
       )}
     >
@@ -249,7 +264,7 @@ export function Action({
       ) : (
         <Icon className={clsx("h-5 w-5 flex-shrink-0", destructive ? "text-red-900" : "text-gray-800")} />
       )}
-      <span className="truncate">{label}</span>
+      <span className="min-w-0 leading-snug">{label}</span>
     </button>
   );
 }

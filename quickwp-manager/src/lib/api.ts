@@ -91,6 +91,30 @@ export interface WpItem {
   title: string;
 }
 
+/** A plugin or theme in the WordPress.org directory. */
+export interface DirectoryItem {
+  slug: string;
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  /** The plugin's icon or the theme's screenshot. */
+  image: string | null;
+  /** Out of 100, as the directory scores them. */
+  rating: number;
+  num_ratings: number;
+  /** Plugins only; zero when the directory does not report it. */
+  active_installs: number;
+  homepage: string;
+}
+
+/** A core release newer than the one a site runs. */
+export interface CoreUpdate {
+  version: string;
+  /** "minor", "major" or "development", as WordPress classes it. */
+  update_type: string;
+}
+
 /** What the Settings tab reads from a WordPress site, in one call. */
 export interface WpSettingsSnapshot {
   /** wp-config.php's known switches: true only when defined true. */
@@ -622,6 +646,8 @@ export const api = {
     call<string | null>("wp_config_get", { domain, key }),
   wpConfigSetBool: (domain: string, key: string, on: boolean) =>
     call<string>("wp_config_set_bool", { domain, key, on }),
+  wpCoreUpdateCheck: (domain: string) =>
+    call<CoreUpdate | null>("wp_core_update_check", { domain }),
   wpSettingsSnapshot: (domain: string, options: string[]) =>
     call<WpSettingsSnapshot>("wp_settings_snapshot", { domain, options }),
   wpOptionGet: (domain: string, key: string) =>
@@ -664,7 +690,16 @@ export const api = {
     email: string,
     password: string,
     role: string,
-  ) => call<string>("wp_create_user", { domain, login, email, password, role }),
+    sendEmail = false,
+  ) =>
+    call<string>("wp_create_user", {
+      domain,
+      login,
+      email,
+      password,
+      role,
+      sendEmail,
+    }),
   /** Replaces the user's roles with this one. */
   wpSetUserRole: (domain: string, login: string, role: string) =>
     call<string>("wp_set_user_role", { domain, login, role }),
@@ -695,8 +730,11 @@ export const api = {
     force: boolean,
   ) => call<string>("wp_install_item", { domain, kind, source, activate, force }),
   /** Clone a repo into wp-content. `owner/repo` means github.com. */
-  wpInstallFromGit: (domain: string, kind: string, url: string) =>
-    call<string>("wp_install_from_git", { domain, kind, url }),
+  wpInstallFromGit: (domain: string, kind: string, url: string, branch?: string) =>
+    call<string>("wp_install_from_git", { domain, kind, url, branch: branch || null }),
+  /** One page of the WordPress.org directory: a search, or what is popular. */
+  wporgSearch: (kind: string, query: string, page?: number) =>
+    call<DirectoryItem[]>("wporg_search", { kind, query, page: page ?? 1 }),
   wpSetItemState: (domain: string, kind: string, name: string, activate: boolean) =>
     call<string>("wp_set_item_state", { domain, kind, name, activate }),
   /** A theme/plugin screenshot as a data URI, or null when it has none. */
