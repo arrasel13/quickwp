@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { Dialog, Transition } from "@headlessui/react";
 import { FolderIcon, FolderOpenIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
@@ -8,6 +8,7 @@ import {
   errorText,
   hasBackend,
   notifySettingsChanged,
+  onSettingsChanged,
   PhpVersion,
   QuitBehavior,
 } from "../lib/api";
@@ -243,6 +244,19 @@ function ServicesSection() {
   );
 }
 
+/** Every setting on this screen, as the controls hold it before saving. */
+type Draft = {
+  language: string;
+  editor: string;
+  browser: string;
+  terminal: string;
+  sites_dir: string;
+  tld: string;
+  default_php: string;
+  quit_behavior: string;
+  sidebar: boolean;
+};
+
 function SettingsSection({
   sidebarCollapsed,
   onSidebarCollapsedChange,
@@ -252,63 +266,110 @@ function SettingsSection({
   const { data: php } = useAsync(() => api.phpList(), []);
   const { data: systemPhp } = useAsync(() => api.phpSystemList(), []);
   const { data: apps } = useAsync(() => api.appsInstalled(), []);
-  const [tld, setTld] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
-  useEffect(() => {
-    if (settings) setTld(settings.tld);
-  }, [settings?.tld]);
+  /** What is on the site now, as the controls show it. */
+  const saved: Draft | null = settings
+    ? {
+        language: settings.language,
+        editor: settings.editor ?? "",
+        browser: settings.browser ?? "",
+        terminal: settings.terminal ?? "",
+        sites_dir: settings.sites_dir,
+        tld: settings.tld,
+        default_php: settings.default_php ?? "",
+        quit_behavior: settings.quit_behavior ?? "ask",
+        sidebar: sidebarCollapsed,
+      }
+    : null;
 
-  // Every control saves as it changes; there is no Save button to forget.
-  const save = async (key: string, fn: () => Promise<unknown>) => {
-    setBusy(key);
+  // Nothing is written until Save, so a change can always be taken back.
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const edited = useRef(false);
+  useEffect(() => {
+    if (saved && !edited.current) setDraft(saved);
+  }, [settings, sidebarCollapsed]);
+
+  const current = draft ?? saved;
+  const set = <K extends keyof Draft>(key: K, value: Draft[K]) => {
+    edited.current = true;
+    setNotice(null);
+    setDraft((d) => (d ? { ...d, [key]: value } : d));
+  };
+
+  const changed: (keyof Draft)[] =
+    saved && current
+      ? (Object.keys(saved) as (keyof Draft)[]).filter((k) => saved[k] !== current[k])
+      : [];
+  const dirty = changed.length > 0;
+
+  const discard = () => {
+    edited.current = false;
+    setDraft(saved);
+    setNotice(null);
+  };
+
+  const saveAll = async () => {
+    if (!saved || !current) return;
+    setBusy(true);
     setNotice(null);
     try {
-      const r = await fn();
-      setNotice({ ok: true, text: typeof r === "string" ? r : "Saved." });
+      for (const key of changed) {
+        switch (key) {
+          case "sidebar":
+            onSidebarCollapsedChange(current.sidebar);
+            break;
+          case "default_php":
+            await api.phpSetDefault(current.default_php);
+            break;
+          case "tld":
+            await api.settingsSet("tld", current.tld.trim().replace(/^\./, ""));
+            break;
+          case "language":
+            await api.settingsSet("language", current.language);
+            setLanguage(current.language);
+            break;
+          default:
+            await api.settingsSet(key, current[key] as string);
+        }
+      }
+      edited.current = false;
       await reload();
+      // Every screen showing a preferred app or the sites folder re-reads.
       notifySettingsChanged();
+      setNotice({ ok: true, text: t("saved", { count: String(changed.length) }) });
     } catch (e) {
+      // Whatever was written stays written: read it all back rather than
+      // leaving the form claiming otherwise.
+      edited.current = false;
+      await reload();
       setNotice({ ok: false, text: errorText(e) });
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
-  const set = (key: string, value: string) => void save(key, () => api.settingsSet(key, value));
 
   const chooseSitesDir = async () => {
     const picked = await pickFolder({
       directory: true,
-      defaultPath: settings?.sites_dir,
+      defaultPath: current?.sites_dir,
       title: t("chooseFolder"),
     });
-    if (typeof picked === "string" && picked !== settings?.sites_dir) set("sites_dir", picked);
-  };
-
-  const saveTld = () => {
-    const v = tld.trim().replace(/^\./, "");
-    if (!settings || !v || v === settings.tld) {
-      setTld(settings?.tld ?? "");
-      return;
-    }
-    set("tld", v);
+    if (typeof picked === "string") set("sites_dir", picked);
   };
 
   const installed = (php ?? []).filter((p: PhpVersion) => p.installed);
-  const terminal = apps?.terminals.find((a) => a.path === settings?.terminal);
-  const disabled = busy !== null || !settings;
+  const terminal = apps?.terminals.find((a) => a.path === current?.terminal);
+  const disabled = busy || !settings;
 
   return (
     <Card title={t("general")}>
       <Row label={t("language")} hint={t("languageHint")}>
         <select
           aria-label={t("language")}
-          value={settings?.language ?? "en"}
-          onChange={(e) => {
-            setLanguage(e.target.value);
-            set("language", e.target.value);
-          }}
+          value={current?.language ?? "en"}
+          onChange={(e) => set("language", e.target.value)}
           disabled={disabled}
           className={SELECT}
         >
@@ -328,11 +389,11 @@ function SettingsSection({
           ].map((o) => (
             <button
               key={String(o.value)}
-              onClick={() => onSidebarCollapsedChange(o.value)}
-              aria-pressed={sidebarCollapsed === o.value}
+              onClick={() => set("sidebar", o.value)}
+              aria-pressed={current?.sidebar === o.value}
               className={clsx(
                 "h-8 px-4 text-[13px] rounded-sm transition-colors",
-                sidebarCollapsed === o.value
+                current?.sidebar === o.value
                   ? "ring-1 ring-gray-900 text-gray-900"
                   : "text-gray-500 hover:text-gray-900",
               )}
@@ -346,7 +407,7 @@ function SettingsSection({
       <Row label={t("editor")} hint={t("editorHint")}>
         <select
           aria-label={t("editor")}
-          value={settings?.editor ?? ""}
+          value={current?.editor ?? ""}
           onChange={(e) => set("editor", e.target.value)}
           disabled={disabled || !apps?.editors.length}
           className={SELECT}
@@ -363,7 +424,7 @@ function SettingsSection({
       <Row label={t("browser")} hint={t("browserHint")}>
         <select
           aria-label={t("browser")}
-          value={settings?.browser ?? ""}
+          value={current?.browser ?? ""}
           onChange={(e) => set("browser", e.target.value)}
           disabled={disabled || !apps?.browsers.length}
           className={SELECT}
@@ -387,7 +448,7 @@ function SettingsSection({
       >
         <select
           aria-label={t("terminal")}
-          value={settings?.terminal ?? ""}
+          value={current?.terminal ?? ""}
           onChange={(e) => set("terminal", e.target.value)}
           disabled={disabled || !apps}
           className={SELECT}
@@ -413,13 +474,13 @@ function SettingsSection({
         >
           <FolderIcon className="h-4 w-4 flex-shrink-0 text-gray-500" />
           <span className="min-w-0 flex-1 break-all font-mono text-[13px] leading-5 text-gray-900">
-            {settings?.sites_dir ?? ""}
+            {current?.sites_dir ?? ""}
           </span>
           <span className="flex-shrink-0 text-[13px] font-medium text-wp-blue">{t("change")}</span>
         </button>
       </Row>
 
-      <Row label={t("tld")} hint={t("tldHint", { example: `name.${tld || "test"}` })}>
+      <Row label={t("tld")} hint={t("tldHint", { example: `name.${current?.tld || "test"}` })}>
         <div className="relative">
           <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[13px] text-gray-400">
             .
@@ -427,14 +488,12 @@ function SettingsSection({
           <input
             type="text"
             aria-label={t("tld")}
-            value={tld}
-            onChange={(e) => setTld(e.target.value)}
-            onBlur={saveTld}
+            value={current?.tld ?? ""}
+            onChange={(e) => set("tld", e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-              if (e.key === "Escape") setTld(settings?.tld ?? "");
+              if (e.key === "Escape") set("tld", settings?.tld ?? "");
             }}
-            disabled={disabled && busy !== "tld"}
+            disabled={disabled}
             className={clsx(FIELD, "w-60 pl-5 font-mono text-xs")}
           />
         </div>
@@ -443,14 +502,8 @@ function SettingsSection({
       <Row label={t("php")} hint={t("phpHint")}>
         <select
           aria-label={t("php")}
-          value={installed.length ? settings?.default_php ?? "" : ""}
-          onChange={(e) => {
-            const minor = e.target.value;
-            void save("php", async () => {
-              await api.phpSetDefault(minor);
-              return `New sites will use PHP ${minor}.`;
-            });
-          }}
+          value={installed.length ? current?.default_php ?? "" : ""}
+          onChange={(e) => set("default_php", e.target.value)}
           disabled={disabled}
           className={SELECT}
         >
@@ -481,7 +534,7 @@ function SettingsSection({
       <Row label={t("quit")} hint={t("quitHint")}>
         <select
           aria-label={t("quit")}
-          value={settings?.quit_behavior ?? "ask"}
+          value={current?.quit_behavior ?? "ask"}
           onChange={(e) => set("quit_behavior", e.target.value)}
           disabled={disabled}
           className={SELECT}
@@ -494,22 +547,44 @@ function SettingsSection({
         </select>
       </Row>
 
-      {notice && (
+      <div className="flex flex-wrap items-center justify-between gap-3 py-4">
         <p
           role="status"
-          className={clsx("py-3 text-xs leading-relaxed", notice.ok ? "text-gray-600" : "text-red-700")}
+          className={clsx(
+            "min-w-0 text-xs leading-relaxed",
+            notice ? (notice.ok ? "text-gray-600" : "text-red-700") : "text-gray-500",
+          )}
         >
-          {notice.text}
+          {notice?.text ?? (dirty ? t("unsaved", { count: String(changed.length) }) : "")}
         </p>
-      )}
+
+        <div className="flex flex-shrink-0 items-center gap-2">
+          {dirty && (
+            <button type="button" onClick={discard} disabled={busy} className={BTN}>
+              {t("discard")}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void saveAll()}
+            disabled={!dirty || busy}
+            className="rounded-sm bg-wp-blue px-4 py-2 text-[13px] font-medium text-white transition-colors hover:bg-wp-blue/90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? t("saving") : t("saveChanges")}
+          </button>
+        </div>
+      </div>
     </Card>
   );
 }
 
 function StorageSection() {
   const t = useT();
-  const { data: settings } = useAsync(() => api.settingsGet(), []);
+  const { data: settings, reload } = useAsync(() => api.settingsGet(), []);
   const [error, setError] = useState<string | null>(null);
+
+  // The sites folder is set on the other tab; this one shows it.
+  useEffect(() => onSettingsChanged(() => void reload()), [reload]);
 
   const rows: [string, string | undefined, string][] = [
     [t("storage.sites"), settings?.sites_dir, t("storage.sitesHint")],

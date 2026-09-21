@@ -49,7 +49,8 @@ const EDITORS: &[&str] = &[
 pub const TERMINAL_APP: &str = "/System/Applications/Utilities/Terminal.app";
 
 const TERMINALS: &[&str] = &[
-    "Terminal", "iTerm", "Warp", "Ghostty", "kitty", "Alacritty", "WezTerm", "Hyper", "Tabby", "Rio",
+    "Terminal", "iTerm", "iTerm2", "Warp", "Ghostty", "kitty", "Kitty", "Alacritty", "WezTerm",
+    "Hyper", "Tabby", "Rio", "Wave", "Terminus", "Contour", "Konsole", "Cool Retro Term",
 ];
 
 fn app_dirs() -> Vec<PathBuf> {
@@ -75,20 +76,140 @@ fn find(names: &[&str]) -> Vec<InstalledApp> {
     names
         .iter()
         .filter_map(|name| {
-            dirs.iter().map(|d| d.join(format!("{name}.app"))).find(|p| p.is_dir()).map(|p| {
-                InstalledApp {
-                    name: (*name).to_string(),
-                    commands: runs_commands(&p),
-                    default: p == Path::new(TERMINAL_APP),
-                    path: p.display().to_string(),
-                }
+            bundle_named(&dirs, name).map(|p| InstalledApp {
+                name: name_of(&p),
+                commands: runs_commands(&p),
+                default: p == Path::new(TERMINAL_APP),
+                path: p.display().to_string(),
             })
         })
         .collect()
 }
 
+/// `<name>.app`, or a version of it: JetBrains and others ship
+/// "PhpStorm 2024.3.app", which is still PhpStorm.
+fn bundle_named(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
+    let exact: Vec<PathBuf> = dirs.iter().map(|d| d.join(format!("{name}.app"))).collect();
+    if let Some(p) = exact.into_iter().find(|p| p.is_dir()) {
+        return Some(p);
+    }
+    let prefix = format!("{} ", name.to_lowercase());
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().is_some_and(|x| x == "app") && path.is_dir() {
+                let stem = name_of(&path).to_lowercase();
+                if stem.starts_with(&prefix) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether the app says it *edits* files of this sort, rather than merely
+/// opening them: the difference between VS Code and a browser, both of which
+/// macOS will happily hand a .php file to.
+fn edits_source(app: &Path) -> bool {
+    let out = Command::new("/usr/bin/plutil")
+        .args(["-convert", "json", "-o", "-"])
+        .arg(app.join("Contents/Info.plist"))
+        .output()
+        .ok();
+    let Some(out) = out else { return false };
+    let Ok(info) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return false };
+    let Some(types) = info.get("CFBundleDocumentTypes").and_then(|t| t.as_array()) else {
+        return false;
+    };
+    types.iter().any(|t| {
+        let role = t.get("CFBundleTypeRole").and_then(|r| r.as_str()).unwrap_or("");
+        if !role.eq_ignore_ascii_case("Editor") {
+            return false;
+        }
+        let list = |key: &str| -> Vec<String> {
+            t.get(key)
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).map(|s| s.to_lowercase()).collect())
+                .unwrap_or_default()
+        };
+        let utis = list("LSItemContentTypes");
+        let exts = list("CFBundleTypeExtensions");
+        // Code, specifically. "public.data" and "public.item" are what a
+        // notes app claims, and it is not what anyone means by an editor.
+        utis.iter().any(|u| u.contains("source-code") || u.contains("plain-text") || u == "public.text")
+            || exts.iter().any(|e| {
+                matches!(
+                    e.as_str(),
+                    "php" | "js" | "ts" | "jsx" | "tsx" | "html" | "css" | "scss" | "json"
+                        | "py" | "rb" | "go" | "rs" | "sh" | "md" | "yml" | "yaml"
+                )
+            })
+    })
+}
+
+/// What macOS would open a PHP file with. Asked of the system rather than
+/// guessed, so an editor no list here has heard of is still offered.
+fn source_handlers() -> Vec<PathBuf> {
+    let probe = std::env::temp_dir().join("nexora-open-with-probe.php");
+    if !probe.exists() && std::fs::write(&probe, "<?php\n").is_err() {
+        return Vec::new();
+    }
+    // The path reaches JXA as a JSON string, so a quote in it cannot end the
+    // literal and become code.
+    let quoted = serde_json::to_string(&probe.display().to_string()).unwrap_or_default();
+    let script = format!(
+        r#"ObjC.import("AppKit");
+const ws = $.NSWorkspace.sharedWorkspace;
+const out = [];
+if (ws.URLsForApplicationsToOpenURL) {{
+  const all = ws.URLsForApplicationsToOpenURL($.NSURL.fileURLWithPath({quoted}));
+  for (let i = 0; i < all.count; i++) out.push(all.objectAtIndex(i).path.js);
+}}
+JSON.stringify(out);"#
+    );
+    let out = Command::new("/usr/bin/osascript").args(["-l", "JavaScript", "-e", &script]).output();
+    let Ok(out) = out else { return Vec::new() };
+    serde_json::from_slice::<Vec<String>>(&out.stdout)
+        .unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|p| is_listed_browser(p))
+        .collect()
+}
+
+/// Every editor installed: the ones named above, in the order one is picked,
+/// then anything else macOS says edits source files -- minus the terminals
+/// and browsers, which also offer to open a .php.
 pub fn editors() -> Vec<InstalledApp> {
-    find(EDITORS)
+    let mut out = find(EDITORS);
+    let taken: Vec<String> = terminals()
+        .into_iter()
+        .chain(browsers())
+        .map(|a| a.path)
+        .chain(out.iter().map(|a| a.path.clone()))
+        .collect();
+
+    let mut extra: Vec<InstalledApp> = source_handlers()
+        .into_iter()
+        .filter(|p| !taken.iter().any(|t| t == &p.display().to_string()))
+        .filter(|p| edits_source(p))
+        .map(|p| InstalledApp {
+            name: name_of(&p),
+            commands: runs_commands(&p),
+            default: false,
+            path: p.display().to_string(),
+        })
+        .collect();
+    extra.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    // One per name: an app can sit in two places.
+    for app in extra {
+        if !out.iter().any(|a| a.name == app.name) {
+            out.push(app);
+        }
+    }
+    out
 }
 
 pub fn terminals() -> Vec<InstalledApp> {
@@ -500,5 +621,35 @@ mod tests {
     #[test]
     fn folder_paths_are_percent_encoded_for_warp() {
         assert_eq!(url_path(Path::new("/Users/me/My Sites/a&b")), "/Users/me/My%20Sites/a%26b");
+    }
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+
+    /// What this Mac actually has:
+    /// `cargo test -p nexora-core live_apps -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "reads the machine's applications"]
+    fn live_apps_lists_what_is_installed() {
+        let show = |what: &str, apps: Vec<InstalledApp>| {
+            println!("{what}:");
+            for a in &apps {
+                println!("  {} — {}{}", a.name, a.path, if a.default { " (default)" } else { "" });
+            }
+            apps
+        };
+        let editors = show("editors", editors());
+        let browsers = show("browsers", browsers());
+        let terminals = show("terminals", terminals());
+
+        assert!(!browsers.is_empty(), "a Mac always has Safari");
+        assert!(terminals.iter().any(|t| t.name == "Terminal"), "Terminal.app is always there");
+        // No app is offered twice, and no terminal or browser is called an editor.
+        for e in &editors {
+            assert!(!terminals.iter().any(|t| t.path == e.path), "{} is a terminal", e.name);
+            assert!(!browsers.iter().any(|b| b.path == e.path), "{} is a browser", e.name);
+        }
     }
 }
