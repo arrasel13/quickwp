@@ -188,14 +188,6 @@ export default function ExposeTab() {
         </>
       )}
 
-      <p className="text-[11px] leading-relaxed text-gray-500 max-w-3xl">
-        <strong>Every share is guarded.</strong> A small guard process watches whatever started
-        the share and closes it the moment that goes — a crash included, because macOS cannot
-        signal a child when its parent dies, so the guard polls and matches on the owner's start
-        time as well as its pid. A share started from the CLI has no window to close, so it
-        carries a deadline the guard enforces. Nexora also sweeps on launch: a tunnel left
-        running by a previous crash is found and closed. Every share is written to the app log.
-      </p>
     </div>
   );
 }

@@ -1198,12 +1198,258 @@ async fn adminer_update(app: tauri::AppHandle) -> Res<String> {
     Ok(format!("Adminer updated to {}.", runtime::ADMINER_PIN.version))
 }
 
-/// Open Adminer on the running engine, showing every database on it.
+/// Open Adminer on an engine, showing every database on it: MySQL unless a
+/// MariaDB series is named.
 #[tauri::command]
-async fn db_browse(state: State<'_, AppState>) -> Res<()> {
+async fn db_browse(state: State<'_, AppState>, series: Option<String>) -> Res<()> {
+    let port = match series.as_deref() {
+        Some(s) if core::mariadb::is_mariadb(s) => ports::MARIADB,
+        _ => ports::MYSQL,
+    };
     let app = state.app.clone();
-    let url = app.adminer_server_url().await?;
+    let url = app.adminer_server_url(port).await?;
     open_url(&state, &url)
+}
+
+// ------------------------------------------------------------- mariadb
+//
+// Kept apart from db_*: new sites pick their engine from db_list, and a site
+// on MariaDB is not something the rest of Nexora handles yet.
+
+/// The LTS series MariaDB supports, and any installed one besides.
+#[tauri::command]
+async fn mariadb_list(state: State<'_, AppState>) -> Res<Vec<core::mariadb::MariadbStatus>> {
+    let offered = core::mariadb::catalog().await;
+    Ok(core::mariadb::list(&state.app.sup, &offered))
+}
+
+/// `brew install`: a prebuilt bottle -- MariaDB and what it links against.
+#[tauri::command(async)]
+fn mariadb_install(series: String) -> Res<String> {
+    Ok(core::mariadb::install(&core::mariadb::series(&series)?)?)
+}
+
+/// Start, installing first when it is not here yet.
+#[tauri::command(async)]
+fn mariadb_start(state: State<'_, AppState>, series: String) -> Res<u16> {
+    Ok(core::mariadb::start(&state.app.sup, &core::mariadb::series(&series)?)?)
+}
+
+#[tauri::command(async)]
+fn mariadb_stop(state: State<'_, AppState>, series: String) -> Res<bool> {
+    let stopped = core::mariadb::stop(&state.app.sup, &core::mariadb::series(&series)?)?;
+    qlog::info("mariadb", &format!("{series} stopped"));
+    Ok(stopped)
+}
+
+// ---------------------------------------------------------------- node
+
+/// The LTS lines Node supports, with what Nexora has installed on each.
+#[tauri::command]
+async fn node_lines() -> Res<Vec<core::node::NodeLine>> {
+    Ok(core::node::lines().await?)
+}
+
+/// Install a Node release from nodejs.org, checked against its published sum.
+#[tauri::command]
+async fn node_install(app: tauri::AppHandle, version: String) -> Res<String> {
+    let handle = app.clone();
+    core::node::install(&version, move |p| {
+        let _ = handle.emit(
+            "download-progress",
+            serde_json::json!({ "id": "node", "component": p.component,
+                                "received": p.received, "total": p.total }),
+        );
+    })
+    .await?;
+    Ok(format!("Node {version} installed."))
+}
+
+/// Remove a Node that Nexora installed. Anyone else's stays where it is.
+#[tauri::command(async)]
+fn node_remove(version: String) -> Res<String> {
+    core::node::remove(&version)?;
+    Ok(format!("Node {version} removed."))
+}
+
+// ------------------------------------------------------------- updates
+//
+// Checked once a day in the background, and whenever asked. A new update is
+// announced once, as a desktop notification; the Services screen lists them
+// with a button each.
+
+#[derive(Default)]
+struct Updates {
+    list: Vec<core::updates::Update>,
+    /// When the last check finished, seconds since the epoch.
+    checked_at: u64,
+}
+
+static UPDATES: Mutex<Option<Updates>> = Mutex::new(None);
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[derive(serde::Serialize)]
+struct UpdatesView {
+    updates: Vec<core::updates::Update>,
+    checked_at: u64,
+}
+
+fn updates_view() -> UpdatesView {
+    let held = UPDATES.lock().unwrap();
+    UpdatesView {
+        updates: held.as_ref().map(|u| u.list.clone()).unwrap_or_default(),
+        checked_at: held.as_ref().map(|u| u.checked_at).unwrap_or(0),
+    }
+}
+
+/// Look now, tell the window, and notify about anything not announced before.
+async fn run_update_check(app: &tauri::AppHandle) -> UpdatesView {
+    let list = core::updates::check().await;
+    let at = now_secs();
+    *UPDATES.lock().unwrap() = Some(Updates { list: list.clone(), checked_at: at });
+
+    let state = app.state::<AppState>();
+    let db = &state.app.db;
+    let _ = db.set_setting("updates.checked_at", &at.to_string());
+    let announced: Vec<String> = db
+        .setting("updates.announced")
+        .ok()
+        .flatten()
+        .map(|s| s.split('\n').map(String::from).collect())
+        .unwrap_or_default();
+    let fresh: Vec<&core::updates::Update> =
+        list.iter().filter(|u| !announced.contains(&u.key())).collect();
+    if !fresh.is_empty() {
+        notify_updates(app, &fresh);
+        let keys: Vec<String> = list.iter().map(|u| u.key()).collect();
+        let _ = db.set_setting("updates.announced", &keys.join("\n"));
+    }
+
+    let view = updates_view();
+    let _ = app.emit("service-updates", serde_json::json!({
+        "updates": view.updates, "checked_at": view.checked_at,
+    }));
+    view
+}
+
+/// One notification, however many there are: a list of names beats a stack.
+fn notify_updates(app: &tauri::AppHandle, fresh: &[&core::updates::Update]) {
+    use tauri_plugin_notification::NotificationExt;
+    let (title, body) = if fresh.len() == 1 {
+        let u = fresh[0];
+        (
+            format!("{} {} is available", u.name, u.latest),
+            format!("You have {}. Update it in Nexora Settings › Services.", u.installed),
+        )
+    } else {
+        (
+            format!("{} updates are available", fresh.len()),
+            format!(
+                "{}. Update them in Nexora Settings › Services.",
+                fresh.iter().map(|u| format!("{} {}", u.name, u.latest)).collect::<Vec<_>>().join(", ")
+            ),
+        )
+    };
+    if let Err(e) = app.notification().builder().title(&title).body(&body).show() {
+        qlog::warn("updates", &format!("could not show a notification: {e}"));
+    }
+}
+
+/// The daily check: once shortly after launch if the last one was a day ago,
+/// then every few hours to see whether a day has passed.
+fn start_update_checks(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+        loop {
+            let last: u64 = app
+                .state::<AppState>()
+                .app
+                .db
+                .setting("updates.checked_at")
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if now_secs().saturating_sub(last) >= 24 * 3600 || UPDATES.lock().unwrap().is_none() {
+                run_update_check(&app).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3 * 3600)).await;
+        }
+    });
+}
+
+/// What the last check found, without looking again.
+#[tauri::command]
+fn updates_list() -> UpdatesView {
+    updates_view()
+}
+
+#[tauri::command]
+async fn updates_check(app: tauri::AppHandle) -> Res<UpdatesView> {
+    Ok(run_update_check(&app).await)
+}
+
+/// Apply one update, then look again so the list and the badge follow.
+#[tauri::command]
+async fn update_apply(app: tauri::AppHandle, service: String, id: String) -> Res<String> {
+    let found = updates_view()
+        .updates
+        .into_iter()
+        .find(|u| u.service == service && u.id == id)
+        .ok_or_else(|| format!("no update waiting for {service} {id}"))?;
+    let progress = {
+        let handle = app.clone();
+        let label = format!("{service}-{id}");
+        move |p: runtime::Progress| {
+            let _ = handle.emit(
+                "download-progress",
+                serde_json::json!({ "id": label, "component": p.component,
+                                    "received": p.received, "total": p.total }),
+            );
+        }
+    };
+    let state = app.state::<AppState>();
+    let sup = &state.app.sup;
+    let msg = match service.as_str() {
+        "php" => {
+            let was_running = php::list(sup, &state.app.db.default_php()?)
+                .iter()
+                .any(|v| v.minor == id && v.running);
+            for kind in ["fpm", "cli"] {
+                runtime::install_php(&id, kind, progress.clone()).await?;
+            }
+            if was_running {
+                let _ = php::stop_pool(sup, &id);
+                php::start_pool(sup, &id)?;
+            }
+            format!("PHP {id} updated to {}.", found.latest)
+        }
+        "mysql" => {
+            let was_running = database::list(sup).iter().any(|e| e.series == id && e.running);
+            runtime::install_mysql(&id, progress).await?;
+            if was_running {
+                let _ = database::stop(sup, &id);
+                database::start(sup, &id)?;
+            }
+            format!("MySQL {id} updated to {}.", found.latest)
+        }
+        "mariadb" => core::mariadb::upgrade(sup, &core::mariadb::series(&id)?)?,
+        "node" => core::node::update(&found.installed, &found.latest, progress).await?,
+        "adminer" => {
+            core::adminer::update(progress).await?;
+            format!("Adminer updated to {}.", found.latest)
+        }
+        other => return Err(format!("unknown service {other}")),
+    };
+    qlog::info("updates", &msg);
+    run_update_check(&app).await;
+    Ok(msg)
 }
 
 #[tauri::command(async)]
@@ -2948,6 +3194,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(preview::Previews::default())
         .manage(overlay::Overlay::default())
@@ -2986,6 +3233,7 @@ pub fn run() {
                 });
             }
             watch_for_update(app.handle().clone());
+            start_update_checks(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3058,6 +3306,16 @@ pub fn run() {
             path_open_in_editor,
             db_list,
             db_browse,
+            mariadb_list,
+            mariadb_install,
+            mariadb_start,
+            mariadb_stop,
+            node_lines,
+            node_install,
+            node_remove,
+            updates_list,
+            updates_check,
+            update_apply,
             adminer_status,
             adminer_update,
             db_install,

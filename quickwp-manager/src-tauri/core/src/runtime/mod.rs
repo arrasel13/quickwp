@@ -212,7 +212,7 @@ pub async fn download_verified(
     Ok(actual)
 }
 
-fn extract_tar_gz(archive: &Path, into: &Path) -> Result<()> {
+pub(crate) fn extract_tar_gz(archive: &Path, into: &Path) -> Result<()> {
     let f = std::fs::File::open(archive).map_err(|e| Error::Io {
         path: archive.to_path_buf(),
         source: e,

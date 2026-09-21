@@ -8,11 +8,10 @@ import {
   errorText,
   hasBackend,
   notifySettingsChanged,
-  onSettingsChanged,
-  PhpVersion,
   QuitBehavior,
 } from "../lib/api";
 import { useAsync } from "../lib/useAsync";
+import { useServiceUpdates, type ServiceUpdates } from "../lib/serviceUpdates";
 import { LANGUAGES, setLanguage, useT } from "../lib/i18n";
 import PHPTab from "./tabs/PHPTab";
 import NodeTab from "./tabs/NodeTab";
@@ -114,7 +113,7 @@ export default function AppSettings({ open, onClose, sidebarCollapsed, onSidebar
               <div
                 className={clsx(
                   "mx-auto space-y-5 px-6 py-6",
-                  // Services and General are two-column pages and Storage
+                  // Services and General are two-column pages and Import
                   // carries the Herd importer; the rest are one column.
                   section === "services" || section === "general"
                     ? "max-w-6xl"
@@ -146,14 +145,10 @@ export default function AppSettings({ open, onClose, sidebarCollapsed, onSidebar
                     onSidebarCollapsedChange={onSidebarCollapsedChange}
                   />
                 ) : (
-                  <>
-                    <StorageSection />
-                    {/* Bringing sites in from Herd is about where things
-                        live too: it copies their folders and databases here. */}
-                    <div className="rounded-md border border-gray-200 bg-white">
-                      <MigrateTab />
-                    </div>
-                  </>
+                  // Bringing sites in from Herd.
+                  <div className="rounded-md border border-gray-200 bg-white">
+                    <MigrateTab />
+                  </div>
                 )}
               </div>
             </div>
@@ -213,17 +208,88 @@ function Row({
  * public shares, each in its own section rather than behind a tab.
  */
 function ServicesSection() {
+  const updates = useServiceUpdates();
   return (
-    // Two to a row where there is room: each of these is a short list, and
-    // one per line left half the screen empty.
-    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
-      {SERVICES.map((s) => (
-        <section key={s.id} className="rounded-md border border-gray-200 bg-white">
-          <s.component />
-        </section>
-      ))}
+    <div className="space-y-4">
+      <UpdatesBanner updates={updates} />
+      {/* Two to a row where there is room: each of these is a short list,
+          and one per line left half the screen empty. */}
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+        {SERVICES.map((s) => (
+          <section key={s.id} className="rounded-md border border-gray-200 bg-white">
+            <s.component updates={updates} />
+          </section>
+        ))}
+      </div>
     </div>
   );
+}
+
+/**
+ * What the daily check found, over every section: each update also has its
+ * own button in its section, and here they can all be seen at once.
+ */
+function UpdatesBanner({ updates }: { updates: ServiceUpdates }) {
+  const { updates: list, checked_at, checking, applying, message, check, apply } = updates;
+  const ago = checked_at ? timeAgo(checked_at * 1000) : "not yet";
+  return (
+    <div
+      className={clsx(
+        "rounded-md border px-4 py-3",
+        list.length ? "border-amber-200 bg-amber-50" : "border-gray-200 bg-white",
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="text-[13px] font-medium text-gray-900">
+          {list.length
+            ? `${list.length} update${list.length === 1 ? "" : "s"} available`
+            : "Everything is up to date"}
+        </span>
+        <span className="text-xs text-gray-500">Checked {ago} · checked daily</span>
+        <button
+          onClick={() => void check()}
+          disabled={checking || applying !== null}
+          className="ml-auto rounded-sm border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+        >
+          {checking ? "Checking…" : "Check now"}
+        </button>
+      </div>
+      {list.length > 0 && (
+        <ul className="mt-2 space-y-1.5">
+          {list.map((u) => (
+            <li key={`${u.service}:${u.id}`} className="flex flex-wrap items-center gap-x-2 text-xs text-gray-800">
+              <span className="font-medium">{u.name}</span>
+              <span className="font-mono text-gray-500">
+                {u.installed} → {u.latest}
+              </span>
+              <button
+                onClick={() => void apply(u)}
+                disabled={applying !== null}
+                className="ml-auto rounded-sm bg-wp-blue px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-wp-blue/90 disabled:opacity-50"
+              >
+                {applying === `${u.service}:${u.id}` ? "Updating…" : "Update"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {message && (
+        <p className={clsx("mt-2 text-xs", message.ok ? "text-gray-600" : "text-red-700")}>
+          {message.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function timeAgo(ms: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h} h ago`;
+  return `${Math.round(h / 24)} days ago`;
 }
 
 /** Every setting on this screen, as the controls hold it before saving. */
@@ -234,7 +300,6 @@ type Draft = {
   terminal: string;
   sites_dir: string;
   tld: string;
-  default_php: string;
   quit_behavior: string;
   sidebar: boolean;
 };
@@ -245,8 +310,6 @@ function SettingsSection({
 }: Pick<Props, "sidebarCollapsed" | "onSidebarCollapsedChange">) {
   const t = useT();
   const { data: settings, reload } = useAsync(() => api.settingsGet(), []);
-  const { data: php } = useAsync(() => api.phpList(), []);
-  const { data: systemPhp } = useAsync(() => api.phpSystemList(), []);
   const { data: apps } = useAsync(() => api.appsInstalled(), []);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
@@ -260,7 +323,6 @@ function SettingsSection({
         terminal: settings.terminal ?? "",
         sites_dir: settings.sites_dir,
         tld: settings.tld,
-        default_php: settings.default_php ?? "",
         quit_behavior: settings.quit_behavior ?? "ask",
         sidebar: sidebarCollapsed,
       }
@@ -302,9 +364,6 @@ function SettingsSection({
           case "sidebar":
             onSidebarCollapsedChange(current.sidebar);
             break;
-          case "default_php":
-            await api.phpSetDefault(current.default_php);
-            break;
           case "tld":
             await api.settingsSet("tld", current.tld.trim().replace(/^\./, ""));
             break;
@@ -341,7 +400,6 @@ function SettingsSection({
     if (typeof picked === "string") set("sites_dir", picked);
   };
 
-  const installed = (php ?? []).filter((p: PhpVersion) => p.installed);
   const terminal = apps?.terminals.find((a) => a.path === current?.terminal);
   const disabled = busy || !settings;
 
@@ -462,6 +520,35 @@ function SettingsSection({
         </button>
       </Row>
 
+      {/* Where Nexora keeps its own things: shown, not chosen. */}
+      {(
+        [
+          [t("storage.data"), settings?.root, t("storage.dataHint")],
+          [t("storage.logs"), settings?.logs_dir, t("storage.logsHint")],
+        ] as [string, string | undefined, string][]
+      ).map(([label, path, hint]) => (
+        <Row
+          key={label}
+          label={label}
+          hint={
+            <>
+              {hint}
+              <span className="mt-1 block break-all font-mono text-[11px] text-gray-700">{path ?? "—"}</span>
+            </>
+          }
+        >
+          <button
+            type="button"
+            onClick={() => path && void api.pathOpen(path).catch((e) => setNotice({ ok: false, text: errorText(e) }))}
+            disabled={!path}
+            className={BTN}
+          >
+            <FolderOpenIcon className="h-4 w-4" />
+            {t("showInFinder")}
+          </button>
+        </Row>
+      ))}
+
       <Row label={t("tld")} hint={t("tldHint", { example: `name.${current?.tld || "test"}` })}>
         <div className="relative">
           <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[13px] text-gray-400">
@@ -479,38 +566,6 @@ function SettingsSection({
             className={clsx(FIELD, "w-60 pl-5 font-mono text-xs")}
           />
         </div>
-      </Row>
-
-      <Row label={t("php")} hint={t("phpHint")}>
-        <select
-          aria-label={t("php")}
-          value={installed.length ? current?.default_php ?? "" : ""}
-          onChange={(e) => set("default_php", e.target.value)}
-          disabled={disabled}
-          className={SELECT}
-        >
-          <optgroup label={t("phpNexora")}>
-            {installed.length === 0 && (
-              <option value="" disabled>
-                {t("phpNone")}
-              </option>
-            )}
-            {installed.map((p) => (
-              <option key={p.minor} value={p.minor}>
-                PHP {p.minor} ({p.patch})
-              </option>
-            ))}
-          </optgroup>
-          {(systemPhp?.length ?? 0) > 0 && (
-            <optgroup label={t("phpElsewhere")}>
-              {systemPhp!.map((p) => (
-                <option key={p.path} value={`system:${p.path}`} disabled title={p.path}>
-                  PHP {p.version} — {p.source}
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
       </Row>
 
       <Row label={t("quit")} hint={t("quitHint")}>
@@ -556,48 +611,6 @@ function SettingsSection({
           </button>
         </div>
       </div>
-    </Card>
-  );
-}
-
-function StorageSection() {
-  const t = useT();
-  const { data: settings, reload } = useAsync(() => api.settingsGet(), []);
-  const [error, setError] = useState<string | null>(null);
-
-  // The sites folder is set on the other tab; this one shows it.
-  useEffect(() => onSettingsChanged(() => void reload()), [reload]);
-
-  const rows: [string, string | undefined, string][] = [
-    [t("storage.sites"), settings?.sites_dir, t("storage.sitesHint")],
-    [t("storage.data"), settings?.root, t("storage.dataHint")],
-    [t("storage.logs"), settings?.logs_dir, t("storage.logsHint")],
-  ];
-
-  return (
-    <Card title={t("storageTitle")}>
-      {rows.map(([label, path, hint]) => (
-        <Row
-          key={label}
-          label={label}
-          hint={
-            <>
-              {hint}
-              <span className="mt-1 block break-all font-mono text-[11px] text-gray-700">{path ?? "—"}</span>
-            </>
-          }
-        >
-          <button
-            onClick={() => path && void api.pathOpen(path).catch((e) => setError(errorText(e)))}
-            disabled={!path}
-            className={BTN}
-          >
-            <FolderOpenIcon className="h-4 w-4" />
-            {t("showInFinder")}
-          </button>
-        </Row>
-      ))}
-      {error && <p className="py-3 text-xs text-red-700">{error}</p>}
     </Card>
   );
 }

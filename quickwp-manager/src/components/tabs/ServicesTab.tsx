@@ -8,8 +8,23 @@ import {
   TableCellsIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
-import { api, errorText, EngineStatus, hasBackend, InstallProgress } from "../../lib/api";
+import type { ReactNode } from "react";
+import {
+  api,
+  errorText,
+  EngineStatus,
+  hasBackend,
+  InstallProgress,
+  type MariadbStatus,
+  type ServiceUpdate,
+} from "../../lib/api";
 import { useAsync } from "../../lib/useAsync";
+import {
+  isPast,
+  monthYear,
+  MYSQL_SUPPORT,
+  type ServiceUpdates,
+} from "../../lib/serviceUpdates";
 import ConfirmDialog from "../ui/ConfirmDialog";
 
 /**
@@ -18,11 +33,12 @@ import ConfirmDialog from "../ui/ConfirmDialog";
  * One section rather than an engine list beside a MySQL list: from here there
  * is one question -- what is running, on which port, and how to look inside.
  */
-export default function ServicesTab() {
+export default function ServicesTab({ updates }: { updates?: ServiceUpdates }) {
   const { data: engines, error, loading, reload } = useAsync(() => api.dbList(), []);
+  const { data: maria, reload: reloadMaria } = useAsync(() => api.mariadbList(), []);
   const { data: adminer, reload: reloadAdminer } = useAsync(() => api.adminerStatus(), []);
-  /** The series picked in the dropdown, waiting on "Switch". */
-  const [switching, setSwitching] = useState<EngineStatus | null>(null);
+  /** The series picked in a dropdown, waiting on "Switch". */
+  const [switching, setSwitching] = useState<{ from: EngineStatus; to: EngineStatus } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [progress, setProgress] = useState<(InstallProgress & { id: string }) | null>(null);
@@ -41,7 +57,7 @@ export default function ServicesTab() {
     try {
       const r = await fn();
       if (typeof r === "string") setNotice(r);
-      await Promise.all([reload(), reloadAdminer()]);
+      await Promise.all([reload(), reloadMaria(), reloadAdminer()]);
     } catch (e) {
       setNotice(errorText(e));
     } finally {
@@ -60,17 +76,37 @@ export default function ServicesTab() {
   }
 
   const list = engines ?? [];
-  const running = list.find((e) => e.running);
-  /** What the picker shows: what is running, else what is installed. */
-  const current = running ?? list.find((e) => e.installed) ?? list[0];
+  const mariaList: MariadbStatus[] = maria ?? [];
+  /** What a picker shows: what is running, else what is installed, else the
+   *  newest that can be installed at all. */
+  const pick = <T extends EngineStatus>(series: T[], canInstall: (e: T) => boolean = () => true) =>
+    series.find((e) => e.running) ??
+    series.find((e) => e.installed) ??
+    series.find(canInstall) ??
+    series[0];
+  const current = pick(list);
+  const mariaCurrent = pick(mariaList, (e) => e.available);
+  const applyUpdate = (u: ServiceUpdate) =>
+    void updates?.apply(u).then(() => Promise.all([reload(), reloadMaria(), reloadAdminer()]));
+  const running = list.find((e) => e.running) ?? mariaList.find((e) => e.running);
+  const nameOf = (e: EngineStatus) => (e.engine === "mariadb" ? "MariaDB" : "MySQL");
 
-  /** Only one series can run: they share the port. */
+  /** Only one series of an engine runs at a time: they share its port. */
   const switchTo = async (target: EngineStatus) => {
     await act(target.series, async () => {
-      for (const e of list) if (e.running && e.series !== target.series) await api.dbStop(e.series);
-      if (!target.installed) await api.dbInstall(target.series);
-      await api.dbStart(target.series);
-      return `MySQL ${target.version} is running.`;
+      if (target.engine === "mariadb") {
+        // Starting one MariaDB series stops the other itself.
+        if (!target.installed) await api.mariadbInstall(target.series);
+        await api.mariadbStart(target.series);
+        // Before it was installed, its version was only a label.
+        const now = (await api.mariadbList()).find((e) => e.series === target.series);
+        return `MariaDB ${now?.version ?? target.version} is running.`;
+      } else {
+        for (const e of list) if (e.running && e.series !== target.series) await api.dbStop(e.series);
+        if (!target.installed) await api.dbInstall(target.series);
+        await api.dbStart(target.series);
+      }
+      return `${nameOf(target)} ${target.version} is running.`;
     });
   };
 
@@ -80,7 +116,8 @@ export default function ServicesTab() {
         <div>
           <h2 className="text-[15px] font-semibold text-gray-900">Database</h2>
           <p className="mt-0.5 font-mono text-xs text-gray-500">
-            {list.filter((e) => e.running).length}/{list.length} running
+            {[current, mariaCurrent].filter((e) => e?.running).length}/
+            {[current, mariaCurrent].filter(Boolean).length} running
           </p>
         </div>
         <button
@@ -129,17 +166,68 @@ export default function ServicesTab() {
       <ul className="divide-y divide-gray-100 rounded-sm border border-gray-200">
         {current && (
           <Engine
+            name="MySQL"
             engine={current}
             others={list}
             busy={busy}
+            option={(o) => {
+              const s = MYSQL_SUPPORT[o.series];
+              const tag = !s ? "" : isPast(s.ends) ? " · EOL" : s.lts ? " · LTS" : "";
+              return `${o.version}${tag}${o.installed ? "" : " (not installed)"}`;
+            }}
+            update={updates?.find("mysql", current.series) ?? null}
+            applying={updates?.applying === `mysql:${current.series}`}
+            onUpdate={applyUpdate}
+            support={<Support engine={current} onUpgrade={() => {
+              const target = list.find((e) => e.series === "8.4");
+              if (target) setSwitching({ from: current, to: target });
+            }} />}
             onPick={(series) => {
               const target = list.find((e) => e.series === series);
-              if (target && target.series !== current.series) setSwitching(target);
+              if (target && target.series !== current.series) setSwitching({ from: current, to: target });
             }}
             onInstall={() => void act(current.series, () => api.dbInstall(current.series))}
             onStart={() => void act(current.series, () => api.dbStart(current.series))}
             onStop={() => void act(current.series, () => api.dbStop(current.series))}
             onBrowse={() => void act(`browse:${current.series}`, () => api.dbBrowse())}
+          />
+        )}
+        {mariaCurrent && (
+          <Engine
+            name="MariaDB"
+            engine={mariaCurrent}
+            others={mariaList}
+            busy={busy}
+            installHint="Installs from Homebrew, then starts"
+            startInstalls
+            option={(o) => {
+              const m = o as MariadbStatus;
+              if (!m.available) return `${m.version} · LTS (not in Homebrew yet)`;
+              return `${m.version}${m.eol ? " · LTS" : ""}${m.installed ? "" : " (not installed)"}`;
+            }}
+            disabledOption={(o) => !(o as MariadbStatus).available}
+            update={updates?.find("mariadb", mariaCurrent.series) ?? null}
+            applying={updates?.applying === `mariadb:${mariaCurrent.series}`}
+            onUpdate={applyUpdate}
+            support={<Support engine={mariaCurrent} />}
+            onPick={(series) => {
+              const target = mariaList.find((e) => e.series === series);
+              if (target && target.series !== mariaCurrent.series)
+                setSwitching({ from: mariaCurrent, to: target });
+            }}
+            onInstall={() =>
+              void act(mariaCurrent.series, () => api.mariadbInstall(mariaCurrent.series))
+            }
+            onStart={() =>
+              void act(mariaCurrent.series, async () => {
+                await api.mariadbStart(mariaCurrent.series);
+                return `MariaDB is running on port ${mariaCurrent.port}.`;
+              })
+            }
+            onStop={() => void act(mariaCurrent.series, () => api.mariadbStop(mariaCurrent.series))}
+            onBrowse={() =>
+              void act(`browse:${mariaCurrent.series}`, () => api.dbBrowse(mariaCurrent.series))
+            }
           />
         )}
         {list.length === 0 && (
@@ -183,49 +271,82 @@ export default function ServicesTab() {
 
       <ConfirmDialog
         open={switching !== null}
-        title={`Switch MySQL to ${switching?.version}?`}
+        title={`Switch ${switching ? nameOf(switching.to) : ""} to ${switching?.to.version}?`}
         confirmLabel="Switch"
         destructive={false}
-        busy={busy === switching?.series}
+        busy={busy === switching?.to.series}
         body={
           <>
-            Each version keeps its own data directory: databases created on {current?.version}{" "}
-            stay with {current?.version} and are not visible on {switching?.version} (export them
-            first to move them). MySQL restarts on {switching?.version} now.
+            Each version keeps its own data directory: databases created on{" "}
+            {switching?.from.version} stay with {switching?.from.version} and are not visible on{" "}
+            {switching?.to.version} (export them first to move them).{" "}
+            {switching ? nameOf(switching.to) : ""}{" "}
+            {switching?.to.installed ? "restarts" : "is installed, then starts"} on{" "}
+            {switching?.to.version} now.
+            {switching && supportOf(switching.to) && (
+              <span className="mt-2 block">
+                {nameOf(switching.to)} {switching.to.version}:{" "}
+                {supportOf(switching.to)!.eol
+                  ? `end of life since ${monthYear(supportOf(switching.to)!.ends)}.`
+                  : `${supportOf(switching.to)!.lts ? "LTS, " : ""}supported until ${monthYear(supportOf(switching.to)!.ends)}.`}
+              </span>
+            )}
           </>
         }
         onCancel={() => setSwitching(null)}
         onConfirm={() => {
-          const target = switching;
+          const target = switching?.to;
           setSwitching(null);
           if (target) void switchTo(target);
         }}
       />
 
       <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
-        Each series keeps its own data directory, so starting 8.0 after 8.4 runs it against its
-        own data — it is not a migration. MySQL is the only engine with an official macOS build to
-        pin: MariaDB and PostgreSQL publish none, so offering them means building and verifying
-        our own, which is not done yet.
+        Each version keeps its own data directory, so switching runs the other one against its own
+        data — it is not a migration. MySQL comes from its vendor's official macOS builds. MariaDB
+        publishes none, so it comes from Homebrew, and runs here against a data directory and a
+        port (13317) of Nexora's own. New sites still use MySQL.
       </p>
     </div>
   );
 }
 
 function Engine({
+  name,
   engine,
   others,
   busy,
+  installHint,
+  startInstalls,
+  option,
+  disabledOption,
+  support,
+  update,
+  applying,
+  onUpdate,
   onPick,
   onInstall,
   onStart,
   onStop,
   onBrowse,
 }: {
+  name: string;
   engine: EngineStatus;
   /** Every series of this engine, for the picker. */
   others: EngineStatus[];
   busy: string | null;
+  /** Said on the Install button, when installing is slower than a download. */
+  installHint?: string;
+  /** Start installs first, so a missing series offers Start, not Install. */
+  startInstalls?: boolean;
+  /** How a series reads in the picker. */
+  option: (o: EngineStatus) => string;
+  disabledOption?: (o: EngineStatus) => boolean;
+  /** Beside the address: the selected version's support window. */
+  support?: ReactNode;
+  update: ServiceUpdate | null;
+  applying: boolean;
+  onUpdate: (u: ServiceUpdate) => void;
   onPick: (series: string) => void;
   onInstall: () => void;
   onStart: () => void;
@@ -234,32 +355,35 @@ function Engine({
 }) {
   const working = busy === engine.series;
   return (
-    <li className="flex items-center gap-2.5 px-3 py-2.5">
+    <li className="px-3 py-2.5">
+      <div className="flex items-center gap-2.5">
       <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-sm border border-gray-200 bg-gray-50 text-gray-500">
         <CircleStackIcon className="h-4 w-4" />
       </span>
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-semibold text-gray-900">MySQL</span>
+          <span className="text-[13px] font-semibold text-gray-900">{name}</span>
           {/* One row, every version on the picker: they share a port, so only
               one of them can be the one running. */}
           <select
-            aria-label="MySQL version"
+            aria-label={`${name} version`}
             value={engine.series}
             disabled={busy !== null}
             onChange={(e) => onPick(e.target.value)}
-            className="w-[5.5rem] flex-shrink-0 rounded-sm border border-gray-300 bg-white py-0.5 pl-1.5 pr-5 font-mono text-[11px] text-gray-700 focus:border-wp-blue focus:outline-none focus:ring-1 focus:ring-wp-blue disabled:opacity-50"
+            className="w-auto max-w-[9.5rem] min-w-0 truncate rounded-sm border border-gray-300 bg-white py-0.5 pl-1.5 pr-6 font-mono text-[11px] text-gray-700 focus:border-wp-blue focus:outline-none focus:ring-1 focus:ring-wp-blue disabled:opacity-50"
           >
             {others.map((o) => (
-              <option key={o.series} value={o.series}>
-                {o.version}
-                {o.installed ? "" : " (not installed)"}
+              <option key={o.series} value={o.series} disabled={disabledOption?.(o)}>
+                {option(o)}
               </option>
             ))}
           </select>
         </div>
-        <p className="mt-0.5 truncate font-mono text-[11px] text-gray-500">127.0.0.1:{engine.port}</p>
+        <p className="mt-0.5 truncate text-[11px] text-gray-500">
+          <span className="font-mono">127.0.0.1:{engine.port}</span>
+          {support && <> {support}</>}
+        </p>
       </div>
 
       <span
@@ -278,16 +402,47 @@ function Engine({
       </span>
 
       <div className="flex flex-shrink-0 items-center gap-2">
-        {!engine.installed ? (
+        {update ? (
+          <button
+            onClick={() => onUpdate(update)}
+            disabled={applying || busy !== null}
+            title={`Installed ${update.installed}`}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm bg-amber-500 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+          >
+            <ArrowPathIcon className={clsx("h-3.5 w-3.5", applying && "animate-spin")} />
+            Update to {update.latest}
+          </button>
+        ) : null}
+        {!engine.installed && startInstalls ? (
+          <button
+            onClick={onStart}
+            title={installHint}
+            disabled={busy !== null || disabledOption?.(engine)}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+          >
+            {working ? (
+              <>
+                <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
+                Installing…
+              </>
+            ) : (
+              <>
+                <PlayIcon className="h-3.5 w-3.5" />
+                Start
+              </>
+            )}
+          </button>
+        ) : !engine.installed ? (
           <button
             onClick={onInstall}
+            title={installHint}
             disabled={busy !== null}
             className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
           >
             {working ? (
               <>
                 <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
-                Downloading
+                Installing
               </>
             ) : (
               "Install"
@@ -305,7 +460,7 @@ function Engine({
             </button>
             <button
               title="Stop"
-              aria-label={`Stop MySQL ${engine.series}`}
+              aria-label={`Stop ${name} ${engine.version}`}
               onClick={onStop}
               disabled={busy !== null}
               className="rounded-sm border border-gray-300 bg-white p-1 text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50"
@@ -320,10 +475,50 @@ function Engine({
             className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
           >
             <PlayIcon className="h-3.5 w-3.5" />
-            {working ? "Starting…" : `Start ${engine.series}`}
+            {working ? "Starting…" : "Start"}
           </button>
         )}
       </div>
+      </div>
     </li>
   );
+}
+
+/** "Feb 2030", to fit beside the address. */
+function shortMonthYear(date: string): string {
+  const d = new Date(`${date}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+}
+
+/** How long a MySQL or MariaDB series is supported, when that is known. */
+function supportOf(e: EngineStatus): { lts: boolean; ends: string; eol: boolean } | null {
+  const m = e as MariadbStatus;
+  const s = e.engine === "mariadb" ? (m.eol ? { lts: true, ends: m.eol } : null) : MYSQL_SUPPORT[e.series];
+  return s ? { ...s, eol: isPast(s.ends) } : null;
+}
+
+/**
+ * "(LTS, until April 2032)" beside the address, for whichever version is
+ * selected; a line that has ended says so, with the way off it.
+ */
+function Support({ engine, onUpgrade }: { engine: EngineStatus; onUpgrade?: () => void }) {
+  const s = supportOf(engine);
+  if (!s) return null;
+  if (s.eol) {
+    return (
+      <span className="text-amber-800">
+        (EOL {shortMonthYear(s.ends)}
+        {onUpgrade && (
+          <>
+            {" · "}
+            <button onClick={onUpgrade} className="font-medium underline underline-offset-2 hover:no-underline">
+              switch to 8.4 LTS
+            </button>
+          </>
+        )}
+        )
+      </span>
+    );
+  }
+  return <span title={`Supported until ${monthYear(s.ends)}`}>({s.lts ? "LTS, " : ""}until {shortMonthYear(s.ends)})</span>;
 }

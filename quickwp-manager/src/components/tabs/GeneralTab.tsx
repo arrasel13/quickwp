@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   PlayIcon,
   StopIcon,
@@ -6,7 +6,6 @@ import {
   CheckCircleIcon,
   InformationCircleIcon,
   ExclamationTriangleIcon,
-  FolderOpenIcon,
   LockClosedIcon,
   LockOpenIcon,
 } from "@heroicons/react/24/outline";
@@ -30,7 +29,6 @@ const SECTION = "text-[13px] font-semibold text-gray-900";
 
 export default function GeneralTab() {
   const { data: status, error, loading, reload } = useAsync(() => api.stackStatus(), []);
-  const { data: settings, reload: reloadSettings } = useAsync(() => api.settingsGet(), []);
   const { data: findings, reload: reloadDoctor } = useAsync(() => api.doctor(), []);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -38,16 +36,9 @@ export default function GeneralTab() {
   const [verified, setVerified] = useState<VerifyReport | null>(null);
   // Taking a TLD from another tool is a decision, never a side effect.
   const [takeover, setTakeover] = useState(false);
-  const [sitesDir, setSitesDir] = useState<string>("");
-
-  // Keep the input in step with what the backend reports, without clobbering
-  // an edit in progress.
-  useEffect(() => {
-    if (settings?.sites_dir && sitesDir === "") setSitesDir(settings.sites_dir);
-  }, [settings?.sites_dir]);
 
   const refreshAll = async () => {
-    await Promise.all([reload(), reloadSettings(), reloadDoctor()]);
+    await Promise.all([reload(), reloadDoctor()]);
   };
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -85,7 +76,7 @@ export default function GeneralTab() {
       <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-8 pt-6 pb-5">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">General</h1>
-          <p className="mt-0.5 text-[13px] text-gray-500">The stack, and where everything lives.</p>
+          <p className="mt-0.5 text-[13px] text-gray-500">The stack, HTTPS and diagnostics.</p>
         </div>
         <button onClick={() => void refreshAll()} disabled={loading} className={BTN}>
           <ArrowPathIcon className={clsx("h-4 w-4", loading && "animate-spin")} />
@@ -482,75 +473,6 @@ export default function GeneralTab() {
           </div>
         </section>
 
-        {/* where things live */}
-        <section>
-          <h2 className={SECTION}>Where things live</h2>
-          <p className="mt-0.5 mb-3 text-[13px] text-gray-500">
-            One directory holds your sites, the downloaded runtimes and the logs.
-          </p>
-          <div className={clsx(BOX, "divide-y divide-gray-200")}>
-            <label className="block px-5 py-4">
-              <span className="text-[13px] text-gray-500">Sites folder</span>
-              <span className="block text-xs text-gray-400 mb-2">
-                Where new sites are created. Existing sites stay where they are.
-              </span>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={sitesDir}
-                  onChange={(e) => setSitesDir(e.target.value)}
-                  placeholder={settings?.default_sites_dir ?? "~/Nexora/Sites"}
-                  className="block w-full h-9 px-3 border border-gray-300 rounded-sm text-xs font-mono focus:outline-none focus:ring-1 focus:ring-wp-blue focus:border-wp-blue"
-                />
-                <button
-                  onClick={() => void act(() => api.settingsSet("sites_dir", sitesDir))}
-                  disabled={busy || !sitesDir.trim()}
-                  className={BTN}
-                >
-                  Save
-                </button>
-              </div>
-              {settings?.sites_dir !== settings?.default_sites_dir && (
-                <button
-                  onClick={() => {
-                    setSitesDir(settings?.default_sites_dir ?? "");
-                    void act(() => api.settingsSet("sites_dir", ""));
-                  }}
-                  disabled={busy}
-                  className="mt-2 text-xs text-wp-blue hover:text-wp-blue-dark disabled:opacity-50"
-                >
-                  Reset to {settings?.default_sites_dir}
-                </button>
-              )}
-            </label>
-
-            <dl className="divide-y divide-gray-200">
-              {[
-                ["Data directory", settings?.root],
-                ["Logs", settings?.logs_dir],
-              ].map(([label, value]) => (
-                <div key={label as string} className="px-5 py-4">
-                  <dt className="text-[13px] text-gray-500">{label}</dt>
-                  <dd className="mt-1 font-mono text-xs text-gray-900 break-all">{value ?? "—"}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
-
-          <div className="mt-3 flex items-center gap-2">
-            <button
-              onClick={() => {
-                if (settings?.root) void api.siteOpen("").catch(() => {});
-              }}
-              className="hidden"
-            />
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-gray-500">
-              <FolderOpenIcon className="h-3.5 w-3.5" />
-              Default TLD is <code className="bg-gray-100 px-1 rounded">.{settings?.tld ?? "test"}</code>,
-              default PHP is {settings?.default_php ?? "—"}
-            </span>
-          </div>
-        </section>
       </div>
 
       <p className="text-[11px] text-gray-500 leading-relaxed max-w-3xl">

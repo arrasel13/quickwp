@@ -62,6 +62,41 @@ export interface WpDebugState {
   config_path: string;
 }
 
+/** A MariaDB series row: an engine status plus its support window. */
+export interface MariadbStatus extends EngineStatus {
+  /** When MariaDB stops supporting the series: "2029-05-29". */
+  eol: string | null;
+  /** Homebrew has a formula for it to install. */
+  available: boolean;
+}
+
+/** One Node LTS line and what Nexora has installed on it. */
+export interface NodeLine {
+  major: string;
+  codename: string;
+  /** "active" or "maintenance". */
+  phase: string;
+  /** When Node stops supporting it: "2027-04-30". */
+  end: string;
+  latest: string;
+  installed: string | null;
+}
+
+/** A newer release of something Nexora runs. */
+export interface ServiceUpdate {
+  service: "php" | "mysql" | "mariadb" | "node" | "adminer";
+  id: string;
+  name: string;
+  installed: string;
+  latest: string;
+}
+
+export interface UpdatesView {
+  updates: ServiceUpdate[];
+  /** Seconds since the epoch; 0 when never checked. */
+  checked_at: number;
+}
+
 /** The Adminer on disk, and what this Nexora ships. */
 export interface AdminerStatus {
   installed: boolean;
@@ -621,8 +656,26 @@ export const api = {
   dbList: () => call<EngineStatus[]>("db_list"),
   adminerStatus: () => call<AdminerStatus>("adminer_status"),
   adminerUpdate: () => call<string>("adminer_update"),
-  /** Adminer on the running engine: every database on it. */
-  dbBrowse: () => call<void>("db_browse"),
+  /** Adminer on an engine: every database on it. MySQL unless a MariaDB series is named. */
+  dbBrowse: (series?: string) => call<void>("db_browse", { series: series ?? null }),
+  mariadbList: () => call<MariadbStatus[]>("mariadb_list"),
+  /** Through Homebrew: a prebuilt bottle. */
+  mariadbInstall: (series: string) => call<string>("mariadb_install", { series }),
+  /** Installs first when it is not here yet. */
+  mariadbStart: (series: string) => call<number>("mariadb_start", { series }),
+  mariadbStop: (series: string) => call<boolean>("mariadb_stop", { series }),
+  nodeLines: () => call<NodeLine[]>("node_lines"),
+  nodeInstall: (version: string) => call<string>("node_install", { version }),
+  nodeRemove: (version: string) => call<string>("node_remove", { version }),
+  /** What the last check found, without looking again. */
+  updatesList: () => call<UpdatesView>("updates_list"),
+  updatesCheck: () => call<UpdatesView>("updates_check"),
+  updateApply: (service: string, id: string) => call<string>("update_apply", { service, id }),
+  /** The daily check found something, or an update was applied. */
+  onServiceUpdates: (cb: (v: UpdatesView) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<UpdatesView>("service-updates", (e) => cb(e.payload));
+  },
   dbInstall: (series: string) => call<string>("db_install", { series }),
   dbStart: (series: string) => call<number>("db_start", { series }),
   dbStop: (series: string) => call<boolean>("db_stop", { series }),

@@ -15,6 +15,15 @@ import { api, errorText, hasBackend, InstallProgress, PhpVersion } from "../../l
 import { useAsync } from "../../lib/useAsync";
 import { unlessWindowDrag } from "../../lib/windowDrag";
 import ConfirmDialog from "../ui/ConfirmDialog";
+import {
+  isPast,
+  monthYear,
+  PHP_SUPPORT_ENDS,
+  type ServiceUpdates,
+} from "../../lib/serviceUpdates";
+
+/** How many supported PHP releases are listed. */
+const SHOWN = 3;
 
 const INI_LABELS: Record<string, { title: string; hint: string }> = {
   memory_limit: { title: "Memory limit", hint: "Large imports, page builders, WooCommerce" },
@@ -25,7 +34,7 @@ const INI_LABELS: Record<string, { title: string; hint: string }> = {
   error_reporting: { title: "Error reporting", hint: "Which levels PHP reports" },
 };
 
-export default function PHPTab() {
+export default function PHPTab({ updates }: { updates?: ServiceUpdates }) {
   const { data: versions, error, loading, reload } = useAsync(() => api.phpList(), []);
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState<InstallProgress | null>(null);
@@ -99,7 +108,7 @@ export default function PHPTab() {
       {progress && <Progress progress={progress} />}
 
       <ul className="divide-y divide-gray-100 border-y border-gray-100">
-        {(versions ?? []).map((php) => (
+        {shownVersions(versions ?? [], updates).map((php) => (
           <li key={php.minor} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5">
             {/* Filled when the version is here, hollow when it is not. */}
             <span
@@ -118,15 +127,7 @@ export default function PHPTab() {
             </span>
             <span className="font-mono text-[13px] text-gray-400 tabular-nums">{php.patch}</span>
 
-            {php.eol && (
-              <span
-                title="Past its php.net security-end date"
-                className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900"
-              >
-                <ExclamationTriangleIcon className="h-3 w-3" />
-                End of life
-              </span>
-            )}
+            <Support minor={php.minor} />
 
             {php.is_default && (
               <span className="inline-flex items-center gap-1 rounded-full border border-wp-blue/30 bg-wp-blue/5 px-2 py-0.5 text-[11px] font-medium text-wp-blue">
@@ -136,7 +137,19 @@ export default function PHPTab() {
             )}
 
             <div className="ml-auto flex flex-shrink-0 items-center gap-3">
-              {!php.installed ? (
+              {updates?.find("php", php.minor) ? (
+                <button
+                  onClick={() => void updates.apply(updates.find("php", php.minor)!).then(() => reload())}
+                  disabled={updates.applying !== null}
+                  title={`Installed ${updates.find("php", php.minor)!.installed}`}
+                  className="inline-flex items-center gap-1.5 rounded-sm bg-amber-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+                >
+                  <ArrowPathIcon
+                    className={clsx("h-3.5 w-3.5", updates.applying === `php:${php.minor}` && "animate-spin")}
+                  />
+                  Update to {updates.find("php", php.minor)!.latest}
+                </button>
+              ) : !php.installed ? (
                 <button
                   onClick={() => void act(php.minor, () => api.phpInstall(php.minor))}
                   disabled={busy !== null}
@@ -204,11 +217,6 @@ export default function PHPTab() {
         </span>
       </div>
 
-      <p className="mt-2 text-[11px] leading-relaxed text-gray-500">
-        New sites use the default; a site can pick its own version in its Settings tab. Xdebug
-        needs Zend symbols the static 8.0 build does not export, so it is offered on 8.1 and
-        above; PHP 7.4 has no portable build published upstream.
-      </p>
 
       <IniPanel
         minor={tuning}
@@ -462,4 +470,45 @@ function IniPanel({
       </Dialog>
     </Transition>
   );
+}
+
+/** Its support window: when fixes stop, or that they have. */
+function Support({ minor }: { minor: string }) {
+  const ends = PHP_SUPPORT_ENDS[minor];
+  if (!ends) return null;
+  if (isPast(ends)) {
+    return (
+      <span
+        title={`PHP ${minor} stopped getting security fixes in ${monthYear(ends)}`}
+        className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900"
+      >
+        <ExclamationTriangleIcon className="h-3 w-3" />
+        End of life {monthYear(ends)}
+      </span>
+    );
+  }
+  return (
+    <span className="text-[11px] text-gray-400" title="Security fixes until then">
+      until {monthYear(ends)}
+    </span>
+  );
+}
+
+/** Supported releases, newest first. */
+function supported(all: PhpVersion[]): PhpVersion[] {
+  return all
+    .filter((v) => !isPast(PHP_SUPPORT_ENDS[v.minor]))
+    .sort((a, b) => Number(b.minor) - Number(a.minor));
+}
+
+/**
+ * The newest supported few, plus anything installed (a site may run on it,
+ * and it can only be removed from here) or with an update waiting. Releases
+ * PHP no longer supports are not offered for install.
+ */
+function shownVersions(all: PhpVersion[], updates?: ServiceUpdates): PhpVersion[] {
+  const newest = new Set(supported(all).slice(0, SHOWN).map((v) => v.minor));
+  return all
+    .filter((v) => newest.has(v.minor) || v.installed || updates?.find("php", v.minor))
+    .sort((a, b) => Number(b.minor) - Number(a.minor));
 }

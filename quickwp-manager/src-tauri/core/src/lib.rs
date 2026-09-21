@@ -25,6 +25,13 @@ pub mod phpscan;
 pub mod ports;
 pub mod probe;
 pub mod wporg;
+pub mod mariadb;
+pub mod updates;
+
+/// Today's date, "YYYY-MM-DD" in UTC: enough for comparing to end-of-life days.
+pub fn mariadb_today() -> String {
+    mariadb::today_utc()
+}
 pub mod proc;
 pub mod pty;
 pub mod privileged;
@@ -399,12 +406,12 @@ impl Nexora {
 
     /// Adminer pointed at the server rather than at one database: the list
     /// of everything on it, which is what "browse" means from the engine.
-    pub async fn adminer_server_url(&self) -> Result<String> {
+    pub async fn adminer_server_url(&self, port: u16) -> Result<String> {
         adminer::ensure(|_| {}).await?;
         let tld = self.db.tld()?;
         let host = adminer::host(&tld);
         self.ensure_adminer_cert()?;
-        let url = adminer::url(&tld, ports::MYSQL, "", &adminer::token()?);
+        let url = adminer::url(&tld, port, "", &adminer::token()?);
         if https_ready(&tld) {
             return Ok(url);
         }
