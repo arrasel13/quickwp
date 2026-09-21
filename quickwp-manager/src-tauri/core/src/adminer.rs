@@ -60,6 +60,56 @@ pub fn is_installed() -> bool {
     php_path().exists()
 }
 
+/// The version of the Adminer on disk, read from the `VERSION="x"` its own
+/// file declares. `None` when it is not installed, or is a build that does
+/// not say.
+pub fn installed_version() -> Option<String> {
+    let text = std::fs::read_to_string(php_path()).ok()?;
+    version_in(&text)
+}
+
+fn version_in(text: &str) -> Option<String> {
+    // Near the top of the file, and the file is a quarter of a megabyte.
+    let head = &text[..text.len().min(300_000)];
+    let at = head.find("VERSION=\"")? + "VERSION=\"".len();
+    let rest = &head[at..];
+    let end = rest.find('"')?;
+    let v = &rest[..end];
+    (!v.is_empty() && v.chars().next().is_some_and(|c| c.is_ascii_digit())).then(|| v.to_string())
+}
+
+/// Whether a newer Adminer than the one on disk is pinned into this Nexora.
+pub fn update_available() -> bool {
+    match installed_version() {
+        Some(v) => newer(runtime::ADMINER_PIN.version, &v),
+        None => false,
+    }
+}
+
+/// `a` is a later release than `b`, comparing 6.0.10 as above 6.0.9.
+fn newer(a: &str, b: &str) -> bool {
+    let parts = |s: &str| {
+        s.split('.').map(|p| p.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>()
+    };
+    let (a, b) = (parts(a), parts(b));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+/// Replace the file on disk with the pinned release.
+pub async fn update(on_progress: impl Fn(runtime::Progress) + Send + 'static) -> Result<PathBuf> {
+    let dest = php_path();
+    if dest.exists() {
+        std::fs::remove_file(&dest).map_err(|e| Error::Io { path: dest.clone(), source: e })?;
+    }
+    ensure(on_progress).await
+}
+
 /// Fetch and verify Adminer, and write the wrapper beside it. Idempotent.
 ///
 /// The wrapper is rewritten every time rather than only when missing: it is
@@ -300,5 +350,26 @@ mod tests {
         let b = random_hex(32);
         assert_eq!(a.len(), 64);
         assert_ne!(a, b, "two tokens in a row must not match");
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn the_version_is_read_from_adminer_s_own_file() {
+        let file = "<?php /** Adminer */ ... VERSION=\"6.0.2\"; more code";
+        assert_eq!(version_in(file).as_deref(), Some("6.0.2"));
+        assert_eq!(version_in("<?php nothing here").as_deref(), None);
+    }
+
+    #[test]
+    fn a_later_release_is_newer_including_double_digits() {
+        assert!(newer("6.0.2", "6.0.1"));
+        assert!(newer("6.0.10", "6.0.9"), "10 is above 9, not below it");
+        assert!(newer("6.1", "6.0.9"));
+        assert!(!newer("6.0.2", "6.0.2"));
+        assert!(!newer("6.0.1", "6.0.2"));
     }
 }

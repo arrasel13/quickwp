@@ -35,23 +35,14 @@ export default function NodeTab() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-4">
-      <div className="space-y-4">
-        {/* Header */}
-        <div className="mb-4">
-          <h1 className="text-2xl font-bold text-gray-900">Node.js</h1>
-        </div>
-
-        {/* Node.js Versions */}
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
-          <div className="p-4">
+    <div className="p-4">
+      <div>
+        <div>
+          <div>
             <div className="mb-3">
-              <h2 className="text-lg font-semibold text-gray-900">
-                Node.js Versions
-              </h2>
-              <p className="text-gray-600 text-xs">
-                Install and manage Node.js versions for your development
-                environment
+              <h2 className="text-[15px] font-semibold text-gray-900">Node.js</h2>
+              <p className="mt-0.5 text-xs text-gray-600">
+                Versions for build tooling. Sites do not need one; a theme's build step might.
               </p>
             </div>
 

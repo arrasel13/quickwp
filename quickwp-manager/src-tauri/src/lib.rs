@@ -1163,6 +1163,49 @@ fn site_open(state: State<'_, AppState>, domain: String) -> Res<()> {
 
 // ------------------------------------------------------------ databases
 
+#[derive(serde::Serialize)]
+struct AdminerStatus {
+    installed: bool,
+    /// What is on disk, when it says.
+    version: Option<String>,
+    /// What this Nexora ships.
+    latest: String,
+    update_available: bool,
+}
+
+#[tauri::command(async)]
+fn adminer_status() -> Res<AdminerStatus> {
+    Ok(AdminerStatus {
+        installed: core::adminer::is_installed(),
+        version: core::adminer::installed_version(),
+        latest: runtime::ADMINER_PIN.version.to_string(),
+        update_available: core::adminer::update_available(),
+    })
+}
+
+/// Replace Adminer with the release this Nexora pins.
+#[tauri::command]
+async fn adminer_update(app: tauri::AppHandle) -> Res<String> {
+    let handle = app.clone();
+    core::adminer::update(move |p| {
+        let _ = handle.emit(
+            "download-progress",
+            serde_json::json!({ "id": "adminer", "component": p.component,
+                                "received": p.received, "total": p.total }),
+        );
+    })
+    .await?;
+    Ok(format!("Adminer updated to {}.", runtime::ADMINER_PIN.version))
+}
+
+/// Open Adminer on the running engine, showing every database on it.
+#[tauri::command]
+async fn db_browse(state: State<'_, AppState>) -> Res<()> {
+    let app = state.app.clone();
+    let url = app.adminer_server_url().await?;
+    open_url(&state, &url)
+}
+
 #[tauri::command(async)]
 fn db_list(state: State<'_, AppState>) -> Res<Vec<database::EngineStatus>> {
     Ok(database::list(&state.app.sup))
@@ -3014,6 +3057,9 @@ pub fn run() {
             path_open,
             path_open_in_editor,
             db_list,
+            db_browse,
+            adminer_status,
+            adminer_update,
             db_install,
             db_start,
             db_stop,

@@ -397,6 +397,24 @@ impl Nexora {
         ))
     }
 
+    /// Adminer pointed at the server rather than at one database: the list
+    /// of everything on it, which is what "browse" means from the engine.
+    pub async fn adminer_server_url(&self) -> Result<String> {
+        adminer::ensure(|_| {}).await?;
+        let tld = self.db.tld()?;
+        let host = adminer::host(&tld);
+        self.ensure_adminer_cert()?;
+        let url = adminer::url(&tld, ports::MYSQL, "", &adminer::token()?);
+        if https_ready(&tld) {
+            return Ok(url);
+        }
+        Ok(url.replacen(
+            &format!("https://{host}/"),
+            &format!("http://{host}:{}/", ports::NGINX),
+            1,
+        ))
+    }
+
     /// Make Adminer's certificate if HTTPS is set up and it has none. True
     /// when one was made just now: the HTTPS edge looks for new certificates
     /// every two seconds, so a page loaded straight after cannot use it yet.

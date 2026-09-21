@@ -86,12 +86,17 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
   }, [collapsed]);
 
   // Command-B (Control-B elsewhere) shows and hides the sidebar, the shortcut
-  // the opener names.
+  // the opener names. Command-comma opens the settings, as every Mac app does.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "b") {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      if (e.key.toLowerCase() === "b") {
         e.preventDefault();
         setCollapsed((c) => !c);
+      }
+      if (e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -129,6 +134,7 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
             <div className="flex items-center justify-between">
               <button
                 onClick={() => setSettingsOpen(true)}
+                title={`${t("appSettings")} (${isMac ? "⌘" : "Ctrl"},)`}
                 // Closing the settings sheet hands focus back here; the
                 // browser's blue outline glares on the dark frame.
                 className="flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] font-medium text-gray-300 hover:bg-white/5 hover:text-white transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30"

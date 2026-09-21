@@ -62,6 +62,14 @@ export interface WpDebugState {
   config_path: string;
 }
 
+/** The Adminer on disk, and what this Nexora ships. */
+export interface AdminerStatus {
+  installed: boolean;
+  version: string | null;
+  latest: string;
+  update_available: boolean;
+}
+
 export interface EngineStatus {
   engine: string;
   series: string;
@@ -611,6 +619,10 @@ export const api = {
 
   // databases
   dbList: () => call<EngineStatus[]>("db_list"),
+  adminerStatus: () => call<AdminerStatus>("adminer_status"),
+  adminerUpdate: () => call<string>("adminer_update"),
+  /** Adminer on the running engine: every database on it. */
+  dbBrowse: () => call<void>("db_browse"),
   dbInstall: (series: string) => call<string>("db_install", { series }),
   dbStart: (series: string) => call<number>("db_start", { series }),
   dbStop: (series: string) => call<boolean>("db_stop", { series }),

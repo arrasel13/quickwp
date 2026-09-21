@@ -43,8 +43,8 @@ const SECTIONS: { id: Section; label: string }[] = [
 // they are set up once and revisited rarely, unlike sites.
 const SERVICES = [
   { id: "php", label: "nav.PHP", component: PHPTab },
-  { id: "node", label: "nav.Node", component: NodeTab },
   { id: "services", label: "nav.Services", component: ServicesTab },
+  { id: "node", label: "nav.Node", component: NodeTab },
   { id: "expose", label: "nav.Expose", component: ExposeTab },
 ] as const;
 
@@ -208,38 +208,20 @@ function Row({
   );
 }
 
+/**
+ * Everything Nexora runs, on one screen: PHP, Node, the database engines and
+ * public shares, each in its own section rather than behind a tab.
+ */
 function ServicesSection() {
-  const t = useT();
-  const [active, setActive] = useState<(typeof SERVICES)[number]["id"]>("php");
-  const Active = SERVICES.find((s) => s.id === active)!.component;
-
   return (
-    <div>
-      <div className="flex justify-center">
-        <div
-          role="tablist"
-          aria-label={t("nav.Services")}
-          className="inline-flex rounded-sm border border-gray-300 bg-white p-0.5"
-        >
-          {SERVICES.map((s) => (
-            <button
-              key={s.id}
-              role="tab"
-              aria-selected={active === s.id}
-              onClick={() => setActive(s.id)}
-              className={clsx(
-                "h-8 px-5 text-[13px] font-medium rounded-sm transition-colors",
-                active === s.id ? "bg-gray-900 text-white" : "text-gray-600 hover:text-gray-900",
-              )}
-            >
-              {t(s.label)}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="mt-5 rounded-md border border-gray-200 bg-white">
-        <Active key={active} />
-      </div>
+    // Two to a row where there is room: each of these is a short list, and
+    // one per line left half the screen empty.
+    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+      {SERVICES.map((s) => (
+        <section key={s.id} className="rounded-md border border-gray-200 bg-white">
+          <s.component />
+        </section>
+      ))}
     </div>
   );
 }
