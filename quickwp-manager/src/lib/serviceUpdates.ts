@@ -6,16 +6,23 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText, hasBackend, type ServiceUpdate, type UpdatesView } from "./api";
+import { useAppData } from "./appData";
+import { putCache } from "./useAsync";
+
+const EMPTY: UpdatesView = { updates: [], checked_at: 0 };
 
 export function useServiceUpdates() {
-  const [view, setView] = useState<UpdatesView>({ updates: [], checked_at: 0 });
+  // Shared: the daily check's answer reaches every screen showing it.
+  const { data } = useAppData("service-updates");
+  const view = data ?? EMPTY;
+  const setView = (v: UpdatesView) => putCache("service-updates", v);
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // The backend's own checks, daily and after an update, land here too.
   useEffect(() => {
     if (!hasBackend) return;
-    void api.updatesList().then(setView).catch(() => {});
     const off = api.onServiceUpdates(setView);
     return () => void off.then((f) => f());
   }, []);
@@ -42,8 +49,8 @@ export function useServiceUpdates() {
     setApplying(key);
     setMessage(null);
     try {
+      // The list refreshes itself: the command says it changed it.
       setMessage({ ok: true, text: await api.updateApply(u.service, u.id) });
-      setView(await api.updatesList());
     } catch (e) {
       setMessage({ ok: false, text: errorText(e) });
     } finally {

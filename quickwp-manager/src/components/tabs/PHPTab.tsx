@@ -12,7 +12,6 @@ import {
 import { StarIcon as StarSolidIcon } from "@heroicons/react/24/solid";
 import clsx from "clsx";
 import { api, errorText, hasBackend, InstallProgress, PhpVersion } from "../../lib/api";
-import { useAsync } from "../../lib/useAsync";
 import { unlessWindowDrag } from "../../lib/windowDrag";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import {
@@ -21,6 +20,7 @@ import {
   PHP_SUPPORT_ENDS,
   type ServiceUpdates,
 } from "../../lib/serviceUpdates";
+import { useAppData } from "../../lib/appData";
 
 /** How many supported PHP releases are listed. */
 const SHOWN = 3;
@@ -35,7 +35,7 @@ const INI_LABELS: Record<string, { title: string; hint: string }> = {
 };
 
 export default function PHPTab({ updates }: { updates?: ServiceUpdates }) {
-  const { data: versions, error, loading, reload } = useAsync(() => api.phpList(), []);
+  const { data: versions, error, loading, reload } = useAppData("php-list");
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState<InstallProgress | null>(null);
   const [notice, setNotice] = useState<string | null>(null);

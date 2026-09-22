@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { DrawerRightIcon } from "../ui/DrawerIcons";
 import { api, errorText, FolderStatus, hasBackend } from "../../lib/api";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { useAsync } from "../../lib/useAsync";
 import { Tab, Dialog, Transition } from "@headlessui/react";
 import {
   GlobeAltIcon,
@@ -30,6 +29,7 @@ import { prefetchSiteSettings, useCoreUpdate, useItemUpdates } from "../../lib/w
 import WindowDragStrip from "../WindowDragStrip";
 import { unlessWindowDrag } from "../../lib/windowDrag";
 import { useSites } from "../../lib/sites";
+import { useAppData } from "../../lib/appData";
 
 interface WordPressSite {
   id: string;
@@ -182,12 +182,12 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
   // Real sites, from the Rust backend. There is no mock data here any more:
   // an empty list means you have not created a site yet, and says so.
   // Whether the stack can serve a real name yet decides which URL is honest.
-  const { data: stack } = useAsync(() => api.stackStatus(), [], "stack-status");
+  const { data: stack } = useAppData("stack-status");
   const httpsReady = stack?.https_ready ?? false;
 
   // What Node this machine already has. Nexora installs none of its own, so
   // the list is whatever nvm/fnm/Volta/Homebrew/asdf put there — newest first.
-  const { data: nodeInstalls } = useAsync(() => api.nodeList(), [], "node-list");
+  const { data: nodeInstalls } = useAppData("node-list");
   const nodeVersions = useMemo(
     () => (nodeInstalls ?? []).map((n) => n.version),
     [nodeInstalls],
@@ -298,7 +298,7 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
   // PHP as Nexora ships it, installed or not, read from the backend. The
   // hard-coded list this replaces had drifted to offer 7.4, which is not
   // shipped, and to leave out 8.4 and 8.5.
-  const { data: phpList, reload: reloadPhp } = useAsync(() => api.phpList(), [], "php-list");
+  const { data: phpList, reload: reloadPhp } = useAppData("php-list");
   /** A site can only be switched to a PHP that is actually installed. */
   const phpVersions = useMemo(
     () => (phpList ?? []).filter((p) => p.installed).map((p) => p.minor),
@@ -307,11 +307,7 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
   // What a WordPress site needs beyond PHP. The first run installs both, so
   // creating a site uses them as they are; only one genuinely missing is
   // fetched, and the dialog says so before Create is pressed.
-  const { data: setup, reload: reloadSetup } = useAsync(
-    () => api.setupStatus(),
-    [],
-    "setup-status",
-  );
+  const { data: setup, reload: reloadSetup } = useAppData("setup-status");
   const componentReady = (id: string) =>
     setup?.components.find((c) => c.id === id)?.installed ?? false;
   const [phpDownload, setPhpDownload] = useState<{

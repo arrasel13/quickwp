@@ -6,17 +6,17 @@ import {
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend, InstallProgress, type NodeLine, type NodeVersion } from "../../lib/api";
-import { useAsync } from "../../lib/useAsync";
 import { monthYear, type ServiceUpdates } from "../../lib/serviceUpdates";
 import ConfirmDialog from "../ui/ConfirmDialog";
+import { useAppData } from "../../lib/appData";
 
 /**
  * Node's supported LTS lines, which Nexora can install from nodejs.org, and
  * any Node already on this Mac from nvm, fnm, Volta, Homebrew and the like.
  */
 export default function NodeTab({ updates }: { updates?: ServiceUpdates }) {
-  const { data: lines, error, loading, reload } = useAsync(() => api.nodeLines(), []);
-  const { data: found, reload: reloadFound } = useAsync(() => api.nodeList(), []);
+  const { data: lines, error, loading, reload } = useAppData("node-lines");
+  const { data: found, reload: reloadFound } = useAppData("node-list");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [progress, setProgress] = useState<(InstallProgress & { id: string }) | null>(null);

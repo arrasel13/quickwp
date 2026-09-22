@@ -7,15 +7,15 @@ import {
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend, FoundSite, ConfigDiff } from "../../lib/api";
-import { useAsync } from "../../lib/useAsync";
+import { useAppData } from "../../lib/appData";
 
 export default function MigrateTab() {
-  const { data: scan, error, loading, reload } = useAsync(() => api.migrateScan(), []);
+  const { data: scan, error, loading, reload } = useAppData("migrate-scan");
   const [chosen, setChosen] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   // Stage 2 and 3 act on sites already imported, so they read the live list.
-  const { data: mine, reload: reloadMine } = useAsync(() => api.siteList(), []);
+  const { data: mine, reload: reloadMine } = useAppData("site-list");
   const [stageBusy, setStageBusy] = useState<string | null>(null);
   const [diff, setDiff] = useState<{ domain: string; diff: ConfigDiff } | null>(null);
 

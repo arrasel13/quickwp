@@ -3,8 +3,7 @@
 // the New site dialog).
 
 import { createContext, useContext, useState, type ReactNode } from "react";
-import { api } from "./api";
-import { useAsync } from "./useAsync";
+import { useAppData } from "./appData";
 
 const SELECTED_KEY = "nexora.selected-site";
 
@@ -13,7 +12,7 @@ function useSitesState() {
   // list on screen and refreshes it underneath. Unkeyed, every reload went
   // back to "loading", which unmounted the whole site screen and rebuilt it:
   // the page visibly shook.
-  const { data, error, loading, reload, setData } = useAsync(() => api.siteList(), [], "site-list");
+  const { data, error, loading, reload, setData } = useAppData("site-list");
   // Remembered, so Nexora reopens -- after an update, say -- on the site that
   // was open rather than on the first one.
   const [selectedId, setSelectedId] = useState<string | null>(() => {

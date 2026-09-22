@@ -18,7 +18,6 @@ import {
   type MariadbStatus,
   type ServiceUpdate,
 } from "../../lib/api";
-import { useAsync } from "../../lib/useAsync";
 import {
   isPast,
   monthYear,
@@ -26,6 +25,7 @@ import {
   type ServiceUpdates,
 } from "../../lib/serviceUpdates";
 import ConfirmDialog from "../ui/ConfirmDialog";
+import { useAppData } from "../../lib/appData";
 
 /**
  * The databases Nexora runs, and Adminer, which browses them.
@@ -34,9 +34,9 @@ import ConfirmDialog from "../ui/ConfirmDialog";
  * is one question -- what is running, on which port, and how to look inside.
  */
 export default function ServicesTab({ updates }: { updates?: ServiceUpdates }) {
-  const { data: engines, error, loading, reload } = useAsync(() => api.dbList(), []);
-  const { data: maria, reload: reloadMaria } = useAsync(() => api.mariadbList(), []);
-  const { data: adminer, reload: reloadAdminer } = useAsync(() => api.adminerStatus(), []);
+  const { data: engines, error, loading, reload } = useAppData("db-list");
+  const { data: maria, reload: reloadMaria } = useAppData("mariadb-list");
+  const { data: adminer, reload: reloadAdminer } = useAppData("adminer-status");
   /** The series picked in a dropdown, waiting on "Switch". */
   const [switching, setSwitching] = useState<{ from: EngineStatus; to: EngineStatus } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);

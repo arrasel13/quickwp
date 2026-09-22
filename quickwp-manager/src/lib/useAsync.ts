@@ -50,12 +50,37 @@ function shared<T>(key: string | undefined, fn: () => Promise<T>): Promise<T> {
   return p;
 }
 
+// How each key is fetched, as its screens last asked for it: what a refresh
+// after a change elsewhere re-runs.
+const fetchers = new Map<string, () => Promise<unknown>>();
+
+/**
+ * Fetch these keys again -- those some screen has read -- and hand every
+ * screen showing them the new answer. For a change made on one screen that
+ * others show: stopping MySQL from Services moves the Sites screen too.
+ */
+export function refresh(keys: Iterable<string>) {
+  for (const key of keys) {
+    const fn = fetchers.get(key);
+    if (!fn || !(cache.has(key) || watchers.has(key))) continue;
+    // Not deduplicated against a request already on its way: that one may
+    // have left before the change, and would bring back the old answer.
+    void fn()
+      .then((v) => {
+        cache.set(key, v);
+        publish(key, v);
+      })
+      .catch(() => {});
+  }
+}
+
 /**
  * Fetch into the cache ahead of the screen that shows it, so that screen
  * opens with its values already there. Does nothing when the key is known or
  * already on its way.
  */
 export function prefetch<T>(key: string, fn: () => Promise<T>) {
+  if (!fetchers.has(key)) fetchers.set(key, fn);
   if (cache.has(key) || pending.has(key)) return;
   void shared(key, fn)
     .then((v) => {
@@ -82,6 +107,7 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = [], key?: st
   // otherwise let a slow answer for the site you left land on the one you
   // switched to.
   const latest = useRef(0);
+  if (key) fetchers.set(key, fn);
 
   const run = useCallback(async () => {
     const mine = ++latest.current;

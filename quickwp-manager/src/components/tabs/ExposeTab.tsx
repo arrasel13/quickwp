@@ -8,11 +8,11 @@ import {
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend } from "../../lib/api";
-import { useAsync } from "../../lib/useAsync";
+import { useAppData } from "../../lib/appData";
 
 export default function ExposeTab() {
-  const { data: st, error, loading, reload } = useAsync(() => api.tunnelStatus(), []);
-  const { data: sites } = useAsync(() => api.siteList(), []);
+  const { data: st, error, loading, reload } = useAppData("tunnel-status");
+  const { data: sites } = useAppData("site-list");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState("");

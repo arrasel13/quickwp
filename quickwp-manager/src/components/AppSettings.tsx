@@ -10,7 +10,6 @@ import {
   notifySettingsChanged,
   QuitBehavior,
 } from "../lib/api";
-import { useAsync } from "../lib/useAsync";
 import { useServiceUpdates, type ServiceUpdates } from "../lib/serviceUpdates";
 import { LANGUAGES, setLanguage, useT } from "../lib/i18n";
 import PHPTab from "./tabs/PHPTab";
@@ -20,6 +19,7 @@ import ExposeTab from "./tabs/ExposeTab";
 import AboutTab from "./tabs/AboutTab";
 import GeneralTab from "./tabs/GeneralTab";
 import MigrateTab from "./tabs/MigrateTab";
+import { startAppData, useAppData } from "../lib/appData";
 
 const BTN =
   "inline-flex items-center justify-center gap-2 h-10 px-4 text-[13px] font-medium rounded-sm border border-gray-900 text-gray-900 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:border-gray-300 whitespace-nowrap";
@@ -58,6 +58,11 @@ interface Props {
 export default function AppSettings({ open, onClose, sidebarCollapsed, onSidebarCollapsedChange }: Props) {
   const t = useT();
   const [section, setSection] = useState<Section>("settings");
+  // Normally already done in the background; opened straight away, it starts
+  // here, and every tab still paints what has arrived.
+  useEffect(() => {
+    if (open) startAppData();
+  }, [open]);
 
   return (
     <Transition appear show={open} as={Fragment}>
@@ -309,8 +314,8 @@ function SettingsSection({
   onSidebarCollapsedChange,
 }: Pick<Props, "sidebarCollapsed" | "onSidebarCollapsedChange">) {
   const t = useT();
-  const { data: settings, reload } = useAsync(() => api.settingsGet(), []);
-  const { data: apps } = useAsync(() => api.appsInstalled(), []);
+  const { data: settings, reload } = useAppData("settings");
+  const { data: apps } = useAppData("apps-installed");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 

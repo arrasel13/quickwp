@@ -18,6 +18,7 @@ import UpdateOverlay from "./UpdateOverlay";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import markUrl from "../assets/nexora-mark.svg";
 import SitesTab from "./tabs/SitesTab";
+import { startAppData } from "../lib/appData";
 
 // The window has no title bar on macOS (tauri.conf.json: titleBarStyle
 // "Overlay"), so the traffic lights sit on top of the sidebar and the strip
@@ -75,6 +76,10 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
     if (!hasBackend) return;
     // The saved language wins over the cached one the first paint used.
     void api.settingsGet().then((s) => setLanguage(s.language)).catch(() => {});
+    // Everything Nexora Settings and the Sites screen show, fetched ahead
+    // of them, once the window has painted.
+    const t = window.setTimeout(startAppData, 600);
+    return () => window.clearTimeout(t);
   }, []);
 
   useEffect(() => {

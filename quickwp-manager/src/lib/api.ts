@@ -549,7 +549,47 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
         "the browser dev server has no stack behind it.",
     );
   }
-  return invoke<T>(cmd, args);
+  const result = await invoke<T>(cmd, args);
+  const keys = changedBy(cmd);
+  if (keys.length) for (const fn of changeListeners) fn(keys);
+  return result;
+}
+
+// What each command changes, as the cached data the app shows it by (see
+// `appData.ts`). After a command succeeds, every screen showing one of these
+// re-reads it: starting a site from the sidebar moves the Services screen,
+// installing PHP from the New site dialog moves it too, and so on.
+const SERVICES = ["php-list", "db-list", "mariadb-list", "stack-status"];
+const CHANGES: [RegExp, string[]][] = [
+  [/^php_(install|uninstall|set_default|start|stop)$/, ["php-list", "stack-status", "settings", "service-updates"]],
+  [/^db_(install|start|stop)$/, ["db-list", "stack-status", "service-updates"]],
+  [/^mariadb_(install|start|stop)$/, ["mariadb-list", "stack-status", "service-updates"]],
+  [/^node_(install|remove)$/, ["node-list", "node-lines", "service-updates"]],
+  [/^(adminer_update|setup_install_adminer)$/, ["adminer-status", "setup-status", "service-updates"]],
+  [/^(update_apply|updates_check)$/, [...SERVICES, "node-list", "node-lines", "adminer-status", "service-updates"]],
+  [/^(stack_start|stack_stop|dns_start|dns_stop|remove_system_changes)$/, [...SERVICES, "doctor", "site-list"]],
+  [/^https_(enable|trust_ca|regenerate_certs)$/, ["stack-status", "doctor", "site-list"]],
+  [/^site_(create|delete|duplicate|set_enabled|set_name|set_php|set_xdebug|change_domain|add_domain|remove_domain|move|regenerate_cert)$/, ["site-list", ...SERVICES]],
+  [/^migrate_(import|copy_database|apply_config)$/, ["site-list", "migrate-scan", ...SERVICES]],
+  [/^(wp_install|wp_core_update|wp_core_reinstall|wp_set_up_again|wp_reset_site)$/, ["site-list"]],
+  [/^tunnel_(install|start|stop)$/, ["tunnel-status"]],
+  [/^mail_(install|start|stop)$/, ["stack-status"]],
+  [/^settings_set$/, ["settings"]],
+  [/^setup_finish$/, ["setup-status"]],
+];
+
+function changedBy(cmd: string): string[] {
+  const keys = new Set<string>();
+  for (const [re, ks] of CHANGES) if (re.test(cmd)) ks.forEach((k) => keys.add(k));
+  return [...keys];
+}
+
+const changeListeners = new Set<(keys: string[]) => void>();
+
+/** Told the data keys a successful command changed. */
+export function onDataChanged(fn: (keys: string[]) => void) {
+  changeListeners.add(fn);
+  return () => void changeListeners.delete(fn);
 }
 
 /** A site's size by part, in bytes. */

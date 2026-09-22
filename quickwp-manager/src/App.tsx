@@ -12,6 +12,8 @@ function App() {
   const { data: setup, loading } = useAsync(
     () => (hasBackend ? api.setupStatus() : Promise.resolve(null)),
     [],
+    // Shared with the New site dialog, which reads the same components.
+    hasBackend ? "setup-status" : undefined,
   );
   const [dismissed, setDismissed] = useState(false);
   // Set by setup's "Start Build": the app opens on the New site dialog.

@@ -11,7 +11,7 @@ import {
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend, Finding, PreflightCheck, VerifyReport } from "../../lib/api";
-import { useAsync } from "../../lib/useAsync";
+import { useAppData } from "../../lib/appData";
 
 const LEVEL_STYLE: Record<string, { ring: string; icon: typeof CheckCircleIcon; tone: string }> = {
   ok: { ring: "border-green-200 bg-green-50", icon: CheckCircleIcon, tone: "text-green-700" },
@@ -28,8 +28,8 @@ const BOX = "rounded border border-gray-200 bg-white";
 const SECTION = "text-[13px] font-semibold text-gray-900";
 
 export default function GeneralTab() {
-  const { data: status, error, loading, reload } = useAsync(() => api.stackStatus(), []);
-  const { data: findings, reload: reloadDoctor } = useAsync(() => api.doctor(), []);
+  const { data: status, error, loading, reload } = useAppData("stack-status");
+  const { data: findings, reload: reloadDoctor } = useAppData("doctor");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [preflight, setPreflight] = useState<PreflightCheck[] | null>(null);
