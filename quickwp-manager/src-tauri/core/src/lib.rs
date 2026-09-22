@@ -6,6 +6,7 @@
 
 pub mod adminer;
 pub mod apps;
+pub mod brew;
 pub mod ca;
 pub mod database;
 pub mod db;
@@ -70,8 +71,14 @@ pub struct Nexora {
 impl Nexora {
     pub fn new() -> Result<Self> {
         paths::ensure_dirs()?;
+        let db = db::Db::open()?;
+        // PHP 8.3 installed means this install ran on 8.3, the default
+        // before 8.4. A site or a setup flag alone does not: data that was
+        // removed leaves both behind, on a Mac with nothing installed.
+        let used = runtime::is_installed("8.3", "fpm");
+        db.keep_earlier_default_php(used)?;
         Ok(Self {
-            db: db::Db::open()?,
+            db,
             sup: Supervisor::new(),
             dns: Arc::new(Mutex::new(None)),
         })

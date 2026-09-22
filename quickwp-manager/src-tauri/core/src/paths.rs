@@ -61,7 +61,14 @@ pub fn default_sites() -> PathBuf {
 /// stay usable from code that has no handle -- and so a missing database is
 /// simply "no override" instead of an error.
 fn sites_override() -> Option<PathBuf> {
-    let conn = rusqlite::Connection::open(db_file()).ok()?;
+    // Read-only, and never creating the file: this runs before the database
+    // exists on a first launch.
+    let conn = rusqlite::Connection::open_with_flags(
+        db_file(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     let value: String = conn
         .query_row("SELECT value FROM settings WHERE key = 'sites_dir'", [], |r| r.get(0))
         .ok()?;

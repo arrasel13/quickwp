@@ -8,6 +8,27 @@ use crate::Result;
 use rusqlite::{params, Connection};
 use std::sync::{Arc, Mutex};
 
+/// The PHP a new install defaults to.
+pub const DEFAULT_PHP: &str = "8.4";
+
+/// How every connection to Nexora's database is set up -- the app's, the
+/// DNS agent's, the background server's and the tunnel guard's.
+///
+/// A rollback journal, not WAL. In WAL mode each connection memory-maps the
+/// `-shm` index, and when another process shrinks or recreates that file the
+/// app is killed outright with SIGBUS -- which is how a first-run setup ended
+/// in a crash report instead of its success page. This database is a few
+/// dozen rows written a few times a minute at most; WAL's concurrency buys
+/// nothing here, and the rollback journal has no mapped file to lose.
+///
+/// Switching needs the database to itself, so while another process still
+/// has it open in WAL the switch simply waits for a later open. A busy
+/// timeout makes processes wait for each other's writes instead of failing.
+pub(crate) fn configure(conn: &Connection) {
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+    let _ = conn.pragma_update(None, "journal_mode", "DELETE");
+}
+
 #[derive(Clone)]
 pub struct Db(Arc<Mutex<Connection>>);
 
@@ -15,7 +36,7 @@ impl Db {
     pub fn open() -> Result<Self> {
         crate::paths::ensure_dirs()?;
         let conn = Connection::open(crate::paths::db_file())?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        configure(&conn);
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let db = Db(Arc::new(Mutex::new(conn)));
         db.migrate()?;
@@ -265,8 +286,20 @@ CREATE TABLE IF NOT EXISTS settings (
         Ok(self.setting("tld")?.unwrap_or_else(|| "test".into()))
     }
 
+    /// The PHP new sites get. 8.4 on a new install; an install from before
+    /// 8.4 was the default keeps the 8.3 it had (see `keep_earlier_default_php`).
     pub fn default_php(&self) -> Result<String> {
-        Ok(self.setting("default_php")?.unwrap_or_else(|| "8.3".into()))
+        Ok(self.setting("default_php")?.unwrap_or_else(|| DEFAULT_PHP.into()))
+    }
+
+    /// An install that has already been used, but never chose a default PHP,
+    /// was on 8.3 -- the default before 8.4. It is written down, so moving the
+    /// default for new installs never moves an existing one.
+    pub fn keep_earlier_default_php(&self, used: bool) -> Result<()> {
+        if used && self.setting("default_php")?.is_none() {
+            self.set_setting("default_php", "8.3")?;
+        }
+        Ok(())
     }
 }
 
@@ -296,10 +329,26 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_test_tld_and_php_83() {
+    fn defaults_are_test_tld_and_php_84() {
         let db = Db::open_in_memory().unwrap();
         assert_eq!(db.tld().unwrap(), "test");
-        assert_eq!(db.default_php().unwrap(), "8.3");
+        assert_eq!(db.default_php().unwrap(), "8.4");
+    }
+
+    #[test]
+    fn an_install_already_in_use_keeps_the_php_it_defaulted_to() {
+        let db = Db::open_in_memory().unwrap();
+        db.keep_earlier_default_php(false).unwrap();
+        assert_eq!(db.default_php().unwrap(), "8.4", "a new install gets 8.4");
+
+        let used = Db::open_in_memory().unwrap();
+        used.keep_earlier_default_php(true).unwrap();
+        assert_eq!(used.default_php().unwrap(), "8.3", "an existing one stays on 8.3");
+
+        let chose = Db::open_in_memory().unwrap();
+        chose.set_setting("default_php", "8.2").unwrap();
+        chose.keep_earlier_default_php(true).unwrap();
+        assert_eq!(chose.default_php().unwrap(), "8.2", "a choice is never overwritten");
     }
 
     #[test]
@@ -326,5 +375,30 @@ mod tests {
         assert!(p.is_absolute());
         assert!(p.exists(), "the folder must exist before sites are put in it");
         let _ = std::fs::remove_dir_all(&p);
+    }
+}
+
+#[cfg(test)]
+mod journal_tests {
+    #[test]
+    fn a_wal_database_is_moved_to_a_rollback_journal() {
+        let dir = std::env::temp_dir().join(format!("nexora-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("db.sqlite3");
+        {
+            let c = rusqlite::Connection::open(&file).unwrap();
+            c.pragma_update(None, "journal_mode", "WAL").unwrap();
+            c.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);").unwrap();
+        }
+        let c = rusqlite::Connection::open(&file).unwrap();
+        super::configure(&c);
+        let mode: String = c.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode, "delete");
+        let x: i64 = c.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(x, 1, "the data survives the switch");
+        drop(c);
+        assert!(!dir.join("db.sqlite3-shm").exists(), "no shared-memory file is left to map");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

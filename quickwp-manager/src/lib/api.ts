@@ -66,7 +66,7 @@ export interface WpDebugState {
 export interface MariadbStatus extends EngineStatus {
   /** When MariaDB stops supporting the series: "2029-05-29". */
   eol: string | null;
-  /** Homebrew has a formula for it to install. */
+  /** A build of it can be installed on this Mac. */
   available: boolean;
 }
 
@@ -84,7 +84,7 @@ export interface NodeLine {
 
 /** A newer release of something Nexora runs. */
 export interface ServiceUpdate {
-  service: "php" | "mysql" | "mariadb" | "node" | "adminer";
+  service: "php" | "mysql" | "mariadb" | "node" | "adminer" | "mailpit" | "cloudflared";
   id: string;
   name: string;
   installed: string;
@@ -699,7 +699,7 @@ export const api = {
   /** Adminer on an engine: every database on it. MySQL unless a MariaDB series is named. */
   dbBrowse: (series?: string) => call<void>("db_browse", { series: series ?? null }),
   mariadbList: () => call<MariadbStatus[]>("mariadb_list"),
-  /** Through Homebrew: a prebuilt bottle. */
+  /** A prebuilt build; sets up what it needs first, reporting stages as download progress. */
   mariadbInstall: (series: string) => call<string>("mariadb_install", { series }),
   /** Installs first when it is not here yet. */
   mariadbStart: (series: string) => call<number>("mariadb_start", { series }),

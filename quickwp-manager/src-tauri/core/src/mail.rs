@@ -20,20 +20,49 @@ use std::path::PathBuf;
 
 pub const SERVICE: &str = "mailpit";
 
+/// Where Mailpit is run from: a link that always points at the installed
+/// release. PHP pools write this path into `sendmail_path`, so it has to stay
+/// the same when Mailpit is updated underneath it.
+fn current_link() -> PathBuf {
+    paths::runtimes().join("mailpit").join("current")
+}
+
 pub fn binary() -> Result<PathBuf> {
-    let pin = runtime::mailpit_pin()?;
-    let p = runtime::tool_binary("mailpit", pin.version);
-    if p.exists() {
-        Ok(p)
-    } else {
-        Err(Error::NotInstalled {
-            component: "Mailpit".into(),
-        })
+    let link = current_link().join("mailpit");
+    if link.is_file() {
+        return Ok(link);
     }
+    // Installed by a Nexora from before the link, or the link went missing.
+    match runtime::installed_tool("mailpit") {
+        Some((version, bin)) => Ok(point_current_at(&version).map(|_| current_link().join("mailpit")).unwrap_or(bin)),
+        None => Err(Error::NotInstalled {
+            component: "Mailpit".into(),
+        }),
+    }
+}
+
+/// Point `current` at an installed release, replacing the link in one step.
+fn point_current_at(version: &str) -> Result<()> {
+    let link = current_link();
+    let tmp = link.with_extension("new");
+    let _ = std::fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(version, &tmp).map_err(|e| Error::Io { path: tmp.clone(), source: e })?;
+    std::fs::rename(&tmp, &link).map_err(|e| Error::Io { path: link.clone(), source: e })
 }
 
 pub fn is_installed() -> bool {
     binary().is_ok()
+}
+
+/// The release that is installed: "1.31.2".
+pub fn installed_version() -> Option<String> {
+    let target = std::fs::read_link(current_link()).ok()?;
+    let v = target.to_string_lossy().to_string();
+    if runtime::installed_tools("mailpit").iter().any(|(have, _)| *have == v) {
+        Some(v)
+    } else {
+        runtime::installed_tool("mailpit").map(|(v, _)| v)
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -57,9 +86,39 @@ pub fn status(sup: &Supervisor, catch_all: bool) -> MailStatus {
     }
 }
 
+/// Install the newest Mailpit. Idempotent: one already here is kept.
 pub async fn install(on_progress: impl Fn(runtime::Progress) + Send + 'static) -> Result<PathBuf> {
-    let pin = runtime::mailpit_pin()?;
-    runtime::install_tool("mailpit", pin, on_progress).await
+    if is_installed() {
+        return binary();
+    }
+    let release = runtime::latest_tool("mailpit").await?;
+    runtime::install_tool("mailpit", &release, on_progress).await?;
+    point_current_at(&release.version)?;
+    crate::log::info("mail", &format!("Mailpit {} installed", release.version));
+    binary()
+}
+
+/// Move to a newer Mailpit: install it beside the old one, switch the link,
+/// restart Mailpit if it was running, and only then remove the old release.
+/// The inbox is kept -- it lives in mailpit.db, outside the release.
+pub async fn update(
+    sup: &Supervisor,
+    release: &runtime::Release,
+    on_progress: impl Fn(runtime::Progress) + Send + 'static,
+) -> Result<String> {
+    let before = installed_version().unwrap_or_default();
+    runtime::install_tool("mailpit", release, on_progress).await?;
+    let was_running = sup.is_running(SERVICE) || running_unsupervised().is_some();
+    if was_running {
+        stop(sup)?;
+    }
+    point_current_at(&release.version)?;
+    runtime::remove_other_tools("mailpit", &release.version);
+    if was_running {
+        start(sup)?;
+    }
+    crate::log::info("mail", &format!("Mailpit updated from {before} to {}", release.version));
+    Ok(format!("Mailpit updated to {}.", release.version))
 }
 
 /// A Mailpit this Nexora did not start but can use: this install's own binary
@@ -71,13 +130,15 @@ pub fn running_unsupervised() -> Option<u32> {
         return None;
     }
     let pid = ports::holder_pid(ports::MAILPIT_UI)?;
-    let bin = binary().ok()?;
+    // Any release of this install's Mailpit, by the link or by a versioned
+    // path an older Nexora started it from.
+    let ours = paths::runtimes().join("mailpit");
     let out = std::process::Command::new("/bin/ps")
         .args(["-o", "command=", "-p", &pid.to_string()])
         .output()
         .ok()?;
     String::from_utf8_lossy(&out.stdout)
-        .contains(&*bin.to_string_lossy())
+        .contains(&*ours.to_string_lossy())
         .then_some(pid)
 }
 

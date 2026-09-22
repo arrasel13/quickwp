@@ -206,15 +206,17 @@ pub struct AdminerPin {
 }
 
 pub const ADMINER_PIN: AdminerPin = AdminerPin {
-    version: "6.0.2",
-    url: "https://github.com/vrana/adminer/releases/download/v6.0.2/adminer-6.0.2-mysql-en.php",
-    sha256: "20b6ed6c5b4c70477b80db96b93fb08cefe3174657cc575436ac4ad7a8de1c79",
+    version: "6.1.0",
+    url: "https://github.com/vrana/adminer/releases/download/v6.1.0/adminer-6.1.0-mysql-en.php",
+    sha256: "56fcf9374c2a858a7b9c7b283a251bea5dfc5c4b848fff3a803f7d3305383c8c",
 };
 
 // ------------------------------------------------- mailpit / cloudflared
 //
 // Both publish official macOS builds, so the pin points at the vendor's own
-// release asset.
+// release asset. These are the fallback: installs and updates take the newest
+// release GitHub lists, checked against GitHub's digest (see `latest`), and
+// use a pin only when GitHub cannot be asked. Adminer's pin works the same way.
 
 #[derive(Debug, Clone, Copy)]
 pub struct ToolPin {
@@ -224,20 +226,32 @@ pub struct ToolPin {
     pub sha256: &'static str,
 }
 
-pub const MAILPIT_PINS: [ToolPin; 1] = [
+pub const MAILPIT_PINS: [ToolPin; 2] = [
     ToolPin {
-        version: "1.31.1",
+        version: "1.31.2",
         arch: "aarch64",
-        url: "https://github.com/axllent/mailpit/releases/download/v1.31.1/mailpit-darwin-arm64.tar.gz",
-        sha256: "71c10f33f36c78a2864c4df906f11736b092a80ad1371742bd4e90e65d778e1b",
+        url: "https://github.com/axllent/mailpit/releases/download/v1.31.2/mailpit-darwin-arm64.tar.gz",
+        sha256: "d0180f1fc6e47908e80657dcf2aa1a3186c70ec45ae20a18243a3a46f618d3c6",
+    },
+    ToolPin {
+        version: "1.31.2",
+        arch: "x86_64",
+        url: "https://github.com/axllent/mailpit/releases/download/v1.31.2/mailpit-darwin-amd64.tar.gz",
+        sha256: "fba0c113a784573f4475e672a772cf00acc46ca68d7aa34fec28929b30c09df5",
     },
 ];
 
-pub const CLOUDFLARED_PINS: [ToolPin; 1] = [
+pub const CLOUDFLARED_PINS: [ToolPin; 2] = [
     ToolPin {
-        version: "2026.8.3",
+        version: "2026.9.1",
         arch: "aarch64",
-        url: "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-darwin-arm64.tgz",
-        sha256: "40c9144d86df8937c5b43293a1f7d2d2107029aa74725023dd46b1b27154352f",
+        url: "https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-darwin-arm64.tgz",
+        sha256: "c27ab8fd0aa489449e3d201eb02f957ef460a13b613662928b1b23394bf1bcfe",
+    },
+    ToolPin {
+        version: "2026.9.1",
+        arch: "x86_64",
+        url: "https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-darwin-amd64.tgz",
+        sha256: "ff0d3b51d5ff70eceef89d6b32145fee985018a2174596a5dbe405e2766e2ac4",
     },
 ];

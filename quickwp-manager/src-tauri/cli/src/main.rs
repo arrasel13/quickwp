@@ -103,6 +103,9 @@ fn main() {
             }
         };
         let tlds = app.tlds().unwrap_or_else(|_| vec!["test".into()]);
+        // DNS runs for days and needs nothing more from the database: let go
+        // of it rather than hold a connection the whole time.
+        drop(app);
         match core::dns::start(core::ports::DNS, tlds.clone()) {
             Ok(_server) => {
                 eprintln!("dns: answering {} on port {}", tlds.join(", "), core::ports::DNS);

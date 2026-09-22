@@ -1,12 +1,16 @@
-//! Newer releases of what Nexora runs: PHP, MySQL, MariaDB, Node and Adminer.
+//! Newer releases of what Nexora runs: PHP, MySQL, MariaDB, Node, Adminer,
+//! Mailpit and cloudflared.
 //!
 //! Where an update can come from differs by service, and says what "newer"
 //! can honestly mean:
 //!
-//! - **PHP, MySQL, Adminer** install from builds Nexora pins by checksum. An
-//!   update is an installed copy older than the pin -- which a Nexora update
-//!   brings. A release upstream that has no pinned, verified build yet is not
-//!   offered: there would be nothing to check it against.
+//! - **PHP, MySQL** install from builds Nexora pins by checksum. An update is
+//!   an installed copy older than the pin -- which a Nexora update brings. A
+//!   release upstream that has no pinned, verified build yet is not offered:
+//!   there would be nothing to check it against.
+//! - **Adminer, Mailpit, cloudflared** come from their own GitHub releases,
+//!   which carry a SHA-256 per file, so their update is the newest release
+//!   there.
 //! - **MariaDB** comes from Homebrew, so its update is Homebrew's current
 //!   release of the installed series.
 //! - **Node** comes from nodejs.org with published checksums, so its update is
@@ -17,7 +21,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Update {
-    /// "php", "mysql", "mariadb", "node" or "adminer".
+    /// "php", "mysql", "mariadb", "node", "adminer", "mailpit" or "cloudflared".
     pub service: String,
     /// What to update, as its own commands name it: "8.3", "8.4",
     /// "mariadb-11.4", "22", "adminer".
@@ -120,20 +124,49 @@ pub fn mysql() -> Vec<Update> {
     out
 }
 
-pub fn adminer() -> Vec<Update> {
-    match crate::adminer::installed_version() {
-        Some(v) if crate::adminer::update_available() => vec![Update {
+/// Adminer, when GitHub has a newer release than the one on disk.
+pub async fn adminer() -> Vec<Update> {
+    let Some(have) = crate::adminer::installed_version() else { return Vec::new() };
+    let latest = runtime::latest_adminer().await.version;
+    if newer(&latest, &have) {
+        vec![Update {
             service: "adminer".into(),
             id: "adminer".into(),
             name: "Adminer".into(),
-            installed: v,
-            latest: runtime::ADMINER_PIN.version.to_string(),
-        }],
-        _ => Vec::new(),
+            installed: have,
+            latest,
+        }]
+    } else {
+        Vec::new()
     }
 }
 
-/// Installed MariaDB series Homebrew has a newer release of.
+/// A single-binary tool, when GitHub has a newer release than the installed one.
+async fn tool(name: &str, label: &str, have: Option<String>) -> Vec<Update> {
+    let Some(have) = have else { return Vec::new() };
+    let Ok(latest) = runtime::latest_tool(name).await else { return Vec::new() };
+    if newer(&latest.version, &have) {
+        vec![Update {
+            service: name.into(),
+            id: name.into(),
+            name: label.into(),
+            installed: have,
+            latest: latest.version,
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+pub async fn mailpit() -> Vec<Update> {
+    tool("mailpit", "Mailpit", crate::mail::installed_version()).await
+}
+
+pub async fn cloudflared() -> Vec<Update> {
+    tool("cloudflared", "Cloudflared", crate::tunnel::installed_version()).await
+}
+
+/// Installed MariaDB series with a newer release of the same series.
 pub async fn mariadb() -> Vec<Update> {
     let mut out = Vec::new();
     let offered = mariadb::catalog().await;
@@ -185,7 +218,9 @@ pub async fn check() -> Vec<Update> {
     out.extend(mysql());
     out.extend(mariadb().await);
     out.extend(node().await);
-    out.extend(adminer());
+    out.extend(adminer().await);
+    out.extend(mailpit().await);
+    out.extend(cloudflared().await);
     out
 }
 
@@ -204,7 +239,7 @@ mod tests {
     /// What this Mac would be told today:
     /// `cargo test -p nexora-core live_updates -- --ignored --nocapture`.
     #[test]
-    #[ignore = "reads the installed runtimes and asks nodejs.org, mariadb.org and Homebrew"]
+    #[ignore = "reads the installed runtimes and asks nodejs.org, mariadb.org, Homebrew and GitHub"]
     fn live_updates_checks_everything() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let lines = rt.block_on(node::lines()).expect("node lines");

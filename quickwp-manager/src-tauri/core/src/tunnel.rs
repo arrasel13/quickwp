@@ -25,23 +25,42 @@ use std::path::PathBuf;
 /// How long a CLI-started share lives before the guard closes it.
 pub const CLI_TUNNEL_SECONDS: u64 = 3600;
 
+/// The newest installed cloudflared, whichever release it is.
 pub fn binary() -> Result<PathBuf> {
-    let pin = runtime::cloudflared_pin()?;
-    let p = runtime::tool_binary("cloudflared", pin.version);
-    if p.exists() {
-        Ok(p)
-    } else {
-        Err(Error::NotInstalled { component: "cloudflared".into() })
-    }
+    runtime::installed_tool("cloudflared")
+        .map(|(_, bin)| bin)
+        .ok_or_else(|| Error::NotInstalled { component: "cloudflared".into() })
 }
 
 pub fn is_installed() -> bool {
     binary().is_ok()
 }
 
+pub fn installed_version() -> Option<String> {
+    runtime::installed_tool("cloudflared").map(|(v, _)| v)
+}
+
+/// Install the newest cloudflared. Idempotent: one already here is kept.
 pub async fn install(on_progress: impl Fn(runtime::Progress) + Send + 'static) -> Result<PathBuf> {
-    let pin = runtime::cloudflared_pin()?;
-    runtime::install_tool("cloudflared", pin, on_progress).await
+    if let Ok(bin) = binary() {
+        return Ok(bin);
+    }
+    let release = runtime::latest_tool("cloudflared").await?;
+    runtime::install_tool("cloudflared", &release, on_progress).await
+}
+
+/// Move to a newer cloudflared. A share that is open keeps running on the
+/// release it started with -- removing a running binary's file does not stop
+/// it -- and the next share uses the new one.
+pub async fn update(
+    release: &runtime::Release,
+    on_progress: impl Fn(runtime::Progress) + Send + 'static,
+) -> Result<String> {
+    let before = installed_version().unwrap_or_default();
+    runtime::install_tool("cloudflared", release, on_progress).await?;
+    runtime::remove_other_tools("cloudflared", &release.version);
+    crate::log::info("tunnel", &format!("cloudflared updated from {before} to {}", release.version));
+    Ok(format!("Cloudflared updated to {}.", release.version))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

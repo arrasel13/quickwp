@@ -144,10 +144,13 @@ export default function ServicesTab({ updates }: { updates?: ServiceUpdates }) {
         <div className="mb-3 rounded-sm border border-gray-200 bg-white px-3 py-2.5">
           <div className="mb-2 flex items-center justify-between text-xs text-gray-700">
             <span>{progress.component}</span>
-            <span className="tabular-nums">
-              {(progress.received / 1048576).toFixed(0)} MB
-              {progress.total ? ` / ${(progress.total / 1048576).toFixed(0)} MB` : ""}
-            </span>
+            {/* A stage ("Configuring environment") has no size to show. */}
+            {(progress.received > 0 || progress.total) && (
+              <span className="tabular-nums">
+                {(progress.received / 1048576).toFixed(0)} MB
+                {progress.total ? ` / ${(progress.total / 1048576).toFixed(0)} MB` : ""}
+              </span>
+            )}
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
             {/* No content-length means no honest percentage. */}
@@ -198,11 +201,11 @@ export default function ServicesTab({ updates }: { updates?: ServiceUpdates }) {
             engine={mariaCurrent}
             others={mariaList}
             busy={busy}
-            installHint="Installs from Homebrew, then starts"
+            installHint="Installs, then starts"
             startInstalls
             option={(o) => {
               const m = o as MariadbStatus;
-              if (!m.available) return `${m.version} · LTS (not in Homebrew yet)`;
+              if (!m.available) return `${m.version} · LTS (not available yet)`;
               return `${m.version}${m.eol ? " · LTS" : ""}${m.installed ? "" : " (not installed)"}`;
             }}
             disabledOption={(o) => !(o as MariadbStatus).available}
@@ -220,6 +223,8 @@ export default function ServicesTab({ updates }: { updates?: ServiceUpdates }) {
             }
             onStart={() =>
               void act(mariaCurrent.series, async () => {
+                // Installed as its own step, so the stages show while it runs.
+                if (!mariaCurrent.installed) await api.mariadbInstall(mariaCurrent.series);
                 await api.mariadbStart(mariaCurrent.series);
                 return `MariaDB is running on port ${mariaCurrent.port}.`;
               })
@@ -303,9 +308,8 @@ export default function ServicesTab({ updates }: { updates?: ServiceUpdates }) {
 
       <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
         Each version keeps its own data directory, so switching runs the other one against its own
-        data — it is not a migration. MySQL comes from its vendor's official macOS builds. MariaDB
-        publishes none, so it comes from Homebrew, and runs here against a data directory and a
-        port (13317) of Nexora's own. New sites still use MySQL.
+        data — it is not a migration. MariaDB runs against a data directory and a port (13317) of
+        Nexora's own. New sites still use MySQL.
       </p>
     </div>
   );

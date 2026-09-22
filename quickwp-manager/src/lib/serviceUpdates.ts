@@ -1,4 +1,4 @@
-// Newer releases of PHP, MySQL, MariaDB, Node and Adminer.
+// Newer releases of PHP, MySQL, MariaDB, Node, Adminer, Mailpit and Cloudflared.
 //
 // The backend looks once a day and announces anything new as a desktop
 // notification; this is how the Services screen shows the same list, with a

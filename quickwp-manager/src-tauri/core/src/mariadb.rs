@@ -2,7 +2,8 @@
 //!
 //! MariaDB publishes no macOS builds -- its downloads are Linux, Windows and
 //! source -- so it cannot be pinned and verified the way MySQL is. Homebrew
-//! builds it, and Nexora runs that build against a data directory and a port
+//! publishes prebuilt bottles of it (see `brew`, which also sets Homebrew up
+//! when it is missing), and Nexora runs that build against a data directory and a port
 //! of its own, exactly as it runs MySQL: nothing Homebrew's own service would
 //! use is touched, and uninstalling the formula later leaves Nexora's data in
 //! place.
@@ -234,16 +235,8 @@ fn version_key(v: &str) -> Vec<u32> {
 
 // ------------------------------------------------------------- the server
 
-/// Where Homebrew lives: Apple silicon, then Intel.
 fn brew_prefix() -> Option<PathBuf> {
-    ["/opt/homebrew", "/usr/local"]
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.join("bin/brew").is_file())
-}
-
-pub fn brew() -> Option<PathBuf> {
-    brew_prefix().map(|p| p.join("bin/brew"))
+    crate::brew::prefix()
 }
 
 /// The formula's stable path, which survives `brew upgrade`.
@@ -348,75 +341,48 @@ pub fn list(sup: &Supervisor, offered: &[Series]) -> Vec<MariadbStatus> {
     all.iter().map(|s| status(sup, s)).collect()
 }
 
-/// Homebrew, told to do only what was asked: no auto-update, no clean-up of
-/// other formulae, no checking what else depends on what.
-fn brew_cmd(args: &[&str]) -> Result<Command> {
-    let brew = brew().ok_or_else(|| {
-        Error::other(
-            "MariaDB comes from Homebrew, which is not installed. Install it from https://brew.sh, \
-             then try again.",
-        )
-    })?;
-    let mut c = Command::new(brew);
-    c.args(args)
-        .env("HOMEBREW_NO_AUTO_UPDATE", "1")
-        .env("HOMEBREW_NO_INSTALL_CLEANUP", "1")
-        .env("HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK", "1")
-        .env("HOMEBREW_NO_ANALYTICS", "1")
-        .env("HOMEBREW_NO_ENV_HINTS", "1");
-    Ok(c)
-}
-
-fn run_brew(args: &[&str], what: &str) -> Result<()> {
-    let out = brew_cmd(args)?
-        .output()
-        .map_err(|e| Error::Io { path: PathBuf::from("brew"), source: e })?;
-    if !out.status.success() {
-        return Err(Error::other(format!(
-            "{what} failed:\n{}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(())
-}
-
-/// `brew install`: a prebuilt bottle, so this is a download rather than a
-/// build -- MariaDB and the few libraries it links against.
-pub fn install(s: &Series) -> Result<String> {
+/// Install a series: a prebuilt bottle, so this is a download rather than a
+/// build -- MariaDB and the few libraries it links against. Homebrew is set
+/// up first when the Mac does not have it. `stage` is told what to show.
+pub fn install(s: &Series, stage: &dyn Fn(&str)) -> Result<String> {
     if !s.available {
         return Err(Error::other(format!(
-            "Homebrew has no {} formula yet, so MariaDB {} cannot be installed here. It will \
-             appear once Homebrew publishes it.",
-            s.formula, s.series
+            "MariaDB {} is not available to install yet.",
+            s.series
         )));
     }
-    run_brew(&["install", &s.formula], &format!("brew install {}", s.formula))?;
+    crate::brew::prepare(stage)?;
+    stage("Installing MariaDB");
+    crate::brew::run(
+        &["install", "--quiet", &s.formula],
+        &format!("MariaDB {} could not be installed.", s.series),
+    )?;
     let version = installed_version(s).unwrap_or_default();
-    crate::log::info("mariadb", &format!("installed {} {version} with Homebrew", s.formula));
-    Ok(format!("MariaDB {version} installed with Homebrew."))
+    crate::log::info("mariadb", &format!("MariaDB {version} installed"));
+    Ok(format!("MariaDB {version} installed."))
 }
 
-/// Move a series to Homebrew's current release of it, restarting it if it
-/// was running. The data directory is kept: a patch release reads it as is.
-pub fn upgrade(sup: &Supervisor, s: &Series) -> Result<String> {
+/// Move a series to the current release of it, restarting it if it was
+/// running. The data directory is kept: a patch release reads it as is.
+pub fn upgrade(sup: &Supervisor, s: &Series, stage: &dyn Fn(&str)) -> Result<String> {
     let was_running = status(sup, s).engine.running;
     let before = installed_version(s).unwrap_or_default();
+    // The formula list has to know the new release before it can install it.
+    crate::brew::prepare(stage)?;
     if was_running {
         stop(sup, s)?;
     }
-    // The local formula list has to know the new release before it can
-    // install it: the one step that does reach beyond this formula.
-    let _ = brew_cmd(&["update"]).and_then(|mut c| {
-        c.env_remove("HOMEBREW_NO_AUTO_UPDATE");
-        c.output().map_err(|e| Error::Io { path: PathBuf::from("brew"), source: e })
-    });
-    let result = run_brew(&["upgrade", &s.formula], &format!("brew upgrade {}", s.formula));
+    stage("Updating MariaDB");
+    let result = crate::brew::run(
+        &["upgrade", "--quiet", &s.formula],
+        &format!("MariaDB {} could not be updated.", s.series),
+    );
     if was_running {
         start(sup, s)?;
     }
     result?;
     let after = installed_version(s).unwrap_or_default();
-    crate::log::info("mariadb", &format!("upgraded {} {before} -> {after}", s.formula));
+    crate::log::info("mariadb", &format!("MariaDB updated from {before} to {after}"));
     Ok(format!("MariaDB updated from {before} to {after}."))
 }
 
@@ -476,7 +442,7 @@ pub fn start(sup: &Supervisor, s: &Series) -> Result<u16> {
         return Ok(ports::MARIADB);
     }
     if !is_installed(s) {
-        install(s)?;
+        install(s, &|_| {})?;
     }
     // The port is shared by every series: whichever else is running goes.
     for v in installed_series() {

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowPathIcon, ExclamationTriangleIcon, LockClosedIcon } from "@heroicons/react/24/outline";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ExclamationTriangleIcon, LockClosedIcon } from "@heroicons/react/24/outline";
 import { CheckCircleIcon } from "@heroicons/react/24/solid";
 import clsx from "clsx";
 import { api, errorText, HttpsConflict, SetupStatus } from "../lib/api";
@@ -16,8 +16,10 @@ import Logo from "./Logo";
  * There is no Nginx or Caddy step. Nexora serves sites with its own built-in
  * server, and the last step starts it.
  *
- * It runs in a small fixed window (the backend sizes it before the first
- * paint); "Create a Site" hands the full window back to the app.
+ * It looks and reads like a macOS installer -- the steps down the left, one
+ * page at a time in a bordered panel, Go Back and Continue at the bottom --
+ * in a small fixed window the backend sizes before the first paint. "Create
+ * a Site" hands the full window back to the app.
  */
 
 type Phase = "welcome" | "plan" | "preparing" | "ready";
@@ -59,11 +61,6 @@ function conflictSubject(c: HttpsConflict, tld: string) {
   if (c.resolver_taken) parts.push(`.${tld}`);
   return parts.join(" and ");
 }
-
-const primaryButton =
-  "inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-wp-blue px-6 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-wp-blue-dark focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-blue focus-visible:ring-offset-2";
-const secondaryButton =
-  "inline-flex h-11 w-full items-center justify-center rounded-lg border border-gray-300 bg-white px-6 text-sm font-medium text-gray-800 transition-colors hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-blue focus-visible:ring-offset-2";
 
 export default function Onboarding({
   status,
@@ -119,6 +116,13 @@ export default function Onboarding({
       activity: "Installing Adminer",
       already: installed("adminer"),
       run: () => api.setupInstallAdminer(),
+    },
+    {
+      id: "cloudflared",
+      label: "Cloudflared",
+      activity: "Installing Cloudflared",
+      already: installed("cloudflared"),
+      run: () => api.tunnelInstall(),
     },
     {
       id: "ca",
@@ -230,6 +234,9 @@ export default function Onboarding({
   };
 
   const start = () => {
+    // Marked as started, so a setup the app quits during opens again to
+    // finish rather than being taken as done. Best effort.
+    void api.setupFinish(false).catch(() => {});
     shownPercent.current = 0;
     setStates(Object.fromEntries(steps.map((s) => [s.id, { status: "pending" } as StepState])));
     void runSteps(steps.map((s) => s.id));
@@ -270,190 +277,339 @@ export default function Onboarding({
         : "Finishing up…";
   const onDecide = (c: Choice) => decide.current?.(c);
 
+  const page: Page =
+    phase === "welcome" ? "intro" : phase === "plan" ? "setup" : phase === "preparing" ? "install" : "summary";
+
   return (
-    <div data-tauri-drag-region="deep" className="flex h-screen flex-col overflow-hidden bg-white">
-      {/* The window has no title bar on macOS; this strip drags it and clears
-          the traffic lights. */}
-      <div data-tauri-drag-region className="h-11 flex-shrink-0" />
+    <div className="flex h-screen select-none flex-col overflow-hidden bg-[#f5f5f7] text-gray-900">
+      {/* The title bar: the window has none of its own on macOS, so this strip
+          carries the name, drags the window and clears the traffic lights. */}
+      <header data-tauri-drag-region className="relative flex h-11 flex-shrink-0 items-center justify-center">
+        <span className="pointer-events-none flex items-center gap-2 text-[13px] font-semibold text-gray-500">
+          <Logo className="h-4 w-4" />
+          Install Nexora
+        </span>
+        <LockClosedIcon className="pointer-events-none absolute right-4 h-4 w-4 text-gray-400" />
+      </header>
 
-      {phase === "welcome" && <Welcome onStart={() => setPhase("plan")} />}
+      <div className="flex min-h-0 flex-1">
+        <Sidebar page={page} />
 
-      {phase === "plan" && <Plan tld={status.tld} onContinue={start} />}
+        <main className="flex min-w-0 flex-1 flex-col pb-4 pr-5">
+          <h1 className="flex-shrink-0 pb-2.5 text-[15px] font-medium text-gray-900">
+            {page === "intro" && "Welcome to the Nexora Installer"}
+            {page === "setup" && "Here's what Nexora sets up on this Mac"}
+            {page === "install" && "Installing Nexora…"}
+            {page === "summary" &&
+              (failed.length === 0
+                ? "The installation was completed successfully."
+                : "The installation did not finish.")}
+          </h1>
 
-      {phase === "preparing" && (
-        <>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-10">
-            <div className="flex flex-1 flex-col items-center justify-center py-6 text-center">
-              <Logo className="h-16 w-16" />
-              <h1 className="mt-6 text-xl font-semibold tracking-tight text-gray-900">
-                We're preparing your environment
-              </h1>
-              <p className="mt-1 text-sm text-gray-500">Please wait a few moments.</p>
+          <section className="min-h-0 flex-1 overflow-y-auto rounded-md border border-gray-300 bg-white px-5 py-4">
+            {page === "intro" && <Intro />}
+            {page === "setup" && <SetupPlan status={status} steps={steps} />}
+            {page === "install" && (
+              <InstallProgress
+                steps={steps}
+                states={states}
+                percent={percent}
+                activity={activity}
+                password={Boolean(current?.password)}
+                conflict={
+                  blocked && states[blocked.id]?.conflict ? (
+                    <ConflictCard
+                      conflict={states[blocked.id]!.conflict!}
+                      tld={status.tld}
+                      onDecide={onDecide}
+                      className="mt-3"
+                    />
+                  ) : null
+                }
+              />
+            )}
+            {page === "summary" && (
+              <Summary tld={status.tld} failed={failed} skipped={skipped.length > 0} states={states} />
+            )}
+          </section>
 
-              <div className="mt-8 w-full">
-                <div
-                  className="h-2 overflow-hidden rounded-full bg-gray-100"
-                  role="progressbar"
-                  aria-valuenow={percent}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuetext={activity}
-                >
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-[#1ED2FA] via-[#3452FF] to-[#A23CF6] transition-[width] duration-500 ease-out"
-                    style={{ width: `${percent}%` }}
-                  />
-                </div>
-                <div className="mt-3 flex items-baseline justify-between gap-3 text-sm">
-                  <span data-activity className="truncate text-left text-gray-700" aria-live="polite">
-                    {activity}
-                  </span>
-                  <span className="flex-shrink-0 tabular-nums text-gray-500">{percent}%</span>
-                </div>
-              </div>
-
-              {blocked && states[blocked.id]?.conflict && (
-                <ConflictCard
-                  conflict={states[blocked.id]!.conflict!}
-                  tld={status.tld}
-                  onDecide={onDecide}
-                  className="mt-6 w-full text-left"
-                />
-              )}
-            </div>
-          </div>
-          <footer className="flex-shrink-0 px-10 pb-8">
-            {current?.password ? (
-              <p className="flex items-center justify-center gap-2 text-xs leading-relaxed text-amber-800">
-                <LockClosedIcon className="h-4 w-4 flex-shrink-0" />
-                macOS may ask for your password to trust HTTPS and route local sites to this Mac.
-              </p>
-            ) : (
-              <p className="text-center text-xs text-gray-500">
-                Step {Math.min(finished + 1, steps.length)} of {steps.length}
-              </p>
+          <footer className="flex flex-shrink-0 items-center justify-end gap-3 pt-4">
+            {page === "intro" && (
+              <>
+                <MacButton disabled>Go Back</MacButton>
+                <MacButton primary onClick={() => setPhase("plan")}>
+                  Continue
+                </MacButton>
+              </>
+            )}
+            {page === "setup" && (
+              <>
+                <MacButton onClick={() => setPhase("welcome")}>Go Back</MacButton>
+                <MacButton primary onClick={start}>
+                  Install
+                </MacButton>
+              </>
+            )}
+            {page === "install" && (
+              <>
+                <MacButton disabled>Go Back</MacButton>
+                <MacButton primary disabled>
+                  Continue
+                </MacButton>
+              </>
+            )}
+            {page === "summary" && failed.length === 0 && (
+              <>
+                <MacButton disabled>Go Back</MacButton>
+                <MacButton primary onClick={() => void createSite()}>
+                  Create a Site
+                </MacButton>
+              </>
+            )}
+            {page === "summary" && failed.length > 0 && (
+              <>
+                <MacButton onClick={() => void createSite()}>Create a Site Anyway</MacButton>
+                <MacButton primary onClick={retry}>
+                  Try Again
+                </MacButton>
+              </>
             )}
           </footer>
-        </>
-      )}
-
-      {phase === "ready" && failed.length === 0 && (
-        <>
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-10 text-center">
-            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-green-50">
-              <CheckCircleIcon className="h-14 w-14 text-green-500" />
-            </div>
-            <h1 className="mt-6 text-2xl font-semibold tracking-tight text-gray-900">
-              Your app is ready for local development
-            </h1>
-            <p className="mt-2 max-w-sm text-sm leading-relaxed text-gray-600">
-              Everything Nexora needs is installed and running. Create your first WordPress site to
-              get started.
-            </p>
-            {skipped.length > 0 && (
-              <p className="mt-4 rounded-lg bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-600">
-                HTTPS for .{status.tld} was skipped, so sites won't open at https://name.{status.tld}{" "}
-                until it's set up. Do that any time from Nexora Settings → General.
-              </p>
-            )}
-          </div>
-          <footer className="flex-shrink-0 px-10 pb-8">
-            <button onClick={() => void createSite()} className={primaryButton}>
-              Create a Site
-            </button>
-          </footer>
-        </>
-      )}
-
-      {phase === "ready" && failed.length > 0 && (
-        <>
-          <div className="min-h-0 flex-1 overflow-y-auto px-10 py-6">
-            <div className="flex flex-col items-center text-center">
-              <ExclamationTriangleIcon className="h-12 w-12 text-amber-500" />
-              <h1 className="mt-4 text-xl font-semibold tracking-tight text-gray-900">Almost there</h1>
-              <p className="mt-1.5 text-sm leading-relaxed text-gray-600">
-                {failed.length === 1 ? "One step" : `${failed.length} steps`} did not finish. Try
-                again, or create a site now and finish the rest later from Nexora Settings.
-              </p>
-            </div>
-            <ul className="mt-6 space-y-2">
-              {failed.map((s) => (
-                <li key={s.id} data-failed={s.id} className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
-                  <p className="text-sm font-medium text-red-900">{s.label}</p>
-                  <p className="mt-0.5 break-words text-xs leading-relaxed text-red-700">
-                    {states[s.id]?.error}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <footer className="grid flex-shrink-0 grid-cols-2 gap-3 px-10 pb-8">
-            <button onClick={() => void createSite()} className={secondaryButton}>
-              Create a Site anyway
-            </button>
-            <button onClick={retry} className={primaryButton}>
-              <ArrowPathIcon className="h-4 w-4" />
-              Try again
-            </button>
-          </footer>
-        </>
-      )}
-    </div>
-  );
-}
-
-function Welcome({ onStart }: { onStart: () => void }) {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col px-10 pb-8">
-      <div className="flex flex-1 flex-col items-center justify-center text-center">
-        <Logo className="h-20 w-20" />
-        <h1 className="mt-8 text-[30px] font-semibold tracking-tight text-gray-900">
-          Welcome to Nexora
-        </h1>
-        <p className="mt-2 text-[15px] text-gray-600">The modern development workspace</p>
-        <p className="mt-6 max-w-sm text-sm leading-relaxed text-gray-500">
-          Create, run and manage local WordPress sites on your Mac, with PHP, MySQL, email testing
-          and trusted HTTPS set up for you.
-        </p>
+        </main>
       </div>
-      <button onClick={onStart} className={primaryButton}>
-        Get Started
-      </button>
     </div>
   );
 }
 
-function Plan({ tld, onContinue }: { tld: string; onContinue: () => void }) {
-  const points = [
-    ["PHP, MySQL, WP-CLI and Adminer", "Installed once, ready for every new site"],
-    ["Mailpit", "Every email your sites send, caught locally"],
-    ["Trusted HTTPS and a DNS resolver", `Sites open at https://name.${tld} in any browser`],
-  ];
-  return (
-    <div className="flex min-h-0 flex-1 flex-col px-10 pb-8">
-      <div className="flex flex-1 flex-col items-center justify-center text-center">
-        <Logo className="h-16 w-16" />
-        <h1 className="mt-6 text-[28px] font-semibold tracking-tight text-gray-900">Quick Setup</h1>
-        <p className="mt-1 text-[15px] text-gray-600">Here's what Nexora sets up for you</p>
+type Page = "intro" | "setup" | "install" | "summary";
 
-        <ul className="mt-8 w-full space-y-2 text-left">
-          {points.map(([title, text]) => (
-            <li key={title} className="flex items-start gap-3 rounded-lg bg-gray-50 px-4 py-3">
-              <CheckCircleIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-wp-blue" />
-              <div>
-                <p className="text-[13px] font-medium text-gray-900">{title}</p>
-                <p className="text-xs text-gray-500">{text}</p>
-              </div>
+const PAGES: Array<[Page, string]> = [
+  ["intro", "Introduction"],
+  ["setup", "Setup"],
+  ["install", "Installation"],
+  ["summary", "Summary"],
+];
+
+/** The installer's steps down the left, the current one marked, and the
+ *  Nexora mark where an installer shows its package artwork. */
+function Sidebar({ page }: { page: Page }) {
+  return (
+    <nav className="relative flex w-[190px] flex-shrink-0 flex-col pl-7 pt-9" aria-label="Installer steps">
+      <ol className="space-y-3.5">
+        {PAGES.map(([id, label]) => {
+          const active = id === page;
+          return (
+            <li
+              key={id}
+              aria-current={active ? "step" : undefined}
+              className={clsx(
+                "flex items-center gap-3 text-[14px]",
+                active ? "font-semibold text-gray-900" : "text-gray-500",
+              )}
+            >
+              <span
+                className={clsx("h-2.5 w-2.5 flex-shrink-0 rounded-full", active ? "bg-[#0a7aff]" : "bg-gray-300")}
+              />
+              {label}
+            </li>
+          );
+        })}
+      </ol>
+      <div className="pointer-events-none absolute bottom-6 left-7">
+        <Logo className="h-[88px] w-[88px] drop-shadow-md" />
+      </div>
+    </nav>
+  );
+}
+
+function MacButton({
+  children,
+  primary,
+  disabled,
+  onClick,
+}: {
+  children: ReactNode;
+  primary?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={clsx(
+        "inline-flex h-8 min-w-[96px] items-center justify-center rounded-md px-4 text-[13px] font-medium shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0a7aff]/50",
+        primary
+          ? "bg-[#0a7aff] text-white hover:bg-[#0068e0] disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none"
+          : "border border-gray-300 bg-white text-gray-800 hover:bg-gray-50 disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:shadow-none",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Intro() {
+  return (
+    <div className="text-[13px] leading-relaxed text-gray-700">
+      <p className="text-[22px] font-semibold tracking-tight text-gray-900">Nexora</p>
+      <p className="text-gray-500">The modern development workspace</p>
+      <p className="mt-4">
+        Create, run and manage local WordPress sites on your Mac, with PHP, MySQL, email testing and
+        trusted HTTPS set up for you.
+      </p>
+      <p className="mt-3">
+        This installer downloads what your sites need, sets up secure local addresses and starts
+        Nexora's web server. It takes a few minutes, and macOS will ask for your password along the
+        way.
+      </p>
+      <p className="mt-3 text-gray-500">Click Continue to see what will be installed.</p>
+    </div>
+  );
+}
+
+function SetupPlan({ status, steps }: { status: SetupStatus; steps: Step[] }) {
+  const size = status.components.filter((c) => !c.installed).reduce((n, c) => n + c.size_mb, 0);
+  const version = (id: string) => status.components.find((c) => c.id === id)?.version;
+  return (
+    <div className="text-[13px]">
+      <ul className="divide-y divide-gray-100">
+        {steps.map((step) => (
+          <li key={step.id} className="flex items-center gap-2.5 py-[3px]">
+            <CheckCircleIcon
+              className={clsx("h-4 w-4 flex-shrink-0", step.already ? "text-green-500" : "text-[#0a7aff]")}
+            />
+            <span className="text-gray-900">{step.label.replace(/ \d.*$/, "")}</span>
+            {version(step.id) && <span className="font-mono text-[11px] text-gray-400">{version(step.id)}</span>}
+            {step.already && <span className="ml-auto text-[11px] text-green-600">Already installed</span>}
+            {!step.already && step.password && (
+              <span className="ml-auto text-[11px] text-gray-400">Needs your password</span>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs text-gray-500">
+        {size > 0 ? `About ${size} MB to download. ` : ""}Sites will open at https://name.{status.tld}.
+      </p>
+    </div>
+  );
+}
+
+function InstallProgress({
+  steps,
+  states,
+  percent,
+  activity,
+  password,
+  conflict,
+}: {
+  steps: Step[];
+  states: Record<string, StepState>;
+  percent: number;
+  activity: string;
+  password: boolean;
+  conflict: ReactNode;
+}) {
+  return (
+    <div className="text-[13px]">
+      <div className="flex items-baseline justify-between gap-3">
+        <span data-activity className="truncate text-gray-800" aria-live="polite">
+          {activity}
+        </span>
+        <span className="flex-shrink-0 tabular-nums text-gray-500">{percent}%</span>
+      </div>
+      <div
+        className="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-200"
+        role="progressbar"
+        aria-valuenow={percent}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuetext={activity}
+      >
+        <div
+          className="h-full rounded-full bg-[#0a7aff] transition-[width] duration-500 ease-out"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      {password && (
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-amber-700">
+          <LockClosedIcon className="h-3.5 w-3.5 flex-shrink-0" />
+          macOS may ask for your password to trust HTTPS and route local sites to this Mac.
+        </p>
+      )}
+      {conflict}
+      <ul className="mt-4 grid grid-cols-2 gap-x-4 gap-y-1.5">
+        {steps.map((step) => {
+          const st = states[step.id]?.status ?? "pending";
+          return (
+            <li key={step.id} className="flex items-center gap-2 text-xs">
+              <StatusDot status={st} />
+              <span className={clsx(st === "running" ? "font-medium text-gray-900" : "text-gray-600")}>
+                {step.label}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function StatusDot({ status }: { status: Status }) {
+  if (status === "done") return <CheckCircleIcon className="h-4 w-4 flex-shrink-0 text-green-500" />;
+  if (status === "error") return <ExclamationTriangleIcon className="h-4 w-4 flex-shrink-0 text-red-500" />;
+  if (status === "running")
+    return (
+      <span className="mx-px h-3.5 w-3.5 flex-shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-[#0a7aff]" />
+    );
+  if (status === "blocked" || status === "skipped")
+    return <span className="mx-px h-3.5 w-3.5 flex-shrink-0 rounded-full border-2 border-amber-400" />;
+  return <span className="mx-px h-3.5 w-3.5 flex-shrink-0 rounded-full border-2 border-gray-200" />;
+}
+
+function Summary({
+  tld,
+  failed,
+  skipped,
+  states,
+}: {
+  tld: string;
+  failed: Step[];
+  skipped: boolean;
+  states: Record<string, StepState>;
+}) {
+  if (failed.length > 0) {
+    return (
+      <div className="text-[13px] leading-relaxed text-gray-700">
+        <p>
+          {failed.length === 1 ? "One step" : `${failed.length} steps`} did not finish. Try again, or
+          create a site now and finish the rest later from Nexora Settings.
+        </p>
+        <ul className="mt-3 space-y-2">
+          {failed.map((s) => (
+            <li key={s.id} data-failed={s.id} className="rounded-md border border-red-200 bg-red-50 px-3 py-2">
+              <p className="text-[13px] font-medium text-red-900">{s.label}</p>
+              <p className="mt-0.5 break-words text-xs text-red-700">{states[s.id]?.error}</p>
             </li>
           ))}
         </ul>
-        <p className="mt-5 text-xs leading-relaxed text-gray-500">
-          It takes a few minutes, and macOS will ask for your password along the way.
-        </p>
       </div>
-      <button onClick={onContinue} className={primaryButton}>
-        Continue
-      </button>
+    );
+  }
+  return (
+    <div className="flex h-full flex-col items-center justify-center text-center">
+      <CheckCircleIcon className="h-14 w-14 text-green-500" />
+      <p className="mt-3 text-[20px] font-semibold tracking-tight text-gray-900">Nexora is ready</p>
+      <p className="mt-1 max-w-sm text-[13px] leading-relaxed text-gray-600">
+        Everything Nexora needs is installed and running. Create your first WordPress site to get
+        started.
+      </p>
+      {skipped && (
+        <p className="mt-3 max-w-sm rounded-md bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-600">
+          HTTPS for .{tld} was skipped, so sites won't open at https://name.{tld} until it's set up. Do
+          that any time from Nexora Settings → General.
+        </p>
+      )}
     </div>
   );
 }
@@ -493,14 +649,14 @@ function ConflictCard({
         {conflict.can_take_over && (
           <button
             onClick={() => onDecide("takeover")}
-            className="inline-flex h-8 items-center rounded-md bg-wp-blue px-3 text-xs font-semibold text-white hover:bg-wp-blue-dark"
+            className="inline-flex h-7 items-center rounded-md bg-[#0a7aff] px-3 text-xs font-medium text-white hover:bg-[#0068e0]"
           >
             Use Nexora instead
           </button>
         )}
         <button
           onClick={() => onDecide("skip")}
-          className="inline-flex h-8 items-center rounded-md border border-amber-300 bg-white px-3 text-xs font-medium text-amber-900 hover:bg-amber-100"
+          className="inline-flex h-7 items-center rounded-md border border-gray-300 bg-white px-3 text-xs font-medium text-gray-800 hover:bg-gray-50"
         >
           Skip for now
         </button>

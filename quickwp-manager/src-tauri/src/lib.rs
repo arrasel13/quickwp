@@ -1178,16 +1178,16 @@ fn adminer_status() -> Res<AdminerStatus> {
     Ok(AdminerStatus {
         installed: core::adminer::is_installed(),
         version: core::adminer::installed_version(),
-        latest: runtime::ADMINER_PIN.version.to_string(),
+        latest: core::adminer::latest_known(),
         update_available: core::adminer::update_available(),
     })
 }
 
-/// Replace Adminer with the release this Nexora pins.
+/// Replace Adminer with its newest release.
 #[tauri::command]
 async fn adminer_update(app: tauri::AppHandle) -> Res<String> {
     let handle = app.clone();
-    core::adminer::update(move |p| {
+    let version = core::adminer::update(move |p| {
         let _ = handle.emit(
             "download-progress",
             serde_json::json!({ "id": "adminer", "component": p.component,
@@ -1195,7 +1195,7 @@ async fn adminer_update(app: tauri::AppHandle) -> Res<String> {
         );
     })
     .await?;
-    Ok(format!("Adminer updated to {}.", runtime::ADMINER_PIN.version))
+    Ok(format!("Adminer updated to {version}."))
 }
 
 /// Open Adminer on an engine, showing every database on it: MySQL unless a
@@ -1223,10 +1223,23 @@ async fn mariadb_list(state: State<'_, AppState>) -> Res<Vec<core::mariadb::Mari
     Ok(core::mariadb::list(&state.app.sup, &offered))
 }
 
-/// `brew install`: a prebuilt bottle -- MariaDB and what it links against.
+/// Tell the window what a longer install is doing: a stage has no size, so
+/// it rides the download-progress event with nothing received.
+fn stage_emitter(app: &tauri::AppHandle, id: String) -> impl Fn(&str) {
+    let handle = app.clone();
+    move |stage: &str| {
+        let _ = handle.emit(
+            "download-progress",
+            serde_json::json!({ "id": id, "component": stage, "received": 0, "total": null }),
+        );
+    }
+}
+
+/// Install a MariaDB series, setting up what it needs first.
 #[tauri::command(async)]
-fn mariadb_install(series: String) -> Res<String> {
-    Ok(core::mariadb::install(&core::mariadb::series(&series)?)?)
+fn mariadb_install(app: tauri::AppHandle, series: String) -> Res<String> {
+    let stage = stage_emitter(&app, format!("mariadb-{series}"));
+    Ok(core::mariadb::install(&core::mariadb::series(&series)?, &stage)?)
 }
 
 /// Start, installing first when it is not here yet.
@@ -1439,17 +1452,47 @@ async fn update_apply(app: tauri::AppHandle, service: String, id: String) -> Res
             }
             format!("MySQL {id} updated to {}.", found.latest)
         }
-        "mariadb" => core::mariadb::upgrade(sup, &core::mariadb::series(&id)?)?,
+        "mariadb" => {
+            let stage = stage_emitter(&app, format!("{service}-{id}"));
+            let (sup, series) = (sup.clone(), core::mariadb::series(&id)?);
+            tauri::async_runtime::spawn_blocking(move || core::mariadb::upgrade(&sup, &series, &stage))
+                .await
+                .map_err(|e| e.to_string())??
+        }
         "node" => core::node::update(&found.installed, &found.latest, progress).await?,
         "adminer" => {
-            core::adminer::update(progress).await?;
-            format!("Adminer updated to {}.", found.latest)
+            let version = core::adminer::update(progress).await?;
+            format!("Adminer updated to {version}.")
+        }
+        "mailpit" => {
+            let release = runtime::latest_tool("mailpit").await?;
+            let msg = mail::update(sup, &release, progress).await?;
+            // Pools started before Mailpit had a fixed path name the old
+            // release in sendmail_path; restarting them points them at it.
+            restart_running_pools(&state);
+            msg
+        }
+        "cloudflared" => {
+            let release = runtime::latest_tool("cloudflared").await?;
+            tunnel::update(&release, progress).await?
         }
         other => return Err(format!("unknown service {other}")),
     };
     qlog::info("updates", &msg);
     run_update_check(&app).await;
     Ok(msg)
+}
+
+/// Restart the PHP pools that are running, so they pick up new settings.
+fn restart_running_pools(state: &State<'_, AppState>) {
+    let sup = &state.app.sup;
+    let default = state.app.db.default_php().unwrap_or_else(|_| core::db::DEFAULT_PHP.into());
+    for v in php::list(sup, &default).into_iter().filter(|v| v.running) {
+        let _ = php::stop_pool(sup, &v.minor);
+        if let Err(e) = php::start_pool(sup, &v.minor) {
+            qlog::warn("php", &format!("PHP {} did not restart: {e}", v.minor));
+        }
+    }
 }
 
 #[tauri::command(async)]
@@ -1680,7 +1723,7 @@ fn setup_status(state: State<'_, AppState>) -> Res<SetupStatus> {
                      served by 8.1."
                 .into(),
             version: php_pin.map(|p| p.patch.to_string()).unwrap_or(default_php.clone()),
-            size_mb: 30,
+            size_mb: 70,
             installed: runtime::is_installed(&default_php, "fpm")
                 && runtime::is_installed(&default_php, "cli"),
         },
@@ -1690,8 +1733,10 @@ fn setup_status(state: State<'_, AppState>) -> Res<SetupStatus> {
             detail: "Runs on port 13316 so it cannot collide with a MySQL you already have. \
                      The root account is loopback-only and has no password."
                 .into(),
-            version: default_mysql.clone(),
-            size_mb: 320,
+            version: runtime::mysql_pin(&default_mysql)
+                .map(|p| p.version.to_string())
+                .unwrap_or(default_mysql.clone()),
+            size_mb: 160,
             installed: database::is_installed(&default_mysql),
         },
         SetupComponent {
@@ -1710,8 +1755,10 @@ fn setup_status(state: State<'_, AppState>) -> Res<SetupStatus> {
             detail: "Catches mail your sites send instead of delivering it, so a password \
                      reset in development never reaches a real inbox."
                 .into(),
-            version: "1.31.1".into(),
-            size_mb: 25,
+            version: mail::installed_version()
+                .or_else(|| runtime::mailpit_pin().ok().map(|p| p.version.to_string()))
+                .unwrap_or_default(),
+            size_mb: 10,
             installed: mail::is_installed(),
         },
         SetupComponent {
@@ -1720,9 +1767,21 @@ fn setup_status(state: State<'_, AppState>) -> Res<SetupStatus> {
             detail: "The database browser in each site's Database tab. One PHP file, run by \
                      the PHP that is already here."
                 .into(),
-            version: runtime::ADMINER_PIN.version.into(),
+            version: core::adminer::installed_version().unwrap_or_else(core::adminer::latest_known),
             size_mb: 1,
             installed: core::adminer::is_installed(),
+        },
+        SetupComponent {
+            id: "cloudflared".into(),
+            name: "Cloudflared".into(),
+            detail: "Shares a local site at a public HTTPS address when you ask it to, for a \
+                     client or a phone. Nothing is shared until you share it."
+                .into(),
+            version: tunnel::installed_version()
+                .or_else(|| runtime::cloudflared_pin().ok().map(|p| p.version.to_string()))
+                .unwrap_or_default(),
+            size_mb: 19,
+            installed: tunnel::is_installed(),
         },
     ];
 
@@ -1734,6 +1793,7 @@ fn setup_status(state: State<'_, AppState>) -> Res<SetupStatus> {
         flag.as_deref(),
         !site::list(&state.app.db)?.is_empty(),
         installed("php") && installed("mysql") && installed("wp-cli"),
+        any_runtime_installed(),
     );
     // Decided once. Writing it here means a setup that predates the flag --
     // or one whose wizard was always skipped -- settles the question on the
@@ -1759,8 +1819,34 @@ fn setup_status(state: State<'_, AppState>) -> Res<SetupStatus> {
 /// greeted forever -- on a machine with sites on it. A machine that has sites,
 /// or that already has the runtimes the wizard installs, has plainly been set
 /// up, whoever set it up.
-fn onboarding_done(flag: Option<&str>, has_sites: bool, runtimes_ready: bool) -> bool {
+///
+/// Except when nothing is installed at all: no PHP, no MySQL, no WP-CLI. That
+/// is a fresh install -- or one whose data was removed -- whatever the flag
+/// says, and a site folder left in ~/Nexora/Sites is listed again on launch.
+/// Without setup, such a Mac would open straight onto sites that cannot run.
+///
+/// And except a setup that was started and never finished: the flag is set to
+/// "0" when Install is pressed and to "1" only on the last page. A setup that
+/// ended early -- the app quit or crashed during its last steps -- opens again
+/// where it can finish, and ends on its success page, however much of it had
+/// already been installed.
+fn onboarding_done(flag: Option<&str>, has_sites: bool, runtimes_ready: bool, anything_installed: bool) -> bool {
+    if !anything_installed || flag == Some("0") {
+        return false;
+    }
     flag == Some("1") || has_sites || runtimes_ready
+}
+
+/// Any PHP, MySQL or WP-CLI of Nexora's own on this Mac, whichever version.
+fn any_runtime_installed() -> bool {
+    let has_entries = |component: &str| {
+        std::fs::read_dir(core::paths::runtimes().join(component))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| !e.file_name().to_string_lossy().ends_with(".staging"))
+    };
+    has_entries("php") || has_entries("mysql") || wordpress::is_installed()
 }
 
 /// The same decision as `setup_status`, made before the window has asked.
@@ -1779,6 +1865,7 @@ fn first_run_done(state: &AppState) -> bool {
             && runtime::is_installed(&php, "cli")
             && database::is_installed(&mysql)
             && wordpress::is_installed(),
+        any_runtime_installed(),
     )
 }
 
@@ -1788,8 +1875,10 @@ fn apply_window_mode(w: &tauri::WebviewWindow, setup: bool) -> tauri::Result<()>
     if setup {
         // Sized before resizing is switched off: macOS ignores a size change
         // on a window that cannot be resized.
-        w.set_min_size(Some(LogicalSize::new(480.0, 600.0)))?;
-        w.set_size(LogicalSize::new(520.0, 720.0))?;
+        // Landscape, like a macOS installer: steps on the left, a page on
+        // the right, buttons along the bottom.
+        w.set_min_size(Some(LogicalSize::new(640.0, 460.0)))?;
+        w.set_size(LogicalSize::new(640.0, 460.0))?;
         w.set_resizable(false)?;
         w.set_maximizable(false)?;
     } else {
@@ -1813,15 +1902,27 @@ mod onboarding_tests {
     #[test]
     fn a_fresh_machine_is_greeted_and_nothing_else_is() {
         // Nothing installed, no sites, wizard never finished: the first run.
-        assert!(!onboarding_done(None, false, false));
+        assert!(!onboarding_done(None, false, false, false));
         // Skipped the wizard, but has been using the app since.
-        assert!(onboarding_done(None, true, false));
+        assert!(onboarding_done(None, true, false, true));
         // Set up before the flag existed, or by the CLI.
-        assert!(onboarding_done(None, false, true));
-        // Finished the wizard, on a machine with nothing else yet.
-        assert!(onboarding_done(Some("1"), false, false));
+        assert!(onboarding_done(None, false, true, true));
+        // Finished the wizard, with a step that did not finish.
+        assert!(onboarding_done(Some("1"), false, false, true));
         // Explicitly not done, and no evidence otherwise.
-        assert!(!onboarding_done(Some("0"), false, false));
+        assert!(!onboarding_done(Some("0"), false, false, true));
+        // Started, runtimes installed, then quit before its last page: it
+        // opens again to finish and show that it did.
+        assert!(!onboarding_done(Some("0"), false, true, true));
+        assert!(!onboarding_done(Some("0"), true, true, true));
+    }
+
+    #[test]
+    fn a_mac_with_nothing_installed_is_greeted_even_with_sites_and_the_flag() {
+        // Data removed, a site folder left behind and listed again on launch,
+        // and the flag written again because of it: still a fresh install.
+        assert!(!onboarding_done(Some("1"), true, false, false));
+        assert!(!onboarding_done(None, true, false, false));
     }
 }
 
@@ -1838,7 +1939,10 @@ async fn setup_install_adminer(app: tauri::AppHandle) -> Res<String> {
         );
     })
     .await?;
-    Ok(format!("Adminer {} ready", runtime::ADMINER_PIN.version))
+    Ok(format!(
+        "Adminer {} ready",
+        core::adminer::installed_version().unwrap_or_default()
+    ))
 }
 
 /// Remember that the first run happened, so it does not greet them again.
@@ -2433,7 +2537,7 @@ async fn mail_install(app: tauri::AppHandle) -> Res<String> {
         );
     })
     .await?;
-    Ok("Mailpit installed".into())
+    Ok(format!("Mailpit {} installed", mail::installed_version().unwrap_or_default()))
 }
 
 #[tauri::command(async)]
@@ -2576,7 +2680,7 @@ async fn tunnel_install(app: tauri::AppHandle) -> Res<String> {
         );
     })
     .await?;
-    Ok("cloudflared installed".into())
+    Ok(format!("Cloudflared {} installed", tunnel::installed_version().unwrap_or_default()))
 }
 
 #[tauri::command(async)]
@@ -3234,6 +3338,14 @@ pub fn run() {
             }
             watch_for_update(app.handle().clone());
             start_update_checks(app.handle().clone());
+            // MySQL installed before trimming existed carries a debug server
+            // and dictionaries Nexora never runs. Only files go; data stays.
+            std::thread::spawn(|| {
+                let freed = runtime::trim_installed_mysql();
+                if freed > 0 {
+                    qlog::info("mysql", &format!("removed {} MB of unused MySQL files", freed / 1_048_576));
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

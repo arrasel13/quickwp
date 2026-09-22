@@ -1,14 +1,14 @@
 //! Adminer: a database browser on its own hostname.
 //!
-//! One pinned PHP file plus a small wrapper, served by the edge at
+//! One PHP file from Adminer's own releases plus a small wrapper, served by the edge at
 //! `adminer.nexora.<tld>` through a PHP pool that already exists. There is no
 //! second web server and no site record -- Adminer is not a site, and giving it
 //! one would put it in the sites list, in the sites directory, and in every
 //! count of "how many sites do I have".
 //!
 //! Two things about that wrapper are load-bearing, and both are worked around
-//! rather than patched into Adminer itself, so the pinned file stays byte-for-
-//! byte what upstream published:
+//! rather than patched into Adminer itself, so the file stays byte-for-byte
+//! what upstream published:
 //!
 //!   * Nexora's MySQL root account has no password by design (see
 //!     `database::initialize`), and Adminer refuses an empty one. Its auth gate
@@ -78,10 +78,19 @@ fn version_in(text: &str) -> Option<String> {
     (!v.is_empty() && v.chars().next().is_some_and(|c| c.is_ascii_digit())).then(|| v.to_string())
 }
 
-/// Whether a newer Adminer than the one on disk is pinned into this Nexora.
+/// The newest Adminer known without asking again: the last answer from
+/// GitHub, or this build's pin before there has been one.
+pub fn latest_known() -> String {
+    runtime::latest::cached(runtime::latest::ADMINER)
+        .map(|r| r.version)
+        .filter(|v| newer(v, runtime::ADMINER_PIN.version))
+        .unwrap_or_else(|| runtime::ADMINER_PIN.version.to_string())
+}
+
+/// Whether a newer Adminer than the one on disk is known of.
 pub fn update_available() -> bool {
     match installed_version() {
-        Some(v) => newer(runtime::ADMINER_PIN.version, &v),
+        Some(v) => newer(&latest_known(), &v),
         None => false,
     }
 }
@@ -101,16 +110,24 @@ fn newer(a: &str, b: &str) -> bool {
     false
 }
 
-/// Replace the file on disk with the pinned release.
-pub async fn update(on_progress: impl Fn(runtime::Progress) + Send + 'static) -> Result<PathBuf> {
+/// Replace the file on disk with the newest release. It is downloaded and
+/// verified beside the old one first, so a failed download leaves the
+/// Adminer that works where it was.
+pub async fn update(on_progress: impl Fn(runtime::Progress) + Send + 'static) -> Result<String> {
+    let release = runtime::latest_adminer().await;
     let dest = php_path();
-    if dest.exists() {
-        std::fs::remove_file(&dest).map_err(|e| Error::Io { path: dest.clone(), source: e })?;
-    }
-    ensure(on_progress).await
+    paths::mkdir_p(&dir())?;
+    let fresh = dest.with_extension("php.new");
+    runtime::download_verified("Adminer", &release.url, &release.sha256, &fresh, on_progress).await?;
+    std::fs::rename(&fresh, &dest).map_err(|e| Error::Io { path: dest.clone(), source: e })?;
+    write_wrapper()?;
+    token()?;
+    crate::log::info("database", &format!("Adminer updated to {}", release.version));
+    Ok(release.version)
 }
 
-/// Fetch and verify Adminer, and write the wrapper beside it. Idempotent.
+/// Fetch and verify the newest Adminer, and write the wrapper beside it.
+/// Idempotent: an Adminer already on disk is kept.
 ///
 /// The wrapper is rewritten every time rather than only when missing: it is
 /// generated code, and a stale copy from an older Nexora is a bug that would
@@ -119,14 +136,8 @@ pub async fn ensure(on_progress: impl Fn(runtime::Progress) + Send + 'static) ->
     let dest = php_path();
     paths::mkdir_p(&dir())?;
     if !dest.exists() {
-        runtime::download_verified(
-            "Adminer",
-            runtime::ADMINER_PIN.url,
-            runtime::ADMINER_PIN.sha256,
-            &dest,
-            on_progress,
-        )
-        .await?;
+        let release = runtime::latest_adminer().await;
+        runtime::download_verified("Adminer", &release.url, &release.sha256, &dest, on_progress).await?;
     }
     write_wrapper()?;
     token()?;
