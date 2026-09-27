@@ -2490,6 +2490,174 @@ fn migrate_import(
 }
 
 
+// ------------------------------------------------------------ site import
+//
+// Sites from Herd, Valet, LocalWP and rexenv -- or any folder -- copied into
+// Nexora with their databases. The other tool is never written to.
+
+#[tauri::command(async)]
+fn import_scan(state: State<'_, AppState>) -> Res<core::siteimport::Scan> {
+    Ok(core::siteimport::scan(&state.app.db)?)
+}
+
+#[derive(serde::Serialize)]
+struct ImportResult {
+    domain: String,
+    ok: bool,
+    message: String,
+    notes: Vec<String>,
+}
+
+/// Import sites one after another: copy the files, bring the database across,
+/// point the copy at it and move WordPress to its new address. A site whose
+/// import fails is removed again, so trying again starts clean; the others
+/// carry on.
+#[tauri::command]
+async fn import_sites(app: tauri::AppHandle, requests: Vec<core::siteimport::Request>) -> Res<Vec<ImportResult>> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<AppState>();
+        let mut results = Vec::new();
+        for req in &requests {
+            let domain = req.domain.clone();
+            let stage = |stage: &str, bytes: u64| {
+                let _ = handle.emit(
+                    "import-progress",
+                    serde_json::json!({ "domain": domain, "stage": stage, "bytes": bytes }),
+                );
+            };
+            let r = import_one(&state, req, &stage);
+            stage(if r.is_ok() { "Done" } else { "Failed" }, 0);
+            results.push(match r {
+                Ok((message, notes)) => {
+                    qlog::info("import", &format!("{} imported from {}", req.domain, req.source));
+                    ImportResult { domain: req.domain.clone(), ok: true, message, notes }
+                }
+                Err(e) => {
+                    qlog::warn("import", &format!("{} was not imported: {e}", req.domain));
+                    ImportResult { domain: req.domain.clone(), ok: false, message: e, notes: Vec::new() }
+                }
+            });
+        }
+        let _ = state.app.reload_dns();
+        results
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+fn import_one(
+    state: &State<'_, AppState>,
+    req: &core::siteimport::Request,
+    stage: &dyn Fn(&str, u64),
+) -> Res<(String, Vec<String>)> {
+    use core::siteimport as si;
+    let mut notes = Vec::new();
+    let mut req = req.clone();
+    // The site's own PHP when Nexora has it, else the default -- a site that
+    // cannot run is worse than one on a newer PHP.
+    let default = state.app.db.default_php()?;
+    if !runtime::is_installed(&req.php_minor, "fpm") {
+        if !req.php_minor.is_empty() && req.php_minor != default {
+            notes.push(format!(
+                "PHP {} isn't installed in Nexora, so the site uses PHP {default}. Install {} in Settings › Services to switch back.",
+                req.php_minor, req.php_minor
+            ));
+        }
+        req.php_minor = default;
+    }
+
+    stage("Copying files", 0);
+    let (site, dest) = si::copy_site(&state.app.db, &req)?;
+    let undo = |db_name: Option<(&str, &str)>| {
+        let _ = site::delete(&state.app.db, &site.domain);
+        let _ = std::fs::remove_dir_all(&dest);
+        if let Some((series, name)) = db_name {
+            let _ = database::drop_for_site(series, name);
+        }
+    };
+
+    let source_db = if req.sql_file.is_some() || !req.include_database {
+        None
+    } else {
+        si::source_db(&req.source, std::path::Path::new(&req.path))
+    };
+    let wants_db = req.include_database && (req.sql_file.is_some() || source_db.as_ref().is_some_and(|d| matches!(d.engine.as_str(), "mysql" | "mariadb")));
+    if let Some(db) = source_db.as_ref().filter(|d| !matches!(d.engine.as_str(), "mysql" | "mariadb")) {
+        if db.engine == "pgsql" {
+            notes.push("PostgreSQL isn't supported yet: the files were imported, the database was left where it is.".into());
+        }
+    }
+
+    let mut db_line = None;
+    if wants_db {
+        let series = state
+            .app
+            .db
+            .setting("db_series")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string());
+        stage("Starting MySQL", 0);
+        if let Err(e) = database::start(&state.app.sup, &series) {
+            undo(None);
+            return Err(format!("Nexora's MySQL did not start: {e}"));
+        }
+        let creds = match database::create_for_site(&series, &site.domain) {
+            Ok(c) => c,
+            Err(e) => {
+                undo(None);
+                return Err(e.to_string());
+            }
+        };
+        stage("Copying database", 0);
+        let on_bytes = |b: u64| stage("Copying database", b);
+        let copied = match (&req.sql_file, &source_db) {
+            (Some(file), _) => si::load_dump_file(&series, std::path::Path::new(file), &creds.name, &on_bytes),
+            (None, Some(src)) => si::copy_database(&series, src, &creds.name, &on_bytes),
+            (None, None) => Ok(0),
+        };
+        let bytes = match copied {
+            Ok(b) => b,
+            Err(e) => {
+                undo(Some((&series, &creds.name)));
+                return Err(e.to_string());
+            }
+        };
+        stage("Updating the site's config", 0);
+        match si::point_config_at(&dest, &creds) {
+            Ok(Some(_)) => {}
+            Ok(None) => notes.push("No wp-config.php or .env was found to point at the new database.".into()),
+            Err(e) => {
+                undo(Some((&series, &creds.name)));
+                return Err(e.to_string());
+            }
+        }
+        let _ = site::set_database(&state.app.db, site.id, &series, &creds.name);
+        db_line = Some(format!("{} MB of database copied into {}.", (bytes + 524_287) / 1_048_576, creds.name));
+
+        // WordPress keeps its address in the database: move it to this one.
+        if wordpress::is_wordpress(&site) {
+            stage("Updating the site address", 0);
+            if let Ok(fresh) = site_by_domain(state, &site.domain) {
+                let url = canonical_url(state, &fresh.domain)?;
+                if let Err(e) = wordpress::set_site_url(&fresh, &url) {
+                    notes.push(format!("The site address could not be updated to {url}: {e}"));
+                }
+            }
+        }
+    } else if req.include_database && source_db.is_none() && req.sql_file.is_none() {
+        notes.push("No database was found in the site's config, so only its files were imported.".into());
+    }
+
+    let _ = state.app.ensure_cert(&site);
+    let msg = match db_line {
+        Some(d) => format!("Imported to {}. {d}", dest.display()),
+        None => format!("Imported to {}.", dest.display()),
+    };
+    Ok((msg, notes))
+}
+
 // ----------------------------------------------------------------- mail
 
 fn catch_all_on(state: &State<'_, AppState>) -> bool {
@@ -3485,6 +3653,8 @@ pub fn run() {
             wp_delete_item,
             wp_search_replace,
             migrate_scan,
+            import_scan,
+            import_sites,
             migrate_import,
             migrate_copy_database,
             migrate_preview_config,

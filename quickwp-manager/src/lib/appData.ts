@@ -29,6 +29,7 @@ const FETCH = {
   "node-lines": () => api.nodeLines(),
   "tunnel-status": () => api.tunnelStatus(),
   "migrate-scan": () => api.migrateScan(),
+  "import-scan": () => api.importScan(),
   "service-updates": () => api.updatesList(),
 } as const;
 

@@ -239,6 +239,15 @@ pub fn start(sup: &Supervisor, series: &str) -> Result<u16> {
 
     for _ in 0..150 {
         if std::net::TcpStream::connect(("127.0.0.1", ports::MYSQL)).is_ok() {
+            // An open port is not a server that answers: on a first start
+            // MySQL listens a moment before it serves, and a query sent in
+            // that moment is dropped. Wait for one that is answered.
+            for _ in 0..100 {
+                if sql(series, "SELECT 1;").is_ok() {
+                    return Ok(ports::MYSQL);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
             return Ok(ports::MYSQL);
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -276,7 +285,7 @@ pub fn stop(sup: &Supervisor, series: &str) -> Result<bool> {
 }
 
 /// Run SQL as root over TCP.
-fn sql(series: &str, statement: &str) -> Result<String> {
+pub(crate) fn sql(series: &str, statement: &str) -> Result<String> {
     let out = std::process::Command::new(mysql_client(series)?)
         .args([
             "--protocol=TCP",

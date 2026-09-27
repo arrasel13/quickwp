@@ -199,6 +199,59 @@ export interface WpInstallResult {
   db: DbCredentials;
 }
 
+/** A database a site found in another tool uses. */
+export interface ImportDbInfo {
+  /** "mysql", "mariadb", "pgsql" or "sqlite". */
+  engine: string;
+  name: string;
+  location: string;
+  supported: boolean;
+  running: boolean;
+  note: string | null;
+}
+
+/** A site Herd, Valet, LocalWP or rexenv serves, as an import candidate. */
+export interface ImportCandidate {
+  source: string;
+  name: string;
+  domain: string;
+  source_domain: string | null;
+  path: string;
+  php_minor: string | null;
+  is_wordpress: boolean;
+  database: ImportDbInfo | null;
+  importable: boolean;
+  note: string | null;
+}
+
+export interface ImportScan {
+  sites: ImportCandidate[];
+  tools: string[];
+}
+
+export interface ImportRequest {
+  source: string;
+  path: string;
+  name: string;
+  domain: string;
+  php_minor: string;
+  include_database: boolean;
+  sql_file: string | null;
+}
+
+export interface ImportResult {
+  domain: string;
+  ok: boolean;
+  message: string;
+  notes: string[];
+}
+
+export interface ImportProgress {
+  domain: string;
+  stage: string;
+  bytes: number;
+}
+
 export interface FoundSite {
   name: string;
   domain: string;
@@ -570,7 +623,8 @@ const CHANGES: [RegExp, string[]][] = [
   [/^(stack_start|stack_stop|dns_start|dns_stop|remove_system_changes)$/, [...SERVICES, "doctor", "site-list"]],
   [/^https_(enable|trust_ca|regenerate_certs)$/, ["stack-status", "doctor", "site-list"]],
   [/^site_(create|delete|duplicate|set_enabled|set_name|set_php|set_xdebug|change_domain|add_domain|remove_domain|move|regenerate_cert)$/, ["site-list", ...SERVICES]],
-  [/^migrate_(import|copy_database|apply_config)$/, ["site-list", "migrate-scan", ...SERVICES]],
+  [/^migrate_(import|copy_database|apply_config)$/, ["site-list", "migrate-scan", "import-scan", ...SERVICES]],
+  [/^import_sites$/, ["site-list", "migrate-scan", "import-scan", ...SERVICES]],
   [/^(wp_install|wp_core_update|wp_core_reinstall|wp_set_up_again|wp_reset_site)$/, ["site-list"]],
   [/^tunnel_(install|start|stop)$/, ["tunnel-status"]],
   [/^mail_(install|start|stop)$/, ["stack-status"]],
@@ -854,6 +908,10 @@ export const api = {
 
   // migration from Herd / Valet
   migrateScan: () => call<ScanResult>("migrate_scan"),
+  /** Sites in Herd, Valet, LocalWP and rexenv, with their databases. Reads only. */
+  importScan: () => call<ImportScan>("import_scan"),
+  /** Copy sites and their databases in; the other tool is never written to. */
+  importSites: (requests: ImportRequest[]) => call<ImportResult[]>("import_sites", { requests }),
   migrateImport: (
     requests: {
       domain: string;
@@ -1005,6 +1063,11 @@ export const api = {
   onInstallProgress: (cb: (p: InstallProgress) => void) => {
     if (!hasBackend) return Promise.resolve(() => {});
     return listen<InstallProgress>("php-install-progress", (e) => cb(e.payload));
+  },
+
+  onImportProgress: (cb: (p: ImportProgress) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<ImportProgress>("import-progress", (e) => cb(e.payload));
   },
 
   onDownloadProgress: (cb: (p: InstallProgress & { id: string }) => void) => {

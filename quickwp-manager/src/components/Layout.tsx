@@ -41,7 +41,7 @@ const readCollapsed = () => {
 
 // The sidebar lists your sites -- the thing you open Nexora for. Everything
 // else lives in App settings: General (the stack and HTTPS), PHP, Node,
-// Services, Expose, Import from Herd and About. Mail, Logs and a terminal are
+// Services, Expose, Import and About. Mail, Logs and a terminal are
 // tabs of each site.
 export default function Layout({ openNewSite = false }: { openNewSite?: boolean }) {
   return (

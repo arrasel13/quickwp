@@ -119,7 +119,7 @@ export default function AppSettings({ open, onClose, sidebarCollapsed, onSidebar
                 className={clsx(
                   "mx-auto space-y-5 px-6 py-6",
                   // Services and General are two-column pages and Import
-                  // carries the Herd importer; the rest are one column.
+                  // carries the site importer; the rest are one column.
                   section === "services" || section === "general"
                     ? "max-w-6xl"
                     : section === "storage"
@@ -150,7 +150,7 @@ export default function AppSettings({ open, onClose, sidebarCollapsed, onSidebar
                     onSidebarCollapsedChange={onSidebarCollapsedChange}
                   />
                 ) : (
-                  // Bringing sites in from Herd.
+                  // Bringing sites in from Herd, Valet, LocalWP, rexenv or a folder.
                   <div className="rounded-md border border-gray-200 bg-white">
                     <MigrateTab />
                   </div>

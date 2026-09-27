@@ -41,6 +41,7 @@ pub mod secrets;
 pub mod selfupdate;
 pub mod server;
 pub mod site;
+pub mod siteimport;
 pub mod runtime;
 pub mod supervisor;
 pub mod tunnel;
