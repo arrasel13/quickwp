@@ -728,6 +728,16 @@ pub fn remove_system_changes(tlds: &[String]) -> Result<()> {
         format!("rm -f {}", shell_quote(&plist.to_string_lossy())),
         format!("rm -f {}", shell_quote(&installed_edge.to_string_lossy())),
         format!("rm -rf {}", shell_quote(&paths::shared_certs().to_string_lossy())),
+        // And the folder they sat in, if nothing else put anything there.
+        format!(
+            "rmdir {} 2>/dev/null || true",
+            shell_quote(
+                &paths::shared_certs()
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            )
+        ),
     ];
     for tld in tlds {
         // Only remove a resolver file that is actually ours.

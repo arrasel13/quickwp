@@ -54,6 +54,12 @@ LOGS
   logs                         Every log Nexora can show
   logs <id> [--lines N]        Tail one
 
+UNINSTALL
+  uninstall [--yes]            Remove Nexora: the system changes (asks for your
+                               password), the runtimes and databases it
+                               downloaded, its keychain entries and the app.
+                               Your site folders are left where they are.
+
 Every command accepts --json for machine-readable output.
 "#;
 
@@ -90,6 +96,17 @@ fn main() {
             eprintln!("serve: {e}");
             std::process::exit(1);
         }
+    }
+
+    if args[0] == "uninstall" {
+        let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+        std::process::exit(match uninstall(yes) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("uninstall: {e}");
+                1
+            }
+        });
     }
 
     // Hidden: the DNS server itself, run by the LaunchAgent. Not in USAGE
@@ -571,4 +588,165 @@ fn human(bytes: u64) -> String {
     } else {
         format!("{:.1} MB", bytes as f64 / 1048576.0)
     }
+}
+
+// ------------------------------------------------------------- uninstall
+
+/// Take Nexora off this Mac.
+///
+/// Deliberately independent of the database: the one time this matters most is
+/// when that file is unreadable, and an uninstall that cannot run then is the
+/// reason a fresh install meets the same broken state again. The TLDs come
+/// from the database when it opens and from the resolver files when it does
+/// not.
+fn uninstall(yes: bool) -> Result<(), String> {
+    let data = core::paths::root();
+    let app_bundle = std::path::PathBuf::from("/Applications/Nexora.app");
+    let sites = core::paths::default_sites();
+
+    println!("This removes Nexora from this Mac:");
+    println!("  • the DNS resolver, the edge service and the certificate trust (asks for your password)");
+    println!("  • {} — runtimes, databases, certificates and logs", data.display());
+    println!("  • the saved site passwords and the local CA in your login keychain");
+    if app_bundle.exists() {
+        println!("  • {}", app_bundle.display());
+    }
+    println!("\nYour site folders under {} are left alone.", sites.display());
+    if !yes {
+        println!("\nRun it again with --yes to go ahead.");
+        return Ok(());
+    }
+
+    // 1. Nothing of Nexora's may be running while its files go.
+    stop_running(&data);
+
+    // 2. The parts that need root, through the same prompt the app uses.
+    let tlds = tlds_to_clean();
+    println!("\nRemoving the system changes for {}…", tlds.join(", "));
+    match core::privileged::remove_system_changes(&tlds) {
+        Ok(()) => println!("  removed"),
+        Err(e) => println!("  not removed: {e}\n  (run `sudo rm -f /etc/resolver/<tld> /usr/local/libexec/nexora-edge` and `sudo rm -rf /usr/local/etc/nexora` by hand)"),
+    }
+
+    // 3. The keychain: site passwords, then the local CA, however many copies
+    // earlier installs left.
+    let mut passwords = 0;
+    while std::process::Command::new("/usr/bin/security")
+        .args(["delete-generic-password", "-s", "Nexora site passwords"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        passwords += 1;
+    }
+    // By fingerprint: `security delete-certificate -c` refuses when a name
+    // matches more than once, which it does after a few installs.
+    let mut certs = 0;
+    let keychain = home().join("Library/Keychains/login.keychain-db");
+    if let Ok(out) = std::process::Command::new("/usr/bin/security")
+        .args(["find-certificate", "-a", "-c", "Nexora Local CA", "-Z"])
+        .arg(&keychain)
+        .output()
+    {
+        let listing = String::from_utf8_lossy(&out.stdout).to_string();
+        for hash in listing
+            .lines()
+            .filter_map(|l| l.strip_prefix("SHA-1 hash: "))
+            .map(str::trim)
+        {
+            let done = std::process::Command::new("/usr/bin/security")
+                .args(["delete-certificate", "-Z", hash])
+                .arg(&keychain)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if done {
+                certs += 1;
+            }
+        }
+    }
+    println!("Keychain: {passwords} saved password(s), {certs} certificate(s) removed");
+
+    // 4. Everything Nexora keeps for itself.
+    for path in [
+        data.clone(),
+        home().join("Library/Caches/com.nexora.app"),
+        home().join("Library/WebKit/com.nexora.app"),
+        home().join("Library/Saved Application State/com.nexora.app.savedState"),
+        home().join("Library/Preferences/com.nexora.app.plist"),
+        home().join("Library/HTTPStorages/com.nexora.app"),
+        home().join("Library/Logs/Nexora"),
+    ] {
+        remove(&path);
+    }
+    remove(&app_bundle);
+
+    println!("\nNexora is off this Mac. Your sites' folders are still in {}.", sites.display());
+    Ok(())
+}
+
+fn home() -> std::path::PathBuf {
+    dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"))
+}
+
+fn remove(path: &std::path::Path) {
+    if !path.exists() {
+        return;
+    }
+    let result = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match result {
+        Ok(()) => println!("Removed {}", path.display()),
+        Err(e) => println!("Could not remove {}: {e}", path.display()),
+    }
+}
+
+/// The TLDs to clean up: what the database says, and every resolver file that
+/// points at Nexora's DNS port, so a broken database costs nothing here.
+fn tlds_to_clean() -> Vec<String> {
+    let mut tlds: Vec<String> = core::Nexora::new()
+        .ok()
+        .and_then(|a| a.tlds().ok())
+        .unwrap_or_default();
+    if let Ok(dir) = std::fs::read_dir("/etc/resolver") {
+        for entry in dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let ours = std::fs::read_to_string(entry.path())
+                .map(|s| s.contains(&format!("port {}", core::ports::DNS)))
+                .unwrap_or(false);
+            if ours && !tlds.contains(&name) {
+                tlds.push(name);
+            }
+        }
+    }
+    if tlds.is_empty() {
+        tlds.push("test".into());
+    }
+    tlds
+}
+
+/// Stop the app and everything it started, by what they are running from:
+/// another tool's MySQL or PHP is never matched, because the path is Nexora's
+/// own data folder.
+fn stop_running(data: &std::path::Path) {
+    let patterns = [
+        "/Applications/Nexora.app/Contents/MacOS/nexora-app".to_string(),
+        data.to_string_lossy().to_string(),
+    ];
+    for pattern in &patterns {
+        let _ = std::process::Command::new("/usr/bin/pkill")
+            .args(["-f", pattern])
+            .output();
+    }
+    // A moment to go down cleanly, then whatever is left.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    for pattern in &patterns {
+        let _ = std::process::Command::new("/usr/bin/pkill")
+            .args(["-9", "-f", pattern])
+            .output();
+    }
+    println!("Stopped Nexora and the services it was running");
 }

@@ -35,9 +35,52 @@ pub struct Db(Arc<Mutex<Connection>>);
 impl Db {
     pub fn open() -> Result<Self> {
         crate::paths::ensure_dirs()?;
-        let conn = Connection::open(crate::paths::db_file())?;
+        Self::open_or_replace(&crate::paths::db_file())
+    }
+
+    /// Open this file, and replace it if SQLite cannot read it.
+    pub(crate) fn open_or_replace(file: &std::path::Path) -> Result<Self> {
+        match Self::open_file(file) {
+            Ok(db) => Ok(db),
+            // A file SQLite cannot read is not something to hand the window as
+            // "database disk image is malformed": that leaves an app that will
+            // not open and, because uninstalling leaves this folder behind, a
+            // fresh install that meets the same broken file. The damaged one is
+            // kept beside the new one, so nothing is destroyed and it can still
+            // be looked at.
+            Err(e) if is_corrupt(&e) => {
+                let aside = file.with_extension(format!(
+                    "sqlite3.damaged-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0)
+                ));
+                crate::log::warn(
+                    "db",
+                    &format!("{} is damaged ({e}); kept as {}", file.display(), aside.display()),
+                );
+                std::fs::rename(file, &aside).map_err(|e| crate::Error::Io {
+                    path: file.to_path_buf(),
+                    source: e,
+                })?;
+                // Whatever the journal held belonged to the file just moved.
+                let _ = std::fs::remove_file(file.with_extension("sqlite3-journal"));
+                let _ = std::fs::remove_file(file.with_extension("sqlite3-wal"));
+                let _ = std::fs::remove_file(file.with_extension("sqlite3-shm"));
+                Self::open_file(file)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn open_file(file: &std::path::Path) -> Result<Self> {
+        let conn = Connection::open(file)?;
         configure(&conn);
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // Reading a page is what finds a damaged file: opening one only reads
+        // its header, so a broken page would surface later, on a screen.
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))?;
         let db = Db(Arc::new(Mutex::new(conn)));
         db.migrate()?;
         Ok(db)
@@ -401,4 +444,46 @@ mod journal_tests {
         assert!(!dir.join("db.sqlite3-shm").exists(), "no shared-memory file is left to map");
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[cfg(test)]
+mod damage_tests {
+    /// A file SQLite cannot read is moved aside and replaced, rather than
+    /// stopping Nexora from opening at all.
+    #[test]
+    fn a_damaged_database_is_kept_and_replaced() {
+        // Its own file, not NEXORA_HOME: the tests share one process, and a
+        // test that moved the real database aside would be a test that ate a
+        // developer's sites.
+        let dir = std::env::temp_dir().join(format!("nexora-db-damage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("nexora.sqlite3");
+        // A real header, then rubbish where the first page's rows belong.
+        {
+            let c = rusqlite::Connection::open(&file).unwrap();
+            c.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);").unwrap();
+        }
+        let mut bytes = std::fs::read(&file).unwrap();
+        for b in bytes.iter_mut().skip(100).take(400) {
+            *b = 0x7f;
+        }
+        std::fs::write(&file, &bytes).unwrap();
+
+        let db = super::Db::open_or_replace(&file).expect("Nexora opens on a fresh database");
+        assert!(db.tld().is_ok(), "and the new one works");
+        let kept: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("damaged-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "the damaged file is kept beside it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// SQLite could not read the file: damaged, or not a database at all.
+fn is_corrupt(e: &crate::Error) -> bool {
+    let text = e.to_string().to_lowercase();
+    text.contains("malformed") || text.contains("not a database") || text.contains("file is encrypted")
 }
