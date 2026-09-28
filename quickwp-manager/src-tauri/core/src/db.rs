@@ -49,41 +49,55 @@ impl Db {
             // kept beside the new one, so nothing is destroyed and it can still
             // be looked at.
             Err(e) if is_corrupt(&e) => {
-                let aside = file.with_extension(format!(
-                    "sqlite3.damaged-{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0)
-                ));
-                crate::log::warn(
-                    "db",
-                    &format!("{} is damaged ({e}); kept as {}", file.display(), aside.display()),
-                );
-                std::fs::rename(file, &aside).map_err(|e| crate::Error::Io {
-                    path: file.to_path_buf(),
-                    source: e,
-                })?;
-                // Whatever the journal held belonged to the file just moved.
-                let _ = std::fs::remove_file(file.with_extension("sqlite3-journal"));
-                let _ = std::fs::remove_file(file.with_extension("sqlite3-wal"));
-                let _ = std::fs::remove_file(file.with_extension("sqlite3-shm"));
+                let _ = Self::replace_damaged(file, &e)?;
                 Self::open_file(file)
             }
             Err(e) => Err(e),
         }
     }
 
-    fn open_file(file: &std::path::Path) -> Result<Self> {
+    /// One connection, set up the way every Nexora process sets one up.
+    fn connect(file: &std::path::Path) -> Result<Connection> {
         let conn = Connection::open(file)?;
         configure(&conn);
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        Ok(conn)
+    }
+
+    fn open_file(file: &std::path::Path) -> Result<Self> {
+        let conn = Self::connect(file)?;
         // Reading a page is what finds a damaged file: opening one only reads
         // its header, so a broken page would surface later, on a screen.
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))?;
         let db = Db(Arc::new(Mutex::new(conn)));
         db.migrate()?;
         Ok(db)
+    }
+
+    /// Move a file SQLite cannot read out of the way and answer with a
+    /// connection to the empty one that replaces it. The damaged file is kept:
+    /// it is the only copy of whatever was in it.
+    fn replace_damaged(file: &std::path::Path, why: &crate::Error) -> Result<Connection> {
+        let aside = file.with_extension(format!(
+            "sqlite3.damaged-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        ));
+        crate::log::warn(
+            "db",
+            &format!("{} is damaged ({why}); kept as {}", file.display(), aside.display()),
+        );
+        std::fs::rename(file, &aside).map_err(|e| crate::Error::Io {
+            path: file.to_path_buf(),
+            source: e,
+        })?;
+        // Whatever the journal held belonged to the file just moved.
+        let _ = std::fs::remove_file(file.with_extension("sqlite3-journal"));
+        let _ = std::fs::remove_file(file.with_extension("sqlite3-wal"));
+        let _ = std::fs::remove_file(file.with_extension("sqlite3-shm"));
+        Self::connect(file)
     }
 
     #[cfg(test)]
@@ -95,9 +109,38 @@ impl Db {
         Ok(db)
     }
 
-    pub fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let guard = self.0.lock().map_err(|_| crate::Error::other("db lock poisoned"))?;
-        f(&guard)
+    /// Run one piece of work against the database.
+    ///
+    /// A connection can report a damaged file while the file on disk is
+    /// perfectly readable -- seen in the wild during a first run, where it
+    /// left Nexora saying "could not read your sites" until it was restarted.
+    /// Rather than pass that on, the file itself is checked: when it is sound
+    /// the connection is thrown away, opened again and the work retried, and
+    /// when it is not the damaged file is kept aside and a new one takes its
+    /// place. Either way it is written to the log, because a connection that
+    /// goes bad for no visible reason is worth knowing about.
+    pub fn with<T>(&self, f: impl Fn(&Connection) -> Result<T>) -> Result<T> {
+        let mut guard = self.0.lock().map_err(|_| crate::Error::other("db lock poisoned"))?;
+        match f(&guard) {
+            Err(e) if is_corrupt(&e) => {
+                let file = crate::paths::db_file();
+                let verdict = integrity_of(&file);
+                crate::log::warn(
+                    "db",
+                    &format!("a read reported \"{e}\"; the file itself says: {verdict}"),
+                );
+                if verdict == "ok" {
+                    *guard = Self::connect(&file)?;
+                } else {
+                    *guard = Self::replace_damaged(&file, &e)?;
+                    // The new file is empty: it needs its tables before use.
+                    let fresh = Db(Arc::new(Mutex::new(Self::connect(&file)?)));
+                    fresh.migrate()?;
+                }
+                f(&guard)
+            }
+            other => other,
+        }
     }
 
     fn migrate(&self) -> Result<()> {
@@ -447,6 +490,54 @@ mod journal_tests {
 }
 
 #[cfg(test)]
+mod recovery_tests {
+    use std::cell::Cell;
+
+    /// The error a connection gives when it decides the file is damaged.
+    fn corrupt_error() -> crate::Error {
+        crate::Error::Db(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(11), // SQLITE_CORRUPT
+            Some("database disk image is malformed".into()),
+        ))
+    }
+
+    /// A connection that says the file is damaged when it is not: the work is
+    /// done again on a new connection rather than failing the screen that
+    /// asked for it. This is what left "could not read your sites" on screen
+    /// for the rest of a session.
+    #[test]
+    fn a_connection_that_goes_bad_is_replaced_and_the_work_retried() {
+        let dir = std::env::temp_dir().join(format!("nexora-db-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("nexora.sqlite3");
+        let db = super::Db::open_or_replace(&file).expect("open");
+
+        let calls = Cell::new(0);
+        let answer: i64 = db
+            .with(|c| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    return Err(corrupt_error());
+                }
+                Ok(c.query_row("SELECT 42", [], |r| r.get(0))?)
+            })
+            .expect("the retry answers");
+        assert_eq!(answer, 42);
+        assert_eq!(calls.get(), 2, "it was tried again, once");
+        // The file was sound, so nothing was moved aside.
+        let kept = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("damaged-"))
+            .count();
+        assert_eq!(kept, 0, "a sound file is left where it is");
+        assert!(db.tld().is_ok(), "and the database still works afterwards");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod damage_tests {
     /// A file SQLite cannot read is moved aside and replaced, rather than
     /// stopping Nexora from opening at all.
@@ -486,4 +577,15 @@ mod damage_tests {
 fn is_corrupt(e: &crate::Error) -> bool {
     let text = e.to_string().to_lowercase();
     text.contains("malformed") || text.contains("not a database") || text.contains("file is encrypted")
+}
+
+/// What SQLite says about the file itself, read through a new connection so a
+/// connection gone bad cannot answer for it.
+fn integrity_of(file: &std::path::Path) -> String {
+    match Connection::open(file).and_then(|c| {
+        c.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+    }) {
+        Ok(verdict) => verdict,
+        Err(e) => format!("could not be checked: {e}"),
+    }
 }

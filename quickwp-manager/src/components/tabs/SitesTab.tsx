@@ -16,6 +16,7 @@ import {
   EyeIcon,
   EyeSlashIcon,
   CheckIcon,
+  ArrowPathIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { Fragment } from "react";
@@ -743,6 +744,17 @@ export default function SitesTab({
             Could not read your sites
           </h2>
           <p className="text-xs text-red-800 leading-relaxed">{sitesError}</p>
+          {/* One failed read used to stay on screen for the rest of the
+              session: nothing asked again until something else changed. */}
+          <button
+            type="button"
+            onClick={() => void reloadSites()}
+            disabled={sitesLoading}
+            className="mt-3 inline-flex items-center gap-2 rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-900 transition-colors hover:bg-red-100 disabled:opacity-50"
+          >
+            <ArrowPathIcon className={clsx("h-3.5 w-3.5", sitesLoading && "animate-spin")} />
+            {sitesLoading ? "Trying again…" : "Try again"}
+          </button>
         </div>
       </div>
     );
