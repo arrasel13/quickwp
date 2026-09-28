@@ -30,6 +30,7 @@ const FETCH = {
   "tunnel-status": () => api.tunnelStatus(),
   "migrate-scan": () => api.migrateScan(),
   "import-scan": () => api.importScan(),
+  "browser-choices": () => api.browserChoices(),
   "service-updates": () => api.updatesList(),
 } as const;
 

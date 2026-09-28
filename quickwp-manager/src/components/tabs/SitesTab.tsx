@@ -15,11 +15,13 @@ import {
   ChevronRightIcon,
   EyeIcon,
   EyeSlashIcon,
+  CheckIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { Fragment } from "react";
 import SiteOverview from "../site/SiteOverview";
 import SitePreview, { type PreviewMode, type PreviewOnly } from "../site/SitePreview";
+import MagicLoginButton from "../site/MagicLoginButton";
 import SiteHeaderMenu from "../site/SiteHeaderMenu";
 import { usePref } from "../../lib/usePref";
 import SiteWordPress from "../site/SiteWordPress";
@@ -271,6 +273,9 @@ export default function SitesTab({
   // What Create is doing right now, shown beside the button.
   /** Why the last Create failed, shown under the form. */
   const [createError, setCreateError] = useState<string | null>(null);
+  /** The finished site, named while the dialog says so before closing. */
+  const [created, setCreated] = useState<{ id: string; domain: string } | null>(null);
+  const closeTimer = useRef<number | null>(null);
 
   // Project type options
   const projectOptions: ProjectOption[] = [
@@ -560,6 +565,11 @@ export default function SitesTab({
   }, [newSiteRequest]);
 
   const closeModal = () => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    setCreated(null);
     setIsModalOpen(false);
     setModalStep("select");
     setSelectedProjectType(null);
@@ -662,7 +672,6 @@ export default function SitesTab({
       });
 
       await api.phpStart(site.php_minor);
-      await api.stackStart();
 
       // A folder that already holds WordPress is linked as it is: `wp core
       // download --force` and a fresh wp-config.php would overwrite it.
@@ -683,10 +692,21 @@ export default function SitesTab({
         }
       }
 
+      // Served last: everything above is PHP run directly, and starting the
+      // web server mid-install listed the site before WordPress was in it.
+      await api.stackStart();
+
+      // Listed only now: a site half-way through its install would open in
+      // the details behind this dialog and report itself broken.
       await reloadSites();
-      // No success screen: the new site opens, and its Overview is the result.
-      closeModal();
-      select(String(site.id));
+      // Said, then left up for a moment: creating a site is quick enough now
+      // that closing at once reads as nothing having happened.
+      setCreated({ id: String(site.id), domain: site.domain });
+      closeTimer.current = window.setTimeout(() => {
+        closeTimer.current = null;
+        closeModal();
+        select(String(site.id));
+      }, 2500);
     } catch (e) {
       setCreateError(errorText(e));
       setIsInstalling(false);
@@ -770,7 +790,14 @@ export default function SitesTab({
           sidebarHidden && isMac ? "pt-10" : "pt-5",
         )}
       >
-        {selectedBackendSite && <SiteHeaderMenu site={selectedBackendSite} />}
+        <div className="flex items-center justify-between gap-3">
+          {selectedBackendSite && <SiteHeaderMenu site={selectedBackendSite} />}
+          {/* With the preview pane off there is no wp-admin beside the
+              details, so it opens in a real browser from here. */}
+          {!previewPane && selectedBackendSite?.kind === "wordpress" && (
+            <MagicLoginButton site={selectedBackendSite} />
+          )}
+        </div>
       </div>
 
       {/* Main Content */}
@@ -1418,6 +1445,11 @@ export default function SitesTab({
                           Back
                         </button>
                         <div className="flex min-w-0 items-center gap-3">
+                          {created && (
+                            <span className="truncate text-xs text-gray-600" aria-live="polite">
+                              {created.domain} is ready. Opening it…
+                            </span>
+                          )}
                           <button
                             onClick={() => void createSite()}
                             disabled={isInstalling || !canCreate}
@@ -1428,13 +1460,21 @@ export default function SitesTab({
                                 : undefined
                             }
                             className={clsx(
-                              "inline-flex flex-shrink-0 items-center gap-2 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2",
+                              "inline-flex flex-shrink-0 items-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2",
+                              created
+                                ? "bg-green-600 focus:ring-green-500"
+                                : "bg-blue-600 hover:bg-blue-700 focus:ring-blue-500",
                               isInstalling
                                 ? "cursor-wait"
                                 : "disabled:cursor-not-allowed disabled:opacity-50",
                             )}
                           >
-                            {isInstalling ? (
+                            {created ? (
+                              <>
+                                <CheckIcon className="h-4 w-4" />
+                                Site created
+                              </>
+                            ) : isInstalling ? (
                               <>
                                 <span
                                   aria-hidden

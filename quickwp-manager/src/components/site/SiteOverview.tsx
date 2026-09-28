@@ -9,7 +9,7 @@ import {
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import { api, errorText, hasBackend, Site, type DiskBreakdown } from "../../lib/api";
-import { peekCache, putCache } from "../../lib/useAsync";
+import { peekCache, putCache, useAsync } from "../../lib/useAsync";
 import { withKnownUpdates } from "./SiteWordPress";
 import { usePreferredApps } from "../../lib/usePreferredApps";
 import { openInPreview } from "../../lib/previewBus";
@@ -82,9 +82,14 @@ export default function SiteOverview({ site }: { site: Site }) {
   const [confirmReset, setConfirmReset] = useState(false);
   // Whether WordPress is set up in the site's database. A site whose database
   // was lost has its files and nothing to read: no theme, no users.
-  const [installState, setInstallState] = useState<
-    "installed" | "not_installed" | "no_database" | null
-  >(null);
+  //
+  // Keyed, so installing WordPress -- here, or by the dialog that created the
+  // site -- is read again rather than leaving this saying it is not set up.
+  const { data: installState } = useAsync<"installed" | "not_installed" | "no_database" | null>(
+    () => (isWordPress ? api.wpInstallState(site.domain) : Promise.resolve(null)),
+    [site.domain, isWordPress],
+    isWordPress ? `wp-install-state:${site.domain}` : undefined,
+  );
   const [settingUp, setSettingUp] = useState(false);
   // Bumped to read everything again, after setting WordPress up.
   const [refresh, setRefresh] = useState(0);
@@ -98,7 +103,6 @@ export default function SiteOverview({ site }: { site: Site }) {
     const d = site.domain;
     // A password set for the last site is not this site's password.
     setPassword(null);
-    setInstallState(null);
 
     // Paint what is already known -- from an earlier visit, or from the
     // WordPress tab, which shares these keys -- then refresh underneath.
@@ -180,12 +184,6 @@ export default function SiteOverview({ site }: { site: Site }) {
             if (live && saved) setPassword(saved);
           });
 
-        void api
-          .wpInstallState(d)
-          .then((state) => {
-            if (live) setInstallState(state);
-          })
-          .catch(() => {});
       }
     }
 

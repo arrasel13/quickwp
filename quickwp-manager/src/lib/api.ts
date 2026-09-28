@@ -519,6 +519,8 @@ export interface Settings {
   browser: string | null;
   quit_behavior: QuitBehavior;
   language: string;
+  /** Nexora is in the macOS menu bar. */
+  menu_bar: boolean;
 }
 
 export interface InstalledApp {
@@ -603,7 +605,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     );
   }
   const result = await invoke<T>(cmd, args);
-  const keys = changedBy(cmd);
+  const keys = changedBy(cmd, args);
   if (keys.length) for (const fn of changeListeners) fn(keys);
   return result;
 }
@@ -622,7 +624,11 @@ const CHANGES: [RegExp, string[]][] = [
   [/^(update_apply|updates_check)$/, [...SERVICES, "node-list", "node-lines", "adminer-status", "service-updates"]],
   [/^(stack_start|stack_stop|dns_start|dns_stop|remove_system_changes)$/, [...SERVICES, "doctor", "site-list"]],
   [/^https_(enable|trust_ca|regenerate_certs)$/, ["stack-status", "doctor", "site-list"]],
-  [/^site_(create|delete|duplicate|set_enabled|set_name|set_php|set_xdebug|change_domain|add_domain|remove_domain|move|regenerate_cert)$/, ["site-list", ...SERVICES]],
+  // Not site_create: a site is listed by the dialog that made it, once
+  // WordPress is in it. Listed the moment its folder exists, it appears
+  // half-built -- and, with nothing else selected, opens that way.
+  [/^site_create$/, [...SERVICES]],
+  [/^site_(delete|duplicate|set_enabled|set_name|set_php|set_xdebug|change_domain|add_domain|remove_domain|move|regenerate_cert)$/, ["site-list", ...SERVICES]],
   [/^migrate_(import|copy_database|apply_config)$/, ["site-list", "migrate-scan", "import-scan", ...SERVICES]],
   [/^import_sites$/, ["site-list", "migrate-scan", "import-scan", ...SERVICES]],
   [/^(wp_install|wp_core_update|wp_core_reinstall|wp_set_up_again|wp_reset_site)$/, ["site-list"]],
@@ -632,9 +638,24 @@ const CHANGES: [RegExp, string[]][] = [
   [/^setup_finish$/, ["setup-status"]],
 ];
 
-function changedBy(cmd: string): string[] {
+/**
+ * What a command changes about one site, by its domain: keys a screen reads
+ * per site rather than for the app as a whole.
+ */
+const SITE_CHANGES: [RegExp, (domain: string) => string[]][] = [
+  [
+    /^(wp_install|wp_set_up_again|wp_reset_site|wp_core_reinstall|wp_core_update)$/,
+    (d) => [`wp-install-state:${d}`, `site-info:${d}`, `wp-users:${d}`],
+  ],
+];
+
+function changedBy(cmd: string, args?: Record<string, unknown>): string[] {
   const keys = new Set<string>();
   for (const [re, ks] of CHANGES) if (re.test(cmd)) ks.forEach((k) => keys.add(k));
+  const domain = typeof args?.domain === "string" ? args.domain : null;
+  if (domain) {
+    for (const [re, ks] of SITE_CHANGES) if (re.test(cmd)) ks(domain).forEach((k) => keys.add(k));
+  }
   return [...keys];
 }
 
@@ -989,6 +1010,14 @@ export const api = {
     ),
   phpSystemList: () => call<SystemPhp[]>("php_system_list"),
   browserChoices: () => call<BrowserChoice[]>("browser_choices"),
+  /** Put Nexora in the menu bar, or take it out. Remembered. */
+  menuBarSet: (on: boolean) => call<void>("menu_bar_set", { on }),
+  /** The menu bar asked for a screen: "sites", "site", "services", "expose",
+   *  "about" or "window". */
+  onMenuOpen: (cb: (m: { screen: string; domain: string | null }) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<{ screen: string; domain: string | null }>("menu-open", (e) => cb(e.payload));
+  },
   /** Open the site in a chosen browser, in a normal or private window. */
   siteOpenInBrowser: (domain: string, browser: string | null, privateWindow: boolean) =>
     call<string>("site_open_in_browser", { domain, browser, private: privateWindow }),

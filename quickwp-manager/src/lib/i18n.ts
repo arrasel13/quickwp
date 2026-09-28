@@ -46,6 +46,11 @@ const en = {
   sidebar: "Sidebar",
   expanded: "Expanded",
   collapsed: "Collapsed",
+  menuBar: "Menu bar",
+  menuBarHint:
+    "Nexora in the macOS menu bar: what is running, the sites, and the way back to this window.",
+  menuBarShown: "Shown",
+  menuBarHidden: "Hidden",
   previewPane: "Preview pane",
   previewPaneHint:
     "The pane beside a site's details. Hidden, the logs, cron, mail and database it shows become tabs of the details.",
@@ -143,6 +148,11 @@ const translations: Record<string, Partial<Record<TKey, string>>> = {
     sidebar: "Barra lateral",
     expanded: "Expandida",
     collapsed: "Contraída",
+    menuBar: "Barra de menús",
+    menuBarHint:
+      "Nexora en la barra de menús de macOS: qué está en marcha, los sitios y la vuelta a esta ventana.",
+    menuBarShown: "Visible",
+    menuBarHidden: "Oculta",
     previewPane: "Panel de vista previa",
     previewPaneHint:
       "El panel junto a los detalles de un sitio. Oculto, los registros, el cron, el correo y la base de datos que muestra pasan a ser pestañas de los detalles.",
@@ -235,6 +245,11 @@ const translations: Record<string, Partial<Record<TKey, string>>> = {
     sidebar: "Barre latérale",
     expanded: "Dépliée",
     collapsed: "Réduite",
+    menuBar: "Barre des menus",
+    menuBarHint:
+      "Nexora dans la barre des menus de macOS : ce qui tourne, les sites, et le retour à cette fenêtre.",
+    menuBarShown: "Affichée",
+    menuBarHidden: "Masquée",
     previewPane: "Volet d'aperçu",
     previewPaneHint:
       "Le volet à côté des détails d'un site. Masqué, les journaux, le cron, les mails et la base de données qu'il affiche deviennent des onglets des détails.",
@@ -327,6 +342,11 @@ const translations: Record<string, Partial<Record<TKey, string>>> = {
     sidebar: "Seitenleiste",
     expanded: "Ausgeklappt",
     collapsed: "Eingeklappt",
+    menuBar: "Menüleiste",
+    menuBarHint:
+      "Nexora in der macOS-Menüleiste: was läuft, die Websites und der Weg zurück zu diesem Fenster.",
+    menuBarShown: "Eingeblendet",
+    menuBarHidden: "Ausgeblendet",
     previewPane: "Vorschaubereich",
     previewPaneHint:
       "Der Bereich neben den Details einer Website. Ausgeblendet werden Logs, Cron, Mail und Datenbank zu Tabs der Details.",
@@ -419,6 +439,10 @@ const translations: Record<string, Partial<Record<TKey, string>>> = {
     sidebar: "サイドバー",
     expanded: "展開",
     collapsed: "折りたたみ",
+    menuBar: "メニューバー",
+    menuBarHint: "macOS のメニューバーに Nexora を表示します。稼働状況・サイト・この画面への近道。",
+    menuBarShown: "表示",
+    menuBarHidden: "非表示",
     previewPane: "プレビューペイン",
     previewPaneHint:
       "サイトの詳細の横にあるペインです。非表示にすると、ログ・Cron・メール・データベースが詳細のタブになります。",
@@ -511,6 +535,10 @@ const translations: Record<string, Partial<Record<TKey, string>>> = {
     sidebar: "সাইডবার",
     expanded: "প্রসারিত",
     collapsed: "সংকুচিত",
+    menuBar: "মেনু বার",
+    menuBarHint: "macOS-এর মেনু বারে Nexora: কী চলছে, সাইটগুলো, আর এই উইন্ডোতে ফেরার পথ।",
+    menuBarShown: "দেখানো",
+    menuBarHidden: "লুকানো",
     previewPane: "প্রিভিউ প্যানেল",
     previewPaneHint:
       "সাইটের বিবরণের পাশের প্যানেল। লুকালে এর লগ, ক্রন, মেইল ও ডেটাবেস বিবরণের ট্যাব হয়ে যায়।",

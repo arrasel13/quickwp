@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod overlay;
+mod tray;
 mod preview;
 mod thumb;
 
@@ -3085,6 +3086,7 @@ fn settings_get(state: State<'_, AppState>) -> Res<serde_json::Value> {
             .map(|p| p.display().to_string()),
         "quit_behavior": state.app.db.setting("quit_behavior")?.unwrap_or_else(|| "ask".into()),
         "language": state.app.db.setting("language")?.unwrap_or_else(|| "en".into()),
+        "menu_bar": tray::wanted(&state),
     }))
 }
 
@@ -3133,6 +3135,18 @@ fn settings_set(state: State<'_, AppState>, key: String, value: String) -> Res<S
 
     state.app.db.set_setting(&key, &value)?;
     Ok("Saved.".into())
+}
+
+/// Put Nexora in the menu bar, or take it out, and remember which.
+#[tauri::command(async)]
+fn menu_bar_set(app: AppHandle, state: State<'_, AppState>, on: bool) -> Res<()> {
+    state.app.db.set_setting("menu_bar", if on { "on" } else { "off" })?;
+    if on {
+        tray::show(&app).map_err(|e| format!("The menu bar item could not be added: {e}"))?;
+    } else {
+        tray::hide(&app);
+    }
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -3574,6 +3588,17 @@ pub fn run() {
                     tauri::async_runtime::spawn(core::wpcore::warm());
                 });
             }
+            // The menu bar item, unless it was turned off. Before the update
+            // watcher: it is what someone sees first.
+            {
+                let handle = app.handle().clone();
+                if tray::wanted(&handle.state::<AppState>()) {
+                    if let Err(e) = tray::show(&handle) {
+                        qlog::warn("tray", &format!("could not add the menu bar item: {e}"));
+                    }
+                }
+                tray::watch(handle);
+            }
             watch_for_update(app.handle().clone());
             start_update_checks(app.handle().clone());
             // MySQL installed before trimming existed carries a debug server
@@ -3749,6 +3774,7 @@ pub fn run() {
             pty_close,
             settings_get,
             settings_set,
+            menu_bar_set,
             apps_installed,
             php_system_list,
             app_quit,

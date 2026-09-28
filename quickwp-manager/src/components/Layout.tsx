@@ -12,7 +12,7 @@ import clsx from "clsx";
 import { api, errorText, hasBackend, type Site } from "../lib/api";
 import { setLanguage, useT } from "../lib/i18n";
 import { SitesProvider, useSites } from "../lib/sites";
-import AppSettings from "./AppSettings";
+import AppSettings, { type Section } from "./AppSettings";
 import QuitDialog from "./QuitDialog";
 import UpdateOverlay from "./UpdateOverlay";
 import ConfirmDialog from "./ui/ConfirmDialog";
@@ -54,13 +54,37 @@ export default function Layout({ openNewSite = false }: { openNewSite?: boolean 
 
 function Shell({ openNewSite }: { openNewSite: boolean }) {
   const t = useT();
-  const { requestNewSite, fullPreview, setFullPreview, selected } = useSites();
+  const { requestNewSite, fullPreview, setFullPreview, selected, sites, select } = useSites();
   // Full preview gives the site the whole window. With no site to show --
   // the last one deleted -- it ends, or the sidebar would be gone for nothing.
   const immersive = fullPreview && selected !== null;
   useEffect(() => {
     if (fullPreview && !selected) setFullPreview(false);
   }, [fullPreview, selected]);
+
+  // The menu bar asked for a screen. The window is already up by the time
+  // this arrives; this decides what it shows.
+  useEffect(() => {
+    const off = api.onMenuOpen(({ screen, domain }) => {
+      setFullPreview(false);
+      if (screen === "site" && domain) {
+        const site = sites.find((s) => s.domain === domain);
+        if (site) select(String(site.id));
+        setSettingsOpen(false);
+        return;
+      }
+      if (screen === "sites" || screen === "window") {
+        setSettingsOpen(false);
+        return;
+      }
+      // Expose is a panel of the Services screen, so Tunnels opens that.
+      setSettingsSection(
+        screen === "about" ? "about" : screen === "expose" ? "services" : "services",
+      );
+      setSettingsOpen(true);
+    });
+    return () => void off.then((f) => f());
+  }, [sites, select]);
   // Arriving from setup's "Start Build": open the New site dialog at once.
   // Once only -- the ref survives StrictMode's second effect run.
   const openedNewSite = useRef(false);
@@ -75,6 +99,7 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
   // preview's views as tabs of their own. Held here, so App settings sets it.
   const [previewPane, setPreviewPane] = usePref("nexora.preview-pane", true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<Section>("settings");
 
   useEffect(() => {
     if (!hasBackend) return;
@@ -188,6 +213,8 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
         onSidebarCollapsedChange={setCollapsed}
         previewPane={previewPane}
         onPreviewPaneChange={setPreviewPane}
+        section={settingsSection}
+        onSectionChange={setSettingsSection}
       />
       <QuitDialog />
       <UpdateOverlay />

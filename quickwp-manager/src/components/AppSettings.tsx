@@ -29,7 +29,7 @@ const SELECT = clsx(FIELD, "w-60 pr-8");
 
 const QUIT_CHOICES: QuitBehavior[] = ["ask", "keep", "restart", "stop"];
 
-type Section = "settings" | "services" | "storage" | "general" | "about";
+export type Section = "settings" | "services" | "storage" | "general" | "about";
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "settings", label: "tab.settings" },
   { id: "services", label: "nav.Services" },
@@ -55,6 +55,9 @@ interface Props {
   /** The preview pane beside a site's details is shown. */
   previewPane: boolean;
   onPreviewPaneChange: (shown: boolean) => void;
+  /** Which screen it opens on: the menu bar asks for one by name. */
+  section: Section;
+  onSectionChange: (section: Section) => void;
 }
 
 /** App-wide preferences, as a sheet over the whole window. */
@@ -65,9 +68,10 @@ export default function AppSettings({
   onSidebarCollapsedChange,
   previewPane,
   onPreviewPaneChange,
+  section,
+  onSectionChange: setSection,
 }: Props) {
   const t = useT();
-  const [section, setSection] = useState<Section>("settings");
   // Normally already done in the background; opened straight away, it starts
   // here, and every tab still paints what has arrived.
   useEffect(() => {
@@ -320,6 +324,7 @@ type Draft = {
   quit_behavior: string;
   sidebar: boolean;
   preview: boolean;
+  menuBar: boolean;
 };
 
 function SettingsSection({
@@ -349,6 +354,7 @@ function SettingsSection({
         quit_behavior: settings.quit_behavior ?? "ask",
         sidebar: sidebarCollapsed,
         preview: previewPane,
+        menuBar: settings.menu_bar,
       }
     : null;
 
@@ -390,6 +396,9 @@ function SettingsSection({
             break;
           case "preview":
             onPreviewPaneChange(current.preview);
+            break;
+          case "menuBar":
+            await api.menuBarSet(current.menuBar);
             break;
           case "tld":
             await api.settingsSet("tld", current.tld.trim().replace(/^\./, ""));
@@ -461,6 +470,29 @@ function SettingsSection({
               className={clsx(
                 "h-8 px-4 text-[13px] rounded-sm transition-colors",
                 current?.sidebar === o.value
+                  ? "ring-1 ring-gray-900 text-gray-900"
+                  : "text-gray-500 hover:text-gray-900",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </Row>
+
+      <Row label={t("menuBar")} hint={t("menuBarHint")}>
+        <div className="inline-flex rounded-sm border border-gray-300 bg-white p-0.5">
+          {[
+            { label: t("menuBarShown"), value: true },
+            { label: t("menuBarHidden"), value: false },
+          ].map((o) => (
+            <button
+              key={String(o.value)}
+              onClick={() => set("menuBar", o.value)}
+              aria-pressed={current?.menuBar === o.value}
+              className={clsx(
+                "h-8 px-4 text-[13px] rounded-sm transition-colors",
+                current?.menuBar === o.value
                   ? "ring-1 ring-gray-900 text-gray-900"
                   : "text-gray-500 hover:text-gray-900",
               )}
