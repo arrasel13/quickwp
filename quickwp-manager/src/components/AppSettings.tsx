@@ -52,10 +52,20 @@ interface Props {
   onClose: () => void;
   sidebarCollapsed: boolean;
   onSidebarCollapsedChange: (collapsed: boolean) => void;
+  /** The preview pane beside a site's details is shown. */
+  previewPane: boolean;
+  onPreviewPaneChange: (shown: boolean) => void;
 }
 
 /** App-wide preferences, as a sheet over the whole window. */
-export default function AppSettings({ open, onClose, sidebarCollapsed, onSidebarCollapsedChange }: Props) {
+export default function AppSettings({
+  open,
+  onClose,
+  sidebarCollapsed,
+  onSidebarCollapsedChange,
+  previewPane,
+  onPreviewPaneChange,
+}: Props) {
   const t = useT();
   const [section, setSection] = useState<Section>("settings");
   // Normally already done in the background; opened straight away, it starts
@@ -148,6 +158,8 @@ export default function AppSettings({ open, onClose, sidebarCollapsed, onSidebar
                   <SettingsSection
                     sidebarCollapsed={sidebarCollapsed}
                     onSidebarCollapsedChange={onSidebarCollapsedChange}
+                    previewPane={previewPane}
+                    onPreviewPaneChange={onPreviewPaneChange}
                   />
                 ) : (
                   // Bringing sites in from Herd, Valet, LocalWP, rexenv or a folder.
@@ -307,12 +319,18 @@ type Draft = {
   tld: string;
   quit_behavior: string;
   sidebar: boolean;
+  preview: boolean;
 };
 
 function SettingsSection({
   sidebarCollapsed,
   onSidebarCollapsedChange,
-}: Pick<Props, "sidebarCollapsed" | "onSidebarCollapsedChange">) {
+  previewPane,
+  onPreviewPaneChange,
+}: Pick<
+  Props,
+  "sidebarCollapsed" | "onSidebarCollapsedChange" | "previewPane" | "onPreviewPaneChange"
+>) {
   const t = useT();
   const { data: settings, reload } = useAppData("settings");
   const { data: apps } = useAppData("apps-installed");
@@ -330,6 +348,7 @@ function SettingsSection({
         tld: settings.tld,
         quit_behavior: settings.quit_behavior ?? "ask",
         sidebar: sidebarCollapsed,
+        preview: previewPane,
       }
     : null;
 
@@ -338,7 +357,7 @@ function SettingsSection({
   const edited = useRef(false);
   useEffect(() => {
     if (saved && !edited.current) setDraft(saved);
-  }, [settings, sidebarCollapsed]);
+  }, [settings, sidebarCollapsed, previewPane]);
 
   const current = draft ?? saved;
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => {
@@ -368,6 +387,9 @@ function SettingsSection({
         switch (key) {
           case "sidebar":
             onSidebarCollapsedChange(current.sidebar);
+            break;
+          case "preview":
+            onPreviewPaneChange(current.preview);
             break;
           case "tld":
             await api.settingsSet("tld", current.tld.trim().replace(/^\./, ""));
@@ -439,6 +461,29 @@ function SettingsSection({
               className={clsx(
                 "h-8 px-4 text-[13px] rounded-sm transition-colors",
                 current?.sidebar === o.value
+                  ? "ring-1 ring-gray-900 text-gray-900"
+                  : "text-gray-500 hover:text-gray-900",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </Row>
+
+      <Row label={t("previewPane")} hint={t("previewPaneHint")}>
+        <div className="inline-flex rounded-sm border border-gray-300 bg-white p-0.5">
+          {[
+            { label: t("previewShown"), value: true },
+            { label: t("previewHidden"), value: false },
+          ].map((o) => (
+            <button
+              key={String(o.value)}
+              onClick={() => set("preview", o.value)}
+              aria-pressed={current?.preview === o.value}
+              className={clsx(
+                "h-8 px-4 text-[13px] rounded-sm transition-colors",
+                current?.preview === o.value
                   ? "ring-1 ring-gray-900 text-gray-900"
                   : "text-gray-500 hover:text-gray-900",
               )}

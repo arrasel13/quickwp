@@ -45,7 +45,9 @@ export default function ServicesTab({ updates }: { updates?: ServiceUpdates }) {
 
   useEffect(() => {
     let un: (() => void) | undefined;
-    void api.onDownloadProgress(setProgress).then((f) => {
+    // Only this screen's own downloads: WordPress, fetched while a site is
+    // created, is not a service being installed here.
+    void api.onDownloadProgress((p) => p.id !== "wordpress" && setProgress(p)).then((f) => {
       un = f as () => void;
     });
     return () => un?.();

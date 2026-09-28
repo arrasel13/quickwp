@@ -19,6 +19,7 @@ import ConfirmDialog from "./ui/ConfirmDialog";
 import markUrl from "../assets/nexora-mark.svg";
 import SitesTab from "./tabs/SitesTab";
 import { startAppData } from "../lib/appData";
+import { usePref } from "../lib/usePref";
 
 // The window has no title bar on macOS (tauri.conf.json: titleBarStyle
 // "Overlay"), so the traffic lights sit on top of the sidebar and the strip
@@ -70,6 +71,9 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
     }
   }, [openNewSite]);
   const [collapsed, setCollapsed] = useState(readCollapsed);
+  // The preview pane beside the details, or the details on their own with the
+  // preview's views as tabs of their own. Held here, so App settings sets it.
+  const [previewPane, setPreviewPane] = usePref("nexora.preview-pane", true);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
@@ -169,7 +173,7 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
             !immersive && collapsed && "ml-2",
           )}
         >
-          <SitesTab sidebarHidden={collapsed && !immersive} />
+          <SitesTab sidebarHidden={collapsed && !immersive} previewPane={previewPane} />
         </main>
       </div>
 
@@ -182,6 +186,8 @@ function Shell({ openNewSite }: { openNewSite: boolean }) {
         onClose={() => setSettingsOpen(false)}
         sidebarCollapsed={collapsed}
         onSidebarCollapsedChange={setCollapsed}
+        previewPane={previewPane}
+        onPreviewPaneChange={setPreviewPane}
       />
       <QuitDialog />
       <UpdateOverlay />

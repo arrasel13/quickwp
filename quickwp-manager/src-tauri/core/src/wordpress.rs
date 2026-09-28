@@ -132,21 +132,26 @@ pub fn install(
     db_series: &str,
     creds: &database::DbCredentials,
     url: &str,
+    core_ready: bool,
 ) -> Result<WpInstallResult> {
     let _ = db_series;
 
-    // 1. core
+    // 1. core, unless it is already unpacked from the release Nexora keeps
+    // (see `wpcore`), which is the usual way in.
+    //
     // NOT --skip-content: that omits wp-content, leaving a site with no theme
     // that renders an empty page and reports zero plugins. The default themes
     // are what makes a fresh install look like WordPress.
-    let mut c = wp(site)?;
-    c.args(["core", "download", "--force"]);
-    if let Some(v) = &req.version {
-        if v != "latest" {
-            c.arg(format!("--version={v}"));
+    if !core_ready {
+        let mut c = wp(site)?;
+        c.args(["core", "download", "--force"]);
+        if let Some(v) = &req.version {
+            if v != "latest" {
+                c.arg(format!("--version={v}"));
+            }
         }
+        run(c, "Downloading WordPress")?;
     }
-    run(c, "Downloading WordPress")?;
 
     // 2. wp-config.php
     //

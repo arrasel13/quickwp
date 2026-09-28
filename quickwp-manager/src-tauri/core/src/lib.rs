@@ -28,6 +28,7 @@ pub mod probe;
 pub mod wporg;
 pub mod mariadb;
 pub mod updates;
+pub mod wpcore;
 
 /// Today's date, "YYYY-MM-DD" in UTC: enough for comparing to end-of-life days.
 pub fn mariadb_today() -> String {

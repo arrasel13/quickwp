@@ -48,6 +48,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("ok  ({})", creds.name);
 
     step("5/7", "installing WordPress");
+    // The release Nexora keeps, as the app does it: downloaded once, resumed
+    // if it stalls, unpacked from disk here.
+    let archive = core::wpcore::ensure(None, |_| {}).await?;
+    core::wpcore::unpack(&archive, std::path::Path::new(&site.docroot))?;
     let res = core::wordpress::install(
         &site,
         &core::wordpress::WpInstallRequest {
@@ -60,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         series,
         &creds,
         &format!("http://{domain}"),
+        true,
     )?;
     core::site::set_database(&app.db, site.id, series, &creds.name)?;
     println!("ok  (admin password shown once: {})", res.admin_password);

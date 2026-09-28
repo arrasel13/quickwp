@@ -126,6 +126,34 @@ fn start_stack(app: &Nexora, edge: &Mutex<Option<server::Edge>>) -> core::Result
     Ok(())
 }
 
+/// Start what a new site needs, without serving anything: the database and the
+/// default PHP pool.
+///
+/// Run at launch, so creating a site never stops to start MySQL -- which took
+/// seconds in the middle of the New site dialog, and said so. Neither is
+/// fatal: a machine whose database will not start still shows its sites.
+fn warm_services(app: &Nexora) {
+    let series = app
+        .db
+        .setting("db_series")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| runtime::MYSQL_SERIES[0].to_string());
+    if database::is_installed(&series) {
+        match database::start(&app.sup, &series) {
+            Ok(_) => app.ensure_site_databases(&series),
+            Err(e) => qlog::warn("app", &format!("could not start MySQL {series} at launch: {e}")),
+        }
+    }
+    if let Ok(default) = app.db.default_php() {
+        if runtime::is_installed(&default, "fpm") {
+            if let Err(e) = php::start_pool(&app.sup, &default) {
+                qlog::warn("app", &format!("could not start PHP {default} at launch: {e}"));
+            }
+        }
+    }
+}
+
 /// Start the stack if Nexora's web server is not up, so a site opened from
 /// here loads instead of failing to connect.
 fn ensure_serving(state: &AppState) -> Res<()> {
@@ -2011,8 +2039,9 @@ fn wp_status(state: State<'_, AppState>, domain: String) -> Res<WpStatus> {
 }
 
 /// Install WordPress into an existing site: database, config, core, admin.
-#[tauri::command(async)]
-fn wp_install(
+#[tauri::command]
+async fn wp_install(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     domain: String,
     req: wordpress::WpInstallRequest,
@@ -2031,7 +2060,41 @@ fn wp_install(
     let creds = database::create_for_site(&series, &site.domain)?;
     let url = canonical_url(&state, &site.domain)?;
 
-    let res = wordpress::install(&site, &req, &series, &creds, &url)?;
+    // WordPress comes from the release Nexora keeps: downloaded once, resumed
+    // if the connection stalls, and unpacked from disk for every site after
+    // the first. WP-CLI's own download stays as the way back, for a machine
+    // that cannot reach wordpress.org's archive but can reach its API.
+    let core_ready = match core::wpcore::ensure(req.version.as_deref(), {
+        let app = app.clone();
+        move |p: runtime::Progress| {
+            let _ = app.emit(
+                "download-progress",
+                serde_json::json!({
+                    "id": "wordpress",
+                    "minor": "",
+                    "component": p.component,
+                    "received": p.received,
+                    "total": p.total,
+                }),
+            );
+        }
+    })
+    .await
+    {
+        Ok(archive) => match core::wpcore::unpack(&archive, std::path::Path::new(&site.docroot)) {
+            Ok(()) => true,
+            Err(e) => {
+                qlog::warn("wordpress", &format!("could not unpack the release: {e}"));
+                false
+            }
+        },
+        Err(e) => {
+            qlog::warn("wordpress", &format!("could not fetch the release: {e}"));
+            false
+        }
+    };
+
+    let res = wordpress::install(&site, &req, &series, &creds, &url, core_ready)?;
 
     site::set_database(&state.app.db, site.id, &series, &creds.name)?;
     Ok(res)
@@ -3501,7 +3564,14 @@ pub fn run() {
                         if let Err(e) = start_stack(&st.app, &st.edge) {
                             qlog::warn("app", &format!("could not start serving sites at launch: {e}"));
                         }
+                    } else {
+                        // Nothing to serve yet, but MySQL and PHP are what the
+                        // first site will want the moment it is created.
+                        warm_services(&st.app);
                     }
+                    // And WordPress itself, so creating that site is unpacking
+                    // an archive rather than waiting on 35 MB.
+                    tauri::async_runtime::spawn(core::wpcore::warm());
                 });
             }
             watch_for_update(app.handle().clone());

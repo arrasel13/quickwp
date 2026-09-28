@@ -19,7 +19,7 @@ import {
 import clsx from "clsx";
 import { Fragment } from "react";
 import SiteOverview from "../site/SiteOverview";
-import SitePreview, { type PreviewMode } from "../site/SitePreview";
+import SitePreview, { type PreviewMode, type PreviewOnly } from "../site/SitePreview";
 import SiteHeaderMenu from "../site/SiteHeaderMenu";
 import { usePref } from "../../lib/usePref";
 import SiteWordPress from "../site/SiteWordPress";
@@ -178,7 +178,14 @@ interface ProjectOption {
   available?: boolean;
 }
 
-export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: boolean }) {
+export default function SitesTab({
+  sidebarHidden = false,
+  previewPane = true,
+}: {
+  sidebarHidden?: boolean;
+  /** The preview pane is on: off, what it shows becomes tabs in the details. */
+  previewPane?: boolean;
+}) {
   // Real sites, from the Rust backend. There is no mock data here any more:
   // an empty list means you have not created a site yet, and says so.
   // Whether the stack can serve a real name yet decides which URL is honest.
@@ -262,7 +269,6 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
   const [wpVersions, setWpVersions] = useState<string[]>(WP_FALLBACK_VERSIONS);
   const [isInstalling, setIsInstalling] = useState(false);
   // What Create is doing right now, shown beside the button.
-  const [currentStep, setCurrentStep] = useState("");
   /** Why the last Create failed, shown under the form. */
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -326,6 +332,23 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
     { name: "Debugging", id: "debugging" },
   ];
 
+  // With the preview pane off, what it showed -- the logs, cron, the mail and
+  // the database -- becomes a tab of the details instead.
+  const paneTabs: { name: string; id: string; view: PreviewOnly }[] =
+    previewPane || !selectedBackendSite
+      ? []
+      : [
+          { name: "Logs", id: "logs", view: "logs" },
+          ...(selectedBackendSite.kind === "wordpress"
+            ? [{ name: "Cron", id: "cron", view: "cron" as const }]
+            : []),
+          { name: "Mail", id: "mail", view: "mail" },
+          ...(selectedBackendSite.db_name
+            ? [{ name: "Database", id: "database", view: "database" as const }]
+            : []),
+        ];
+  const allTabs = [...siteDetailTabs, ...paneTabs];
+
   // A dot on Settings while WordPress has a newer release: the update is
   // applied there, and this is the only hint of it from the other tabs.
   const wpDomain = selectedBackendSite?.kind === "wordpress" ? selectedBackendSite.domain : "";
@@ -351,6 +374,12 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
     setSiteTab(DEFAULT_SITE_TAB);
     setVisited(new Set([DEFAULT_SITE_TAB]));
   }, [selectedId]);
+  // The preview pane came back, or this site has no database: a tab that is
+  // no longer there cannot stay selected.
+  const tabCount = siteDetailTabs.length + paneTabs.length;
+  useEffect(() => {
+    if (siteTab >= tabCount) setSiteTab(DEFAULT_SITE_TAB);
+  }, [tabCount, siteTab]);
 
   // Settings is ready before it is clicked. Once Overview has had its turn,
   // its WordPress values are read in the background and the tab is built
@@ -374,7 +403,9 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
 
   // The live preview beside the details. Open, the details can be hidden to
   // give it the whole sheet ("full preview"); closed, the details have it.
-  const [previewOpen, setPreviewOpen] = usePref("nexora.preview-open", true);
+  const [previewShown, setPreviewOpen] = usePref("nexora.preview-open", true);
+  // Turned off in settings, the pane is gone whether or not it was left open.
+  const previewOpen = previewPane && previewShown;
   // Full preview hides the sidebar too, so it is shared with the layout.
   const { fullPreview, setFullPreview } = useSites();
   const [previewMode, setPreviewMode] = usePref<PreviewMode>("nexora.preview-mode", "fit");
@@ -382,6 +413,10 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
   const [resizing, setResizing] = useState(false);
   const splitRef = useRef<HTMLDivElement>(null);
   const detailsHidden = previewOpen && fullPreview;
+  // No pane to fill the window with.
+  useEffect(() => {
+    if (!previewPane) setFullPreview(false);
+  }, [previewPane]);
 
   // A deleted site, or one moved to another domain, leaves no page behind.
   const domainsKey = (backendSites ?? []).map((s) => s.domain).join("\n");
@@ -533,7 +568,6 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
     setShowPassword(false);
     setPathStatus(null);
     setCreateError(null);
-    setCurrentStep("");
     setIsInstalling(false);
   };
 
@@ -597,15 +631,12 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
         // Only what is genuinely missing is fetched -- normally nothing, since
         // the first run installs both.
         if (!engine.installed) {
-          setCurrentStep(`Downloading MySQL ${engine.series}…`);
           await api.dbInstall(engine.series);
         }
         if (!engine.running) {
-          setCurrentStep("Starting MySQL…");
           await api.dbStart(engine.series);
         }
         if (!cliReady) {
-          setCurrentStep("Downloading WP-CLI…");
           await api.wpEnsureCli();
         }
       }
@@ -622,7 +653,6 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
         adoptExisting = status === "wordpress";
       }
 
-      setCurrentStep("Creating the site…");
       const site = await api.siteCreate({
         name: config.siteTitle || config.folderName,
         domain: config.siteUrl,
@@ -631,7 +661,6 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
         link_path: wantsWordPress && config.pathChosen ? config.localPath : null,
       });
 
-      setCurrentStep("Starting PHP…");
       await api.phpStart(site.php_minor);
       await api.stackStart();
 
@@ -639,7 +668,6 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
       // download --force` and a fresh wp-config.php would overwrite it.
       if (wantsWordPress && !adoptExisting) {
         const pinned = config.wpVersionMode === "pick" && config.wpVersion ? config.wpVersion : null;
-        setCurrentStep("Installing WordPress…");
         // The admin password goes to the login keychain, so Overview can copy it.
         await api.wpInstall(site.domain, {
           title: config.siteTitle || site.domain,
@@ -662,7 +690,6 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
     } catch (e) {
       setCreateError(errorText(e));
       setIsInstalling(false);
-      setCurrentStep("");
     }
   };
 
@@ -760,7 +787,7 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
             {/* Scrolls sideways when the details pane is too narrow for
                 every tab. */}
             <Tab.List data-tauri-drag-region="deep" className="no-scrollbar flex flex-shrink-0 gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-2">
-              {siteDetailTabs.map((tab) => (
+              {allTabs.map((tab) => (
                 <Tab
                   key={tab.id}
                   className={({ selected }) =>
@@ -850,11 +877,30 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
                     </p>
                   ))}
               </LazyPanel>
+              {/* The preview's own views, each as a tab: only the one open is
+                  mounted, so one of them at a time drives the page. */}
+              {paneTabs.map((tab) => (
+                <Tab.Panel key={tab.id} className="h-full">
+                  {selectedBackendSite && (
+                    <SitePreview
+                      site={selectedBackendSite}
+                      only={tab.view}
+                      visible
+                      mode={previewMode}
+                      onModeChange={setPreviewMode}
+                      fullPreview={false}
+                      onFullPreviewChange={() => {}}
+                      httpsReady={httpsReady}
+                    />
+                  )}
+                </Tab.Panel>
+              ))}
             </Tab.Panels>
           </Tab.Group>
         </div>
       </div>
       {/* The foot of the details, where the preview is shown and hidden. */}
+      {previewPane && (
       <div className="flex h-10 flex-shrink-0 items-center justify-end border-t border-gray-200 bg-white px-2">
         <button
           type="button"
@@ -870,6 +916,7 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
           <DrawerRightIcon className="h-5 w-5" />
         </button>
       </div>
+      )}
       </div>
 
       {previewOpen && !detailsHidden && (
@@ -881,7 +928,7 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
         />
       )}
       {/* Kept mounted while closed, so it remembers the page it was on. */}
-      {selectedBackendSite && (
+      {previewPane && selectedBackendSite && (
         <div className={clsx("min-w-0 flex-1", !previewOpen && "hidden")}>
           <SitePreview
             site={selectedBackendSite}
@@ -1371,11 +1418,6 @@ export default function SitesTab({ sidebarHidden = false }: { sidebarHidden?: bo
                           Back
                         </button>
                         <div className="flex min-w-0 items-center gap-3">
-                          {isInstalling && currentStep && (
-                            <span className="truncate text-xs text-gray-500" aria-live="polite">
-                              {currentStep}
-                            </span>
-                          )}
                           <button
                             onClick={() => void createSite()}
                             disabled={isInstalling || !canCreate}

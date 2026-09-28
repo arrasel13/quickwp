@@ -45,6 +45,13 @@ const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent
  * park out of sight.
  */
 type View = PreviewView | "logs" | "mail" | "cron";
+
+/**
+ * The views the details pane can show on its own, when the preview pane is
+ * turned off in settings. The site itself and wp-admin are not among them:
+ * they are the preview.
+ */
+export type PreviewOnly = "logs" | "cron" | "mail" | "database";
 const PAGES: View[] = ["site", "admin", "database"];
 
 export type PreviewMode = "fit" | "mobile" | "tablet" | "desktop" | "both";
@@ -291,6 +298,7 @@ export default function SitePreview({
   onFullPreviewChange,
   onReveal,
   httpsReady,
+  only,
 }: {
   site: Site;
   /** False while the pane is closed or being resized. */
@@ -304,11 +312,17 @@ export default function SitePreview({
   onReveal?: () => void;
   /** Nexora's HTTPS is set up: its CA trusted and the edge serving TLS. */
   httpsReady: boolean;
+  /**
+   * Show only this view, without the chooser: the details pane gives each of
+   * them a tab of its own when the preview pane is off.
+   */
+  only?: PreviewOnly;
 }) {
   const { reload: reloadSites } = useSites();
+  const embedded = only != null;
   const paneRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<Box | null>(null);
-  const [view, setView] = useState<View>(() => viewOf.get(site.domain) ?? "site");
+  const [view, setView] = useState<View>(() => only ?? viewOf.get(site.domain) ?? "site");
   const [dbUrl, setDbUrl] = useState<string | null>(() => cachedDatabaseUrl(site.domain));
   const [pages, setPages] = useState<Partial<Record<PreviewView, { url: string; loading: boolean }>>>({});
   const [error, setError] = useState<string | null>(null);
@@ -352,8 +366,12 @@ export default function SitePreview({
   const isWordPress = site.kind === "wordpress";
 
   // A view the site does not have falls back to the site itself.
-  const current: View =
-    ((view === "admin" || view === "cron") && !isWordPress) || (view === "database" && !(site.db_name && dbUrl))
+  // Shown on its own, the view stays put: a database still opening is the
+  // database, not the site.
+  const current: View = only
+    ? only
+    : ((view === "admin" || view === "cron") && !isWordPress) ||
+        (view === "database" && !(site.db_name && dbUrl))
       ? "site"
       : view;
   /** The page behind the current view, when the view is a page at all. */
@@ -405,7 +423,7 @@ export default function SitePreview({
   );
   const showing = hasBackend && visible && site.enabled && !covered && placed.length > 0;
   /** A page is on screen: Logs and Mail are drawn in its place. */
-  const showingPage = showing && nativeView !== null;
+  const showingPage = showing && nativeView !== null && (current !== "database" || !!dbUrl);
   const toWindow = (f: Placed): PreviewFrame => ({
     slot: f.slot,
     x: f.x + (box?.left ?? 0),
@@ -430,6 +448,24 @@ export default function SitePreview({
     // Sent; a later layout -- a resize, say -- must not ask for it again.
     if (showingPage && adminPath) setAdminPath(null);
   }, [site.domain, current, nativeView, dbUrl, adminPath, showingPage, placed, box]);
+
+  // The tab chose it: follow that, and ask for Adminer's address, which the
+  // preview pane would have asked for when the site view loaded.
+  useEffect(() => {
+    if (!only) return;
+    setView(only);
+    setError(null);
+    if (only !== "database" || dbUrl || !site.db_name || !site.enabled) return;
+    let live = true;
+    setDbBusy(true);
+    void freshDatabaseUrl(site.domain)
+      .then((u) => live && setDbUrl(u))
+      .catch((e) => live && setError(errorText(e)))
+      .finally(() => live && setDbBusy(false));
+    return () => {
+      live = false;
+    };
+  }, [only, site.domain, site.enabled, site.db_name, dbUrl]);
 
   // A shortcut in the details: show that page of wp-admin, starting the site
   // when it is not running. The path rides with the layout below, so the view
@@ -467,7 +503,7 @@ export default function SitePreview({
 
   // Another site: back to the view it was left on, with nothing reported yet.
   useEffect(() => {
-    setView(viewOf.get(site.domain) ?? "site");
+    setView(only ?? viewOf.get(site.domain) ?? "site");
     setDbUrl(cachedDatabaseUrl(site.domain));
     setPages({});
     setError(null);
@@ -628,8 +664,16 @@ export default function SitePreview({
           label: m.label,
           checked: mode === m.id,
         })),
-        { kind: "separator" },
-        { kind: "item", id: "full", label: fullPreview ? "Exit full preview" : "Full preview" },
+        ...(embedded
+          ? []
+          : [
+              { kind: "separator" as const },
+              {
+                kind: "item" as const,
+                id: "full",
+                label: fullPreview ? "Exit full preview" : "Full preview",
+              },
+            ]),
       ],
     });
     setMenuOpen(null);
@@ -716,7 +760,10 @@ export default function SitePreview({
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-white">
-      {/* The toolbar. Its empty space moves the window, like the header. */}
+      {/* The toolbar. Its empty space moves the window, like the header.
+          A view of this window's own -- the logs, cron, the mail -- has
+          nothing to put in it when it is a tab of the details. */}
+      {(!embedded || nativeView) && (
       <div
         data-tauri-drag-region
         className={clsx(
@@ -765,7 +812,7 @@ export default function SitePreview({
           {/* What the preview shows: the site, WordPress admin, or the
               database. The one it is on carries its name. Only while the
               site is running: stopped, there is nothing to show. */}
-          {live && (
+          {live && !embedded && (
           <div
             role="group"
             aria-label="Show in the preview"
@@ -896,6 +943,7 @@ export default function SitePreview({
           </button>
         )}
       </div>
+      )}
 
       {/* A page load in progress, under the toolbar. */}
       <div className="relative h-0.5 flex-shrink-0 overflow-hidden">

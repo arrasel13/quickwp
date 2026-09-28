@@ -73,6 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         series,
         &creds,
         &url,
+        // This harness exercises WP-CLI's own download, the way back when
+        // wordpress.org's archive cannot be reached.
+        false,
     )?;
     println!("ok  ({:.0}s)", t.elapsed().as_secs_f32());
     println!("      core {}", core::wordpress::core_version(&site)?);
