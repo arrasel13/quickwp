@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   PlayIcon,
   StopIcon,
@@ -10,8 +10,17 @@ import {
   LockOpenIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
-import { api, errorText, hasBackend, Finding, PreflightCheck, VerifyReport } from "../../lib/api";
+import {
+  api,
+  errorText,
+  hasBackend,
+  Finding,
+  PreflightCheck,
+  VerifyReport,
+  type UninstallReport,
+} from "../../lib/api";
 import { useAppData } from "../../lib/appData";
+import ConfirmDialog from "../ui/ConfirmDialog";
 
 const LEVEL_STYLE: Record<string, { ring: string; icon: typeof CheckCircleIcon; tone: string }> = {
   ok: { ring: "border-green-200 bg-green-50", icon: CheckCircleIcon, tone: "text-green-700" },
@@ -473,6 +482,15 @@ export default function GeneralTab() {
           </div>
         </section>
 
+        {/* ------------------------------------------------ danger zone */}
+        <section>
+          <h2 className={clsx(SECTION, "text-red-900")}>Danger zone</h2>
+          <p className="mt-0.5 mb-3 text-[13px] text-gray-500">
+            Taking Nexora off this Mac. Your sites' folders are never touched.
+          </p>
+          <UninstallPanel />
+        </section>
+
       </div>
 
       <p className="text-[11px] text-gray-500 leading-relaxed max-w-3xl">
@@ -481,6 +499,131 @@ export default function GeneralTab() {
           : `Sites are reachable through the edge on port ${status?.edge_port ?? 18089} until HTTPS is on.`}
       </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Uninstalling Nexora, from inside Nexora.
+ *
+ * In order: the sites stop, their databases are saved to Downloads as .sql
+ * files, the services stop and their runtimes go, the system changes come out,
+ * and the app deletes itself once it quits. The site folders stay: they are
+ * the user's code, and a .sql file beside them is enough to bring a site back
+ * anywhere.
+ */
+function UninstallPanel() {
+  const [asking, setAsking] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [step, setStep] = useState<string>("");
+  const [report, setReport] = useState<UninstallReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!running) return;
+    let un: (() => void) | undefined;
+    void api.onUninstallStep(setStep).then((f) => {
+      un = f as () => void;
+    });
+    return () => un?.();
+  }, [running]);
+
+  const uninstall = async () => {
+    setAsking(false);
+    setRunning(true);
+    setError(null);
+    setStep("Stopping your sites…");
+    try {
+      setReport(await api.appUninstall());
+    } catch (e) {
+      setError(errorText(e));
+      setRunning(false);
+    }
+  };
+
+  // Done: the app is deleted the moment it quits, so the report is read first.
+  if (report) {
+    return (
+      <div className={clsx(BOX, "border-gray-300 p-5")}>
+        <h3 className="text-[13px] font-semibold text-gray-900">Nexora is removed</h3>
+        {report.backup_dir && (
+          <p className="mt-2 text-xs leading-relaxed text-gray-700">
+            {report.backups.length} database{report.backups.length === 1 ? "" : "s"} saved to{" "}
+            <code className="rounded bg-gray-100 px-1 font-mono text-[11px]">{report.backup_dir}</code>
+          </p>
+        )}
+        {report.sites_kept.length > 0 && (
+          <p className="mt-1.5 text-xs leading-relaxed text-gray-700">
+            {report.sites_kept.length} site folder{report.sites_kept.length === 1 ? "" : "s"} left
+            where {report.sites_kept.length === 1 ? "it is" : "they are"}.
+          </p>
+        )}
+        {report.problems.length > 0 && (
+          <ul className="mt-2 space-y-1 text-xs leading-relaxed text-amber-900">
+            {report.problems.map((p: string, i: number) => (
+              <li key={i}>• {p}</li>
+            ))}
+          </ul>
+        )}
+        <p className="mt-3 text-xs text-gray-600">
+          Quitting removes the app itself and takes it out of the Dock.
+        </p>
+        <button
+          onClick={() => void api.appUninstallFinish()}
+          className="mt-3 rounded-md bg-red-600 px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-red-700"
+        >
+          Quit and finish
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={clsx(BOX, "border-red-200 bg-red-50/40 p-5")}>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 max-w-xl">
+          <h3 className="text-[13px] font-semibold text-red-900">Uninstall Nexora</h3>
+          <p className="mt-1 text-xs leading-relaxed text-gray-700">
+            Stops your sites and saves each database to Downloads as a .sql file, then removes
+            PHP, MySQL, the other runtimes, the DNS resolver, the edge service, the certificates
+            and the app. Your site folders are left alone.
+          </p>
+          {running && (
+            <p className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-900" aria-live="polite">
+              <span
+                aria-hidden
+                className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-300 border-t-gray-700"
+              />
+              {step}
+            </p>
+          )}
+          {error && <p className="mt-2 text-xs leading-relaxed text-red-800">{error}</p>}
+        </div>
+        <button
+          onClick={() => setAsking(true)}
+          disabled={running}
+          className="flex-shrink-0 rounded-md bg-red-600 px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-red-700 disabled:cursor-wait disabled:opacity-60"
+        >
+          {running ? "Uninstalling…" : "Uninstall app"}
+        </button>
+      </div>
+
+      <ConfirmDialog
+        open={asking}
+        title="Uninstall Nexora?"
+        confirmLabel="Uninstall"
+        busy={running}
+        body={
+          <span>
+            Your sites stop, and each database is saved to your Downloads folder as a .sql file.
+            PHP, MySQL, the other runtimes, the DNS resolver, the edge service, the certificates
+            and the app itself are then removed, and macOS asks for your password once. Your site
+            folders stay where they are.
+          </span>
+        }
+        onCancel={() => setAsking(false)}
+        onConfirm={() => void uninstall()}
+      />
     </div>
   );
 }

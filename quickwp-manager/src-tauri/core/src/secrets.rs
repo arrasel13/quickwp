@@ -18,7 +18,8 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 const SECURITY: &str = "/usr/bin/security";
-const SERVICE: &str = "Nexora site passwords";
+/// The keychain service every site password is filed under.
+pub const SERVICE: &str = "Nexora site passwords";
 
 fn read_map(domain: &str) -> BTreeMap<String, String> {
     let map = read_service(SERVICE, domain);

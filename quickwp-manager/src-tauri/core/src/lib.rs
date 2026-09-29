@@ -27,6 +27,7 @@ pub mod ports;
 pub mod probe;
 pub mod wporg;
 pub mod mariadb;
+pub mod uninstall;
 pub mod updates;
 pub mod wpcore;
 

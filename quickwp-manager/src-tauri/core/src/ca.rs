@@ -110,7 +110,7 @@ pub fn ensure_ca() -> Result<()> {
     let mut params = CertificateParams::new(Vec::<String>::new())
         .map_err(|e| Error::other(format!("CA params: {e}")))?;
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, "Nexora Local CA");
+    dn.push(DnType::CommonName, CA_NAME);
     dn.push(DnType::OrganizationName, "Nexora");
     params.distinguished_name = dn;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -230,6 +230,9 @@ pub fn covers(domain: &str, names: &[String]) -> bool {
         .collect();
     names.iter().all(|n| present.iter().any(|p| p == n))
 }
+
+/// What the certificate authority is called, in the keychain and on screen.
+pub const CA_NAME: &str = "Nexora Local CA";
 
 /// Is the CA trusted in the login keychain?
 pub fn is_trusted() -> bool {

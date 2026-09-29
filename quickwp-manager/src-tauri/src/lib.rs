@@ -15,6 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 mod overlay;
 mod tray;
+mod uninstall;
 mod preview;
 mod thumb;
 
@@ -3137,6 +3138,59 @@ fn settings_set(state: State<'_, AppState>, key: String, value: String) -> Res<S
     Ok("Saved.".into())
 }
 
+/// Take Nexora off this Mac: stop the sites, save their databases, stop and
+/// remove the services, undo the system changes, and delete the app.
+///
+/// The site folders are not touched. What is going is Nexora's own: the
+/// runtimes it downloaded, the databases it ran (saved as .sql first), its
+/// certificates and its settings.
+#[tauri::command]
+async fn app_uninstall(app: AppHandle) -> Res<core::uninstall::Report> {
+    let bundle = uninstall::bundle_path();
+    let handle = app.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<AppState>();
+        // The web server is this process's own; the rest belongs to core.
+        if let Some(e) = state.edge.lock().unwrap().take() {
+            e.stop();
+        }
+        let step = |text: &str| {
+            qlog::info("uninstall", text);
+            let _ = handle.emit("uninstall-step", text);
+        };
+        core::uninstall::run(&state.app, &core::uninstall::Options::default(), step)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    // What is left in ~/Library besides the data folder.
+    for path in core::uninstall::support_files() {
+        let _ = std::fs::remove_dir_all(&path);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // Out of the menu bar before the window goes, so nothing is left pointing
+    // at an app that is being deleted.
+    tray::hide(&app);
+
+    // The bundle and the Dock tile, once this process has quit.
+    if let Some(bundle) = &bundle {
+        if let Err(e) = uninstall::finish_after_quit(bundle) {
+            qlog::warn("uninstall", &format!("could not start the last step: {e}"));
+        }
+    }
+    Ok(report)
+}
+
+/// Quit, once the screen has shown what the uninstall did.
+#[tauri::command]
+fn app_uninstall_finish(app: AppHandle, state: State<'_, AppState>) {
+    state.quitting.store(true, Ordering::SeqCst);
+    state.down.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
 /// Put Nexora in the menu bar, or take it out, and remember which.
 #[tauri::command(async)]
 fn menu_bar_set(app: AppHandle, state: State<'_, AppState>, on: bool) -> Res<()> {
@@ -3775,6 +3829,8 @@ pub fn run() {
             settings_get,
             settings_set,
             menu_bar_set,
+            app_uninstall,
+            app_uninstall_finish,
             apps_installed,
             php_system_list,
             app_quit,

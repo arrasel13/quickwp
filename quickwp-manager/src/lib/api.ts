@@ -532,6 +532,17 @@ export interface InstalledApp {
   default: boolean;
 }
 
+/** What an uninstall did. */
+export interface UninstallReport {
+  /** The .sql files written, one per database. */
+  backups: string[];
+  backup_dir: string | null;
+  /** Site folders left where they are. */
+  sites_kept: string[];
+  removed: string[];
+  problems: string[];
+}
+
 /** A browser to open a site in. */
 export interface BrowserChoice {
   name: string;
@@ -1010,6 +1021,19 @@ export const api = {
     ),
   phpSystemList: () => call<SystemPhp[]>("php_system_list"),
   browserChoices: () => call<BrowserChoice[]>("browser_choices"),
+  /**
+   * Take Nexora off this Mac: stop the sites, save their databases to
+   * ~/Downloads, stop and remove the services, undo the system changes and
+   * delete the app. Site folders are left alone. Asks for a password.
+   */
+  appUninstall: () => call<UninstallReport>("app_uninstall"),
+  /** Quit, once the report has been read. The app is gone after this. */
+  appUninstallFinish: () => call<void>("app_uninstall_finish"),
+  /** What an uninstall is doing, step by step. */
+  onUninstallStep: (cb: (step: string) => void) => {
+    if (!hasBackend) return Promise.resolve(() => {});
+    return listen<string>("uninstall-step", (e) => cb(e.payload));
+  },
   /** Put Nexora in the menu bar, or take it out. Remembered. */
   menuBarSet: (on: boolean) => call<void>("menu_bar_set", { on }),
   /** The menu bar asked for a screen: "sites", "site", "services", "expose",

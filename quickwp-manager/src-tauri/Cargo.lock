@@ -2437,7 +2437,6 @@ dependencies = [
 name = "nexora-cli"
 version = "0.1.0"
 dependencies = [
- "dirs 5.0.1",
  "nexora-core",
  "serde",
  "serde_json",
