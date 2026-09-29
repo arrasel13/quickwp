@@ -30,7 +30,13 @@ pub(crate) fn configure(conn: &Connection) {
 }
 
 #[derive(Clone)]
-pub struct Db(Arc<Mutex<Connection>>);
+pub struct Db {
+    conn: Arc<Mutex<Connection>>,
+    /// The file it was opened from, so a connection that has to be replaced is
+    /// replaced with one to the same database -- not with one to whichever
+    /// database this app would open.
+    file: Option<std::path::PathBuf>,
+}
 
 impl Db {
     pub fn open() -> Result<Self> {
@@ -69,7 +75,7 @@ impl Db {
         // Reading a page is what finds a damaged file: opening one only reads
         // its header, so a broken page would surface later, on a screen.
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))?;
-        let db = Db(Arc::new(Mutex::new(conn)));
+        let db = Db { conn: Arc::new(Mutex::new(conn)), file: Some(file.to_path_buf()) };
         db.migrate()?;
         Ok(db)
     }
@@ -104,7 +110,7 @@ impl Db {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        let db = Db(Arc::new(Mutex::new(conn)));
+        let db = Db { conn: Arc::new(Mutex::new(conn)), file: None };
         db.migrate()?;
         Ok(db)
     }
@@ -120,10 +126,11 @@ impl Db {
     /// place. Either way it is written to the log, because a connection that
     /// goes bad for no visible reason is worth knowing about.
     pub fn with<T>(&self, f: impl Fn(&Connection) -> Result<T>) -> Result<T> {
-        let mut guard = self.0.lock().map_err(|_| crate::Error::other("db lock poisoned"))?;
+        let mut guard = self.conn.lock().map_err(|_| crate::Error::other("db lock poisoned"))?;
         match f(&guard) {
             Err(e) if is_corrupt(&e) => {
-                let file = crate::paths::db_file();
+                // In memory there is no file to check or to replace.
+                let Some(file) = self.file.clone() else { return Err(e) };
                 let verdict = integrity_of(&file);
                 crate::log::warn(
                     "db",
@@ -134,7 +141,10 @@ impl Db {
                 } else {
                     *guard = Self::replace_damaged(&file, &e)?;
                     // The new file is empty: it needs its tables before use.
-                    let fresh = Db(Arc::new(Mutex::new(Self::connect(&file)?)));
+                    let fresh = Db {
+                        conn: Arc::new(Mutex::new(Self::connect(&file)?)),
+                        file: Some(file.clone()),
+                    };
                     fresh.migrate()?;
                 }
                 f(&guard)

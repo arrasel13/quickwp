@@ -10,7 +10,19 @@ use std::path::{Path, PathBuf};
 pub const BUNDLE_ID: &str = "com.nexora.app";
 
 /// ~/Library/Application Support/com.nexora.app
+///
+/// `NEXORA_HOME` moves the whole tree somewhere else. It exists for tests:
+/// several of them write, and one of them deletes, so a test that believes it
+/// is working in a temporary folder must actually be working in one. Without
+/// it a test would operate on the data of whoever ran it -- which is exactly
+/// how a developer's sites were once deleted by `cargo test`.
 pub fn root() -> PathBuf {
+    if let Some(home) = std::env::var_os("NEXORA_HOME") {
+        let home = PathBuf::from(home);
+        if !home.as_os_str().is_empty() {
+            return home;
+        }
+    }
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(BUNDLE_ID)
@@ -185,6 +197,21 @@ pub fn copy_tree(from: &Path, to: &Path) -> crate::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod root_tests {
+    /// The override is what keeps a test out of the real data folder.
+    #[test]
+    fn nexora_home_moves_the_whole_tree() {
+        let dir = std::env::temp_dir().join("nexora-root-test");
+        std::env::set_var("NEXORA_HOME", &dir);
+        assert_eq!(super::root(), dir);
+        assert_eq!(super::db_file(), dir.join("nexora.sqlite3"));
+        assert!(super::runtimes().starts_with(&dir));
+        std::env::remove_var("NEXORA_HOME");
+        assert_ne!(super::root(), dir, "and without it, the real one");
+    }
 }
 
 #[cfg(test)]
